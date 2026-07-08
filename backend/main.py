@@ -1,0 +1,76 @@
+from contextlib import asynccontextmanager
+from typing import AsyncIterator, Annotated
+from fastapi import FastAPI, Body, Depends, Request, HTTPException, UploadFile, File, status, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from groq import AsyncGroq
+from dependencies import construct_prompt, get_urls_content
+from schemas import TextModelRequest, FileUploadResponse
+from utils import stream_response, save_file
+from rag.extractor import pdf_text_extractor
+from rag.service import vector_service
+from loguru import logger
+
+# Initialse Lifespan for fastapi
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """
+    Lifespan function that initialises the LLM Client
+    to serve requests
+    """
+    app.state.llm_client = AsyncGroq()
+
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Generate Text Endpoint
+@app.post("/generate/text/")
+async def generate_text_handler(
+    request: Request,
+    body: TextModelRequest = Body(...),
+    prompt: str = Depends(construct_prompt)
+) -> StreamingResponse:
+    """
+    Request handler that fetch url's content
+    """
+    try:
+        return StreamingResponse(
+            stream_response(request.app.state.llm_client, body.model, body.temperature, prompt),
+            media_type="text/plain"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to stream response. Error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to stream response")
+
+@app.post("/upload/file/")
+async def file_upload_handler(
+    file: Annotated[UploadFile, File(description="Uploaded pdf documents")],
+    bg_text_processor: BackgroundTasks,
+) -> FileUploadResponse:
+    """
+    Controller function to handle file uploads
+    """
+    if file.content_type != "application/pdf":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File must be a PDF")
+    try:
+        filepath = await save_file(file)
+        bg_text_processor.add_task(pdf_text_extractor, filepath)
+        bg_text_processor.add_task(
+            vector_service.store_file_contents_in_db,
+            filepath.replace("pdf", "txt"),
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to save file. Error: {e}"
+        )
+    return FileUploadResponse(message="File uploaded successfully", file_path=filepath)
