@@ -5,7 +5,8 @@ from pypdf import PdfReader
 
 async def pdf_text_extractor(filepath: str) -> str:
     """
-    Function to extract text from a pdf
+    Function to extract text from a pdf by running the synchronous funciton
+    in a separate thread asynchronously
     """
     return await asyncio.to_thread(_extract_pdf_text, filepath)
 

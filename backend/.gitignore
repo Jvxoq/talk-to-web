@@ -12,5 +12,5 @@ wheels/
 # Environment Variables
 .env
 
-# Design documents
-DESIGN.md
+# Static test pages
+pages/

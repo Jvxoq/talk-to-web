@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Annotated
-from fastapi import FastAPI, Body, Depends, Request, HTTPException, UploadFile, File, status, BackgroundTasks
+from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, Body, Depends, Request, HTTPException, UploadFile, File, status, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from groq import AsyncGroq
@@ -25,27 +26,33 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(lifespan=lifespan)
 
+app.mount("/pages", StaticFiles(directory="pages"), name="pages")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["*", "http://localhost:5173"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
 # Generate Text Endpoint
 @app.post("/generate/text/")
-async def generate_text_handler(
-    request: Request,
-    body: TextModelRequest = Body(...),
+async def generate_text_stream_handler(
+    body: TextModelRequest,
     prompt: str = Depends(construct_prompt)
 ) -> StreamingResponse:
     """
-    Request handler that fetch url's content
+    POST endpoint for SSE streaming the generated tokens
     """
     try:
         return StreamingResponse(
-            stream_response(request.app.state.llm_client, body.model, body.temperature, prompt),
-            media_type="text/plain"
+            stream_response(
+                app.state.llm_client, 
+                body.model, body.temperature, 
+                prompt
+            ),
+            media_type="text/event-stream"
         )
     except Exception as e:
         logger.warning(f"Failed to stream response. Error: {e}")

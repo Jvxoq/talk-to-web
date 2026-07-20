@@ -21,6 +21,7 @@ async def stream_response(
     returns the response and handle errors
     """
     try:
+        logger.debug(f"Groq request: model={model}, prompt_length={len(prompt)} chars")
         stream = await llm_client.chat.completions.create(
             # Required parameters
             messages=[
@@ -47,13 +48,17 @@ async def stream_response(
             # If set, partial message deltas will be sent.
             stream=True,
         )
+        logger.debug("Groq stream started")
 
         async for chunk in stream:
-            yield chunk.choices[0].delta.content or ""
+            yield f"data: {chunk.choices[0].delta.content or ''}\n\n"
+        yield "data: [DONE]\n\n"
+
+        logger.debug("Groq stream completed")
 
     except Exception as e:
         logger.warning(f"Failed to stream chunks. Error: {e}")
-        yield f"\n[error: {e}]"
+        yield f"data: [error: {e}]\n\n"
 
 # Function to save file asynchronously
 async def save_file(file: UploadFile) -> str:

@@ -2,7 +2,7 @@ import os
 from config import QDRANT_HOST, QDRANT_PORT
 from .repository import VectorRepository
 from loguru import logger
-from .transformer import embed, load, clean
+from .transformer import embed, load, clean, chunk_text
 
 # Vector service class using the VectorRepository
 class VectorService(VectorRepository):
@@ -29,7 +29,7 @@ class VectorService(VectorRepository):
         self, 
         filepath: str,
         collection_name: str = "knowledge_base",
-        collection_size: int = 512,
+        collection_size: int = 768,
     ) -> None:
         """
         This function uses the parent class's function to create a collection
@@ -40,13 +40,14 @@ class VectorService(VectorRepository):
             collection_size,
         )
         logger.debug(f"Inserting {filepath} content into database")
-        async for chunk in load(filepath): 
-            logger.debug(f"Inserting '{chunk[0:20]}...' into database")
-
-            embedding_vector = await embed(clean(chunk))
-            filename = os.path.basename(filepath)
-            await self.create(
-                collection_name, embedding_vector, chunk, filename
-            )
+        async for raw_chunk in load(filepath):
+            cleaned = clean(raw_chunk)
+            async for chunk in chunk_text(cleaned):
+                logger.debug(f"Inserting '{chunk[0:20]}...' into database")
+                embedding_vector = await embed(chunk)
+                filename = os.path.basename(filepath)
+                await self.create(
+                    collection_name, embedding_vector, chunk, filename
+                )
 
 vector_service = VectorService(QDRANT_HOST, QDRANT_PORT)

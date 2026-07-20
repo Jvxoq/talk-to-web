@@ -84,10 +84,14 @@ class VectorRepository():
         logger.debug(
             f"Searching for relevant items in the {collection_name} collection"
         )
-        response = await self.db_client.query_points(
-            collection_name=collection_name,
-            query=query_vector,
-            limit=retrieval_limit,
-            score_threshold=score_threshold,
-        )
-        return response.points
+        try:
+            response = await self.db_client.query_points(
+                collection_name=collection_name,
+                query=query_vector,
+                limit=retrieval_limit,
+                score_threshold=score_threshold,
+            )
+            return response.points
+        except Exception:
+            logger.warning(f"Collection {collection_name} not found, returning empty results")
+            return []

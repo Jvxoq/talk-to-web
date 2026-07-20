@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import './App.css'
 
 const API_URL = import.meta.env.VITE_API_URL ?? '/generate/text/'
@@ -81,21 +83,50 @@ function App() {
 
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
+      let buffer = ''
+      let streamError: string | null = null
 
-      while (true) {
+      outer: while (true) {
         const { value, done } = await reader.read()
         if (done) break
 
-        const chunk = decoder.decode(value, { stream: true })
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n\n')
+        buffer = lines.pop() ?? ''
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          const data = line.slice('data: '.length)
+
+          if (data === '[DONE]') break outer
+
+          if (data.startsWith('[error: ')) {
+            streamError = data.slice('[error: '.length, -1)
+            break outer
+          }
+
+          setMessages((prev) => {
+            const next = [...prev]
+            next[next.length - 1] = {
+              role: 'assistant',
+              content: next[next.length - 1].content + data,
+            }
+            return next
+          })
+          scrollToBottom()
+        }
+      }
+
+      if (streamError) {
         setMessages((prev) => {
           const next = [...prev]
           next[next.length - 1] = {
             role: 'assistant',
-            content: next[next.length - 1].content + chunk,
+            content: streamError ?? 'Something went wrong. Please try again.',
+            error: true,
           }
           return next
         })
-        scrollToBottom()
       }
     } catch {
       setMessages((prev) => {
@@ -192,10 +223,19 @@ function App() {
         {messages.map((message, i) => (
           <div key={i} className={`message ${message.role}`}>
             <div className={`bubble ${message.error ? 'error' : ''}`}>
-              {message.content ||
-                (message.role === 'assistant' && isStreaming && i === messages.length - 1
-                  ? '...'
-                  : '')}
+              {message.content ? (
+                message.role === 'assistant' && !message.error ? (
+                  <div className="markdown">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                  </div>
+                ) : (
+                  message.content
+                )
+              ) : message.role === 'assistant' && isStreaming && i === messages.length - 1 ? (
+                '...'
+              ) : (
+                ''
+              )}
             </div>
           </div>
         ))}
