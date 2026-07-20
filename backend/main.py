@@ -1,12 +1,13 @@
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Annotated
 from fastapi.staticfiles import StaticFiles
-from fastapi import FastAPI, Body, Depends, Request, HTTPException, UploadFile, File, status, BackgroundTasks, Query
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, status, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from groq import AsyncGroq
-from dependencies import construct_prompt, get_urls_content
+from dependencies import construct_prompt
 from schemas import TextModelRequest, FileUploadResponse
+from stream import WSConnectionManager, transcribe_audio_stream
 from utils import stream_response, save_file
 from rag.extractor import pdf_text_extractor
 from rag.service import vector_service
@@ -25,6 +26,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(lifespan=lifespan)
+
+ws_manager = WSConnectionManager()
 
 app.mount("/pages", StaticFiles(directory="pages"), name="pages")
 
@@ -57,6 +60,27 @@ async def generate_text_stream_handler(
     except Exception as e:
         logger.warning(f"Failed to stream response. Error: {e}")
         raise HTTPException(status_code=500, detail="Failed to stream response")
+
+@app.websocket("/ws/transcribe/")
+async def transcribe_ws_handler(websocket: WebSocket) -> None:
+    """
+    WebSocket endpoint that proxies browser microphone audio to Deepgram
+    and streams transcripts back. The API key never leaves the server.
+    """
+    await ws_manager.connect(websocket)
+    try:
+        await transcribe_audio_stream(websocket, ws_manager)
+    except WebSocketDisconnect:
+        logger.debug("Client left the transcription socket")
+    except Exception as e:
+        logger.warning(f"Transcription stream failed. Error: {e}")
+        try:
+            await ws_manager.send({"type": "error", "detail": str(e)}, websocket)
+        except Exception:
+            pass
+    finally:
+        await ws_manager.disconnect(websocket)
+
 
 @app.post("/upload/file/")
 async def file_upload_handler(

@@ -279,30 +279,45 @@
   color: var(--ink);
 }
 
-.upload-btn {
+/* Scoped under .composer for the same reason as .mic-btn below: the
+   `.composer button` rules are more specific and would otherwise paint this
+   coral and pad the icon out of view. */
+.composer .upload-btn {
   display: flex;
   align-items: center;
   justify-content: center;
   width: 40px;
   height: 40px;
+  padding: 0;
   border-radius: 8px;
   border: 1px solid var(--hairline);
   background: var(--canvas);
   color: var(--ink);
   cursor: pointer;
   flex-shrink: 0;
+  transition: background-color 100ms linear, color 100ms linear,
+    transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.upload-btn span {
-  font-size: 1.25rem;
-  line-height: 1;
+/* currentColor, so the icon follows --ink across light and dark themes -
+   which the previous 📎 emoji could not do. */
+.composer .upload-btn svg {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
 }
 
-.upload-btn:hover:not(:disabled) {
+.composer .upload-btn:hover:not(:disabled) {
   background: var(--surface-soft);
 }
 
-.upload-btn:disabled {
+.composer .upload-btn:not(:disabled):active {
+  background: var(--surface-soft);
+  transform: scale(0.97);
+}
+
+.composer .upload-btn:disabled {
+  background: var(--canvas);
   color: var(--muted);
   cursor: not-allowed;
 }
@@ -372,4 +387,110 @@
 
 .composer button:not(:disabled):active {
   background: var(--primary-active);
+}
+
+/* --- voice input --------------------------------------------------------- */
+
+/* Scoped under .composer so these beat the `.composer button` send-button
+   rules, which are more specific than a bare .mic-btn and would otherwise
+   re-apply 1.25rem of horizontal padding - enough to collapse the 40px
+   button's content box to zero and squeeze the icon out of existence. */
+.composer .mic-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid var(--hairline);
+  background: var(--canvas);
+  color: var(--ink);
+  cursor: pointer;
+  flex-shrink: 0;
+  /* Colour changes are tweened, never sprung - see .claude/skills/frontend-motion */
+  transition: background-color 100ms linear, color 100ms linear,
+    border-color 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.composer .mic-btn svg {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.composer .mic-btn:hover:not(:disabled) {
+  background: var(--surface-soft);
+}
+
+.composer .mic-btn:not(:disabled):active {
+  /* Also restates background: the send button's :active rule is more specific
+     and would otherwise flash this coral on press. */
+  background: var(--surface-soft);
+  transform: scale(0.97);
+}
+
+.composer .mic-btn:disabled {
+  background: var(--canvas);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.composer .mic-btn.recording {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--on-primary);
+}
+
+.voice-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1.25rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.8rem;
+}
+
+.voice-status {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+/* Interim text is a revisable guess, so it reads as provisional. */
+.voice-interim {
+  color: var(--muted);
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-error {
+  color: var(--error-text);
+}
+
+.voice-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--primary);
+  flex-shrink: 0;
+  animation: voice-pulse 1.8s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+/* Slow and calm rather than a blink - it should read as "listening", not "alert". */
+@keyframes voice-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-dot {
+    animation: none;
+  }
+
+  .mic-btn:not(:disabled):active {
+    transform: none;
+  }
 }

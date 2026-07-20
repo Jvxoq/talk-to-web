@@ -11,6 +11,9 @@ export default defineConfig({
     proxy: {
       '/generate': backendUrl,
       '/upload': backendUrl,
+      // ws: true makes Vite forward the Upgrade handshake instead of
+      // treating it as a plain HTTP request.
+      '/ws': { target: backendUrl, ws: true },
     },
   },
 })

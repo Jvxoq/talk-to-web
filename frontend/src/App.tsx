@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { isVoiceInputSupported, useVoiceInput } from './useVoiceInput'
 import './App.css'
 
 const API_URL = import.meta.env.VITE_API_URL ?? '/generate/text/'
@@ -42,6 +43,16 @@ function App() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // Each finalised utterance is appended to whatever is already in the composer,
+  // so dictation adds to typed text rather than replacing it.
+  const appendTranscript = useCallback((text: string) => {
+    setInput((prev) => (prev ? `${prev.trimEnd()} ${text}` : text))
+  }, [])
+
+  const voice = useVoiceInput(appendTranscript)
+  const isRecording = voice.status !== 'idle'
+  const voiceSupported = isVoiceInputSupported()
+
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
     localStorage.setItem(THEME_KEY, theme)
@@ -57,6 +68,7 @@ function App() {
     const text = input.trim()
     if (!text || isStreaming) return
 
+    if (isRecording) voice.stop()
     setInput('')
     setMessages((prev) => [
       ...prev,
@@ -261,6 +273,22 @@ function App() {
         </div>
       )}
 
+      {(isRecording || voice.error) && (
+        <div className="voice-bar">
+          {voice.status === 'connecting' && (
+            <span className="voice-status">Connecting…</span>
+          )}
+          {voice.status === 'listening' && (
+            <>
+              <span className="voice-dot" aria-hidden="true" />
+              <span className="voice-status">Start talking…</span>
+              {voice.interim && <span className="voice-interim">{voice.interim}</span>}
+            </>
+          )}
+          {voice.error && <span className="voice-error">{voice.error}</span>}
+        </div>
+      )}
+
       <div className="composer">
         <input
           ref={fileInputRef}
@@ -276,8 +304,26 @@ function App() {
           disabled={isStreaming || isUploading}
           aria-label="Attach a PDF"
         >
-          <span aria-hidden="true">📎</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+            strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+          </svg>
         </button>
+        {voiceSupported && (
+          <button
+            type="button"
+            className={`mic-btn ${isRecording ? 'recording' : ''}`}
+            onClick={voice.toggle}
+            disabled={isStreaming}
+            aria-label={isRecording ? 'Stop recording' : 'Start talking'}
+            aria-pressed={isRecording}
+          >
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z" />
+              <path d="M18 11a1 1 0 1 0-2 0 4 4 0 0 1-8 0 1 1 0 1 0-2 0 6 6 0 0 0 5 5.917V19H9a1 1 0 1 0 0 2h6a1 1 0 0 0 0-2h-2v-2.083A6 6 0 0 0 18 11Z" />
+            </svg>
+          </button>
+        )}
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
