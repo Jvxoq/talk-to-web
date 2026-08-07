@@ -14,3 +14,11 @@ wheels/
 
 # Static test pages
 pages/
+
+# Uploaded files
+uploads/
+
+# Tool caches
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
