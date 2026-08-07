@@ -1,0 +1,156 @@
+/* Mono Brutalist — the token contract.
+   This is the ONLY file under src/ permitted to contain a literal hex value.
+   Everything downstream references these custom properties. */
+
+:root {
+  /* --- Color ---------------------------------------------------------------
+     Pure black on white. `primary` is ink: borders, text, fills. `surface` is
+     paper. `neutral` is whatever sits on top of an ink fill. Dark mode swaps
+     the ink/paper roles — both hexes are declared by the system, so inverting
+     introduces no new value. */
+  --color-primary: #000000;
+  --color-secondary: #555555;
+  --color-tertiary: #000000;
+  --color-neutral: #ffffff;
+  --color-surface: #ffffff;
+
+  /* Error state only, from the Pro token set. Carried on borders and hard
+     shadows — never as body text, so the 4.5:1 text floor doesn't apply. */
+  --color-danger: #b91c1c;
+
+  /* De-emphasised meta only, never body copy. Light mode is the declared
+     #555555 (7.46:1 on white). Dark mode mixes ink into the surface to hold the
+     same contrast rather than inventing a second grey. */
+  --color-muted: var(--color-secondary);
+
+  /* --- Type ---------------------------------------------------------------- */
+  --font-display: 'JetBrains Mono', ui-monospace, monospace;
+  --font-body: 'JetBrains Mono', ui-monospace, monospace;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  --tracking-ui: 0.08em;
+  --tracking-tab: 0.1em;
+
+  /* --- Radius — sharp at every level --------------------------------------- */
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+
+  /* --- Space — 8px grid ---------------------------------------------------- */
+  --space-1: 8px;
+  --space-2: 16px;
+  --space-3: 24px;
+  --space-4: 32px;
+  --space-6: 48px;
+  --space-10: 80px;
+
+  /* --- Border -------------------------------------------------------------- */
+  --border-width: 2px;
+  --border: var(--border-width) solid var(--color-primary);
+
+  /* --- Elevation — hard offsets, zero blur ---------------------------------- */
+  --level-0: none;
+  --level-1: 2px 2px 0 0 var(--color-primary);
+  --level-2: 4px 4px 0 0 var(--color-primary);
+  --level-3: 6px 6px 0 0 var(--color-primary);
+  --level-4: 8px 8px 0 0 var(--color-primary);
+  --level-error: 4px 4px 0 0 var(--color-danger);
+
+  /* --- Motion ---------------------------------------------------------------
+     Deliberate deviation from the system's `transition: none`. The brief is
+     brutalist surfaces carrying the existing smooth choreography, so these
+     mirror the tween timings in lib/motion.ts. Transform is never animated
+     here — Motion owns transform on every interactive element, and an inline
+     style from Motion would silently win over a CSS rule anyway. */
+  --duration-fast: 140ms;
+  --duration-base: 200ms;
+  --easing: cubic-bezier(0.22, 1, 0.36, 1);
+
+  font: 400 16px/1.55 var(--font-body);
+  color-scheme: light;
+  color: var(--color-primary);
+  background: var(--color-surface);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@media (max-width: 1024px) {
+  :root {
+    font-size: 15px;
+  }
+}
+
+:root[data-theme='dark'] {
+  --color-primary: #ffffff;
+  --color-tertiary: #ffffff;
+  --color-neutral: #000000;
+  --color-surface: #000000;
+  --color-muted: color-mix(in srgb, var(--color-primary) 66%, var(--color-surface));
+
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100svh;
+  /* Flat. No ambient wash, no gradient — the border carries the separation. */
+  background: var(--color-surface);
+  color: var(--color-primary);
+}
+
+#root {
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+}
+
+::selection {
+  background: var(--color-primary);
+  color: var(--color-neutral);
+}
+
+/* The focus ring is part of the design, not an afterthought. Every interactive
+   element inherits it; nothing may set `outline: none` without a replacement. */
+:focus-visible {
+  outline: var(--border-width) solid var(--color-primary);
+  outline-offset: 3px;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-display);
+  color: var(--color-primary);
+  margin: 0;
+}
+
+/* Visually hidden but read by assistive tech — for labels the layout can't show. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 1ms !important;
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

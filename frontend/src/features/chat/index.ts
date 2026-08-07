@@ -1,0 +1,5 @@
+export { ChatLog } from './components/ChatLog'
+export { Composer } from './components/Composer'
+export { useChat } from './hooks/useChat'
+export { FALLBACK_DEFAULT_MODEL, useModels } from './hooks/useModels'
+export type { Message, Model, ToolActivity, UploadedFile } from './types'

@@ -1,0 +1,96 @@
+/* Cross-feature primitives. Variants are fixed by the design system — a fifth
+   one needs sign-off, and nothing here should be restyled at the call site. */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  font-family: var(--font-body);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-ui);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  flex-shrink: 0;
+  /* Transform is owned by Motion (whileHover / whileTap); animating it here
+     too would be overridden by Motion's inline style. */
+  transition:
+    box-shadow var(--duration-base) var(--easing),
+    background-color var(--duration-fast) var(--easing),
+    color var(--duration-fast) var(--easing),
+    border-color var(--duration-fast) var(--easing);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  filter: grayscale(0.4);
+  cursor: not-allowed;
+}
+
+.btn--primary {
+  background: var(--color-primary);
+  color: var(--color-neutral);
+  border: var(--border);
+  padding: 12px 24px;
+}
+
+.btn--secondary {
+  background: var(--color-surface);
+  color: var(--color-primary);
+  border: var(--border);
+  padding: 12px 24px;
+}
+
+.btn--outline {
+  background: transparent;
+  color: var(--color-primary);
+  border: var(--border-width) dashed var(--color-primary);
+  padding: 12px 24px;
+}
+
+.btn--ghost {
+  background: transparent;
+  color: var(--color-primary);
+  border: none;
+  padding: 10px 0;
+}
+
+.btn--primary:hover:not(:disabled),
+.btn--secondary:hover:not(:disabled) {
+  box-shadow: var(--level-2);
+}
+
+.btn--primary:active:not(:disabled),
+.btn--secondary:active:not(:disabled) {
+  box-shadow: var(--level-0);
+}
+
+.btn--ghost:hover:not(:disabled) {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* Selected — the filled state shared by toggles and the active tab. */
+.btn.is-selected,
+.btn.is-selected:hover:not(:disabled) {
+  background: var(--color-primary);
+  color: var(--color-neutral);
+  border-color: var(--color-primary);
+}
+
+/* Icon-only. Square, never scaled below the 44px touch floor — pad, don't
+   shrink. Pairs with a required aria-label on IconButton. */
+.btn--icon {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+}
+
+.btn--icon svg {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}

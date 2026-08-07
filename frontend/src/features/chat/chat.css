@@ -1,0 +1,597 @@
+/* Chat surface. Every value resolves to a token in styles/globals.css — there
+   are no literal hexes below this line. */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100svh;
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+/* --- Header ---------------------------------------------------------------- */
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  height: 64px;
+  flex-shrink: 0;
+}
+
+.header .mark {
+  width: 18px;
+  height: 18px;
+  color: var(--color-primary);
+  flex-shrink: 0;
+}
+
+.header h1 {
+  flex: 1;
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 800;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-ui);
+}
+
+/* Filled ink chip — the system's badge treatment is a rectangle, not a pill. */
+.eyebrow {
+  background: var(--color-primary);
+  color: var(--color-neutral);
+  padding: 5px var(--space-1);
+  font-size: 0.5625rem;
+  font-weight: 700;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-tab);
+}
+
+/* --- Chat log -------------------------------------------------------------- */
+
+/* min-height:0 lets the log shrink inside the flex column instead of pushing
+   the composer off-screen once the transcript grows past the viewport. */
+.main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-3) var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* Overlay scrollbar: the track always reserves its width so the transcript
+   never reflows, but nothing is painted until the user is on the log. */
+.chat {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  scrollbar-gutter: stable;
+  transition: scrollbar-color var(--duration-base) var(--easing);
+}
+
+.chat:hover,
+.chat:focus-within {
+  scrollbar-color: var(--color-primary) transparent;
+}
+
+.chat::-webkit-scrollbar {
+  width: 10px;
+}
+
+.chat::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Padded in by a transparent border so the thumb reads as a slim bar rather
+   than filling the full 10px gutter. */
+.chat::-webkit-scrollbar-thumb {
+  background: transparent;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+.chat:hover::-webkit-scrollbar-thumb,
+.chat:focus-within::-webkit-scrollbar-thumb {
+  background: var(--color-primary);
+  background-clip: content-box;
+}
+
+.empty-state {
+  margin: auto;
+  text-align: center;
+  max-width: 30rem;
+  padding: 0 var(--space-2);
+}
+
+.empty-state .mark {
+  color: var(--color-primary);
+  width: 32px;
+  height: 32px;
+  margin: 0 auto var(--space-3);
+  display: block;
+}
+
+.empty-state h2 {
+  font-size: 1.5rem;
+  font-weight: 800;
+  line-height: 1.3;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-ui);
+  margin: 0 0 var(--space-2);
+}
+
+/* Emphasis by inversion rather than italics — weight and fill do the work. */
+.empty-state h2 em {
+  font-style: normal;
+  background: var(--color-primary);
+  color: var(--color-neutral);
+  padding: 0 6px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.empty-state p {
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--color-muted);
+  margin: 0;
+}
+
+.message {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.message.user {
+  align-items: flex-end;
+}
+
+.message.assistant {
+  align-items: flex-start;
+}
+
+.message-role {
+  font-size: 0.5625rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-tab);
+  color: var(--color-muted);
+}
+
+/* --- Tool activity chips ---------------------------------------------------- */
+
+.tool-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tool-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px var(--space-1);
+  border: 2px solid var(--color-primary);
+  font-size: 0.625rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-tab);
+  color: var(--color-primary);
+  background: var(--color-surface);
+}
+
+/* Running: a dashed border is this system's existing vocabulary for
+   "tentative" (see the outline button) — no spinner, no colour-only signal. */
+.tool-chip.is-start {
+  border-style: dashed;
+  color: var(--color-muted);
+}
+
+.tool-chip.is-ok {
+  border-style: solid;
+}
+
+.tool-chip.is-failed {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+.bubble {
+  max-width: 84%;
+  padding: var(--space-1) 14px;
+  border: var(--border);
+  border-radius: var(--radius-md);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+  font-size: 0.875rem;
+}
+
+.message.user .bubble {
+  background: var(--color-primary);
+  color: var(--color-neutral);
+}
+
+.message.assistant .bubble {
+  background: var(--color-surface);
+  color: var(--color-primary);
+  box-shadow: var(--level-1);
+}
+
+.bubble.error {
+  background: var(--color-surface);
+  color: var(--color-primary);
+  border-color: var(--color-danger);
+  box-shadow: var(--level-error);
+}
+
+/* Three ink squares. Motion drives the rise-and-fade; this is only the shape. */
+.typing {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+}
+
+.typing span {
+  width: 8px;
+  height: 8px;
+  background: var(--color-primary);
+}
+
+/* --- Markdown -------------------------------------------------------------- */
+
+.markdown {
+  white-space: normal;
+  max-width: 64ch;
+}
+
+.markdown > *:first-child {
+  margin-top: 0;
+}
+
+.markdown > *:last-child {
+  margin-bottom: 0;
+}
+
+.markdown p {
+  margin: 1.2em 0;
+}
+
+.markdown ul,
+.markdown ol {
+  margin: 1.2em 0;
+  padding-left: 1.5em;
+}
+
+.markdown li {
+  margin: 0.5em 0;
+}
+
+.markdown li > p {
+  margin: 0.5em 0;
+}
+
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  font-weight: 800;
+  line-height: 1.3;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-ui);
+  margin: 1.2em 0 0.5em;
+}
+
+.markdown h1 {
+  font-size: 1.15rem;
+}
+
+.markdown h2 {
+  font-size: 1.05rem;
+}
+
+.markdown h3 {
+  font-size: 0.95rem;
+}
+
+.markdown h4 {
+  font-size: 0.875rem;
+}
+
+.markdown a {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+.markdown strong {
+  font-weight: 800;
+}
+
+.markdown blockquote {
+  margin: 1.2em 0;
+  padding: 0.8em 1em;
+  border-left: 4px solid currentcolor;
+}
+
+.markdown code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--color-primary);
+  color: var(--color-neutral);
+  padding: 0.1em 0.35em;
+}
+
+.markdown pre {
+  background: var(--color-primary);
+  color: var(--color-neutral);
+  border: var(--border);
+  padding: var(--space-1) 12px;
+  margin: 1.2em 0;
+  overflow-x: auto;
+}
+
+.markdown pre code {
+  background: none;
+  padding: 0;
+  color: inherit;
+}
+
+.markdown hr {
+  border: none;
+  border-top: var(--border);
+  margin: 1.2em 0;
+}
+
+.markdown table {
+  border-collapse: collapse;
+  margin: 1.2em 0;
+  font-size: 0.9em;
+  display: block;
+  overflow-x: auto;
+}
+
+.markdown th,
+.markdown td {
+  border: var(--border);
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.markdown th {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-ui);
+}
+
+/* Code inside a filled user bubble inverts, or it would vanish into the fill. */
+.message.user .bubble .markdown code,
+.message.user .bubble .markdown pre {
+  background: var(--color-neutral);
+  color: var(--color-primary);
+  border-color: var(--color-neutral);
+}
+
+/* --- Composer -------------------------------------------------------------- */
+
+.composer-wrap {
+  flex-shrink: 0;
+  padding: var(--space-2);
+}
+
+/* The frame is the input. Everything inside — strips, textarea, controls —
+   reads as one field because this border encloses all of it. */
+.composer {
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface);
+  border: var(--border);
+  border-radius: var(--radius-md);
+  transition: box-shadow var(--duration-base) var(--easing);
+}
+
+.composer:focus-within {
+  box-shadow: var(--level-1);
+}
+
+.composer-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 6px 10px;
+  font-size: 0.6875rem;
+  min-height: 36px;
+}
+
+.status-label {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-tab);
+  color: var(--color-muted);
+}
+
+.status-label.is-error {
+  color: var(--color-primary);
+  border-left: 4px solid var(--color-danger);
+  padding-left: var(--space-1);
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 4px 4px var(--space-1);
+  border: var(--border);
+  font-size: 0.6875rem;
+  max-width: 100%;
+}
+
+.attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 24px of visual chrome, 44px of touch target via the expanded pseudo-element —
+   padding the chip out to 44px would bloat the strip. */
+.attachment-remove {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  background: var(--color-primary);
+  color: var(--color-neutral);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.attachment-remove::after {
+  content: '';
+  position: absolute;
+  inset: -10px;
+}
+
+.attachment-remove svg {
+  width: 14px;
+  height: 14px;
+}
+
+.voice-interim {
+  color: var(--color-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-dot {
+  width: 8px;
+  height: 8px;
+  background: var(--color-primary);
+  flex-shrink: 0;
+}
+
+.composer textarea {
+  width: 100%;
+  resize: none;
+  border: none;
+  background: transparent;
+  padding: 12px;
+  font-family: var(--font-body);
+  font-size: 0.875rem;
+  line-height: 1.6;
+  min-height: 44px;
+  max-height: 9rem;
+  color: var(--color-primary);
+}
+
+/* The frame carries the focus indicator (see .composer:focus-within) — an
+   outline here would sit on top of that border and read as a double line. */
+.composer textarea:focus,
+.composer textarea:focus-visible {
+  outline: none;
+}
+
+.composer textarea::placeholder {
+  color: var(--color-muted);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-ui);
+  font-size: 0.8125rem;
+}
+
+.composer-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1);
+  padding: var(--space-1);
+}
+
+.controls-left,
+.controls-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.mic-wrap {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+}
+
+/* Square ripple radiating from the mic while it listens — no radius, ever. */
+.mic-ring {
+  position: absolute;
+  inset: 0;
+  border: var(--border);
+  pointer-events: none;
+}
+
+/* Doubled specificity so the override doesn't depend on ui.css load order. */
+.btn.talk-btn {
+  height: 44px;
+  padding: 0 14px;
+}
+
+.talk-btn svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.model-select {
+  height: 44px;
+  max-width: 11rem;
+  padding: 0 var(--space-1);
+  border: var(--border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-primary);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: box-shadow var(--duration-base) var(--easing);
+}
+
+.model-select:hover:not(:disabled) {
+  box-shadow: var(--level-1);
+}
+
+.model-select:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+@media (max-width: 480px) {
+  .composer-controls {
+    flex-wrap: wrap;
+  }
+
+  .model-select {
+    max-width: 8rem;
+  }
+
+  .bubble {
+    max-width: 100%;
+  }
+}
