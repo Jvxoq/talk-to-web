@@ -1,0 +1,56 @@
+"""Wiring: two nodes, one loop, one exit condition.
+
+Deliberately the shortest file in the package. Adding a capability to the agent
+should mean one `add_node` and one `add_edge` here, and nothing else - which is
+only true while this stays a wiring diagram rather than a place logic accretes.
+"""
+
+from typing import Any
+
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
+from loguru import logger
+
+from app.application.chat.agent.nodes import make_agent_node, make_tool_node
+from app.application.chat.agent.state import AgentState
+from app.application.chat.ports import ChatModel
+from app.application.chat.tools.base import ToolRegistry
+
+AgentGraph = CompiledStateGraph[AgentState, Any, Any, Any]
+
+
+def build_agent_graph(
+    *,
+    model: ChatModel,
+    tools: ToolRegistry,
+    max_iterations: int,
+    checkpointer: BaseCheckpointSaver[Any] | None = None,
+) -> AgentGraph:
+    """Compile the agent once, at startup, for every request to share."""
+    if max_iterations < 1:
+        raise ValueError("The agent needs at least one model turn per reply")
+
+    def route_after_agent(state: AgentState) -> str:
+        """Loop back through the tools, or stop."""
+        last = state.messages[-1] if state.messages else None
+        if last is None or not last.tool_calls:
+            return END
+        if state.iterations >= max_iterations:
+            # A model that keeps asking for tools is looping, and every lap is a
+            # request the user is already waiting on. Stopping here leaves the
+            # last assistant turn in place, so the reply ends short rather than
+            # never.
+            logger.warning(f"Agent hit its ceiling of {max_iterations} iterations; stopping")
+            return END
+        return "tools"
+
+    builder = StateGraph(AgentState)
+    builder.add_node("agent", make_agent_node(model, tools))
+    builder.add_node("tools", make_tool_node(tools))
+
+    builder.add_edge(START, "agent")
+    builder.add_conditional_edges("agent", route_after_agent, {"tools": "tools", END: END})
+    builder.add_edge("tools", "agent")
+
+    return builder.compile(checkpointer=checkpointer)

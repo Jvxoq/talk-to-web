@@ -1,13 +1,26 @@
-from schemas import TextModelRequest
+from api.schemas import TextModelRequest
 from typing_extensions import AsyncIterator
 from groq import AsyncGroq
 from loguru import logger
+import json
 import os
 import aiofiles
 from aiofiles.os import makedirs
 from fastapi import UploadFile
 
 DEFAULT_CHUNK_SIZE = 1024 * 1024 * 50
+
+
+def _frame(**payload: object) -> str:
+    """
+    Builds one SSE frame.
+
+    The payload is JSON-encoded rather than written as bare text: a token can
+    contain newlines (markdown headings, lists, tables all do), and a raw
+    newline would terminate the frame early and be lost by the client.
+    """
+    return f"data: {json.dumps(payload)}\n\n"
+
 
 # function to stream the response from the llm
 async def stream_response(
@@ -51,14 +64,16 @@ async def stream_response(
         logger.debug("Groq stream started")
 
         async for chunk in stream:
-            yield f"data: {chunk.choices[0].delta.content or ''}\n\n"
-        yield "data: [DONE]\n\n"
+            content = chunk.choices[0].delta.content
+            if content:
+                yield _frame(delta=content)
+        yield _frame(done=True)
 
         logger.debug("Groq stream completed")
 
     except Exception as e:
         logger.warning(f"Failed to stream chunks. Error: {e}")
-        yield f"data: [error: {e}]\n\n"
+        yield _frame(error=str(e))
 
 # Function to save file asynchronously
 async def save_file(file: UploadFile) -> str:
