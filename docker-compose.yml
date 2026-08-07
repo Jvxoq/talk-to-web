@@ -6,6 +6,17 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: talk_to_the_web
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
   backend:
     build:
       context: ./backend
@@ -15,6 +26,7 @@ services:
     environment:
       QDRANT_HOST: qdrant
       QDRANT_PORT: 6333
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/talk_to_the_web
     ports:
       - "8000:8000"
     volumes:
@@ -23,6 +35,7 @@ services:
       - backend_uploads:/app/uploads
     depends_on:
       - qdrant
+      - postgres
 
   frontend:
     build:
@@ -40,6 +53,7 @@ services:
 
 volumes:
   qdrant_data:
+  postgres_data:
   backend_venv:
   backend_uploads:
   frontend_node_modules:
