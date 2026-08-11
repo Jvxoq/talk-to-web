@@ -13,10 +13,11 @@ from typing import Any, Final, Protocol
 from langgraph.config import get_config, get_stream_writer
 from loguru import logger
 
+from app.application.chat.agent.condenser import Condenser
 from app.application.chat.agent.state import AgentState
 from app.application.chat.models import ChatMessage, ToolCall
-from app.application.chat.ports import ChatModel
-from app.application.chat.tools.base import ToolRegistry
+from app.application.chat.ports import ChatModel, TokenCounter
+from app.application.chat.tools.base import ToolContext, ToolRegistry
 
 # The vocabulary of the custom stream. These payloads are an internal protocol
 # between this module and `use_cases.generate_reply`, which is the only reader:
@@ -92,11 +93,21 @@ def make_agent_node(model: ChatModel, tools: ToolRegistry) -> Node:
     return agent
 
 
-def make_tool_node(tools: ToolRegistry) -> Node:
+def make_tool_node(
+    tools: ToolRegistry,
+    condenser: Condenser,
+    counter: TokenCounter,
+    tool_output_token_budget: int,
+) -> Node:
     """Build the node that runs whatever the model asked for."""
 
     async def tool_node(state: AgentState) -> dict[str, Any]:
         writer = get_stream_writer()
+        configurable: dict[str, Any] = dict(get_config().get("configurable") or {})
+        # Subscripted, not `.get(...)`: a run config without an owner is a
+        # miswiring, and defaulting it would mean quietly searching somebody's
+        # documents - or everybody's - rather than failing where it broke.
+        context = ToolContext(owner_id=int(configurable["owner_id"]))
         calls = state.messages[-1].tool_calls if state.messages else ()
         if not calls:
             # Routing should make this unreachable; returning nothing is still
@@ -108,11 +119,25 @@ def make_tool_node(tools: ToolRegistry) -> Node:
             # Announced before the call, so the spinner has a reason on it for
             # the whole of a slow fetch rather than after the fact.
             writer({"type": TOOL_START, "name": call.name, "summary": _summarise(call)})
-            outcome = await tools.invoke(call)
-            writer({"type": TOOL_END, "name": call.name, "ok": outcome.ok})
+            outcome = await tools.invoke(call, context)
+            content = await _compress(
+                outcome.content, call, condenser, counter, tool_output_token_budget
+            )
+            writer(
+                {
+                    "type": TOOL_END,
+                    "name": call.name,
+                    "ok": outcome.ok,
+                    # Dumped to plain dicts, not passed as `Source` instances:
+                    # the custom stream is a JSON-only channel between this
+                    # module and `use_cases.generate_reply`, and a pydantic
+                    # model surviving that trip is an accident, not a contract.
+                    "sources": [source.model_dump() for source in outcome.sources],
+                }
+            )
             # The id is what pairs this result back to its request; providers
             # reject a tool turn that has none.
-            return ChatMessage(role="tool", content=outcome.content, tool_call_id=call.id)
+            return ChatMessage(role="tool", content=content, tool_call_id=call.id)
 
         # Concurrent, because two independent lookups should cost the user the
         # slower one rather than their sum. `ToolRegistry.invoke` never raises,
@@ -121,3 +146,30 @@ def make_tool_node(tools: ToolRegistry) -> Node:
         return {"messages": list(messages)}
 
     return tool_node
+
+
+async def _compress(
+    content: str,
+    call: ToolCall,
+    condenser: Condenser,
+    counter: TokenCounter,
+    budget: int,
+) -> str:
+    """Shorten a tool result that would otherwise blow the request budget.
+
+    A small result is returned untouched - a three-line retrieval must not cost
+    an extra model call. A large one is condensed against the call's arguments,
+    so the condenser keeps what answers the question rather than the first N
+    characters. If the condenser fails, the result is truncated so the message
+    is still bounded.
+    """
+    if counter.count([ChatMessage(role="tool", content=content)]) <= budget:
+        return content
+
+    focus = ", ".join(f"{key}={value!r}" for key, value in call.arguments.items())
+    condensed = await condenser.condense(content, focus=focus)
+    if condensed is not None:
+        return condensed
+
+    logger.warning("Tool output condensation failed; truncating result for {}", call.name)
+    return content[: condenser.max_chars]

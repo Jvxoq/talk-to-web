@@ -12,9 +12,11 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from loguru import logger
 
+from app.application.chat.agent.condenser import Condenser
 from app.application.chat.agent.nodes import make_agent_node, make_tool_node
 from app.application.chat.agent.state import AgentState
-from app.application.chat.ports import ChatModel
+from app.application.chat.agent.summarization import make_summarize_node
+from app.application.chat.ports import ChatModel, TokenCounter
 from app.application.chat.tools.base import ToolRegistry
 
 AgentGraph = CompiledStateGraph[AgentState, Any, Any, Any]
@@ -26,6 +28,11 @@ def build_agent_graph(
     tools: ToolRegistry,
     max_iterations: int,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
+    condenser: Condenser,
+    counter: TokenCounter,
+    history_token_budget: int,
+    recent_token_budget: int,
+    tool_output_token_budget: int,
 ) -> AgentGraph:
     """Compile the agent once, at startup, for every request to share."""
     if max_iterations < 1:
@@ -47,10 +54,21 @@ def build_agent_graph(
 
     builder = StateGraph(AgentState)
     builder.add_node("agent", make_agent_node(model, tools))
-    builder.add_node("tools", make_tool_node(tools))
+    builder.add_node(
+        "tools",
+        make_tool_node(tools, condenser, counter, tool_output_token_budget),
+    )
+    builder.add_node(
+        "summarize",
+        make_summarize_node(counter, condenser, history_token_budget, recent_token_budget),
+    )
 
-    builder.add_edge(START, "agent")
+    # Summarize runs on both entry paths - the start of a reply and after every
+    # tool lap - because that is where the growth actually happens: history
+    # carried in from the checkpointer, and a tool result landing mid-reply.
+    builder.add_edge(START, "summarize")
+    builder.add_edge("summarize", "agent")
     builder.add_conditional_edges("agent", route_after_agent, {"tools": "tools", END: END})
-    builder.add_edge("tools", "agent")
+    builder.add_edge("tools", "summarize")
 
     return builder.compile(checkpointer=checkpointer)

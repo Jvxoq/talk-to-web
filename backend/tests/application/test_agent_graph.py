@@ -11,10 +11,14 @@ No Postgres: the checkpointer is `InMemorySaver` or absent entirely.
 from collections.abc import Sequence
 from typing import Any
 
+import pytest
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 
+from app.application.chat.agent.condenser import Condenser
 from app.application.chat.agent.graph import build_agent_graph
+from app.application.chat.agent.state import RESET, AgentState
+from app.application.chat.agent.summarization import _split, make_summarize_node
 from app.application.chat.dto import (
     GenerateReplyInput,
     ReplyCompleted,
@@ -27,9 +31,21 @@ from app.application.chat.dto import (
 from app.application.chat.models import ChatMessage, ModelChunk, ToolCall
 from app.application.chat.tools.base import AgentTool, ToolRegistry
 from app.application.chat.use_cases.generate_reply import GenerateReply
-from tests.fakes import FakeAgentTool, FakeChatModel
+from app.domain.usage.errors import RateLimited
+from tests.fakes import FakeAgentTool, FakeChatModel, FakeRateLimiter, FakeTokenCounter
 
 SYSTEM_PROMPT = "SYSTEM PROMPT"
+
+
+def make_condenser(model: FakeChatModel | None = None) -> Condenser:
+    """A real condenser over a scripted model, so tests control its replies."""
+    return Condenser(
+        model=model or FakeChatModel(),
+        model_name="condenser",
+        max_chars=40_000,
+        tool_condense_prompt="condense",
+        summary_prompt="summarize",
+    )
 
 
 def build_use_case(
@@ -38,17 +54,29 @@ def build_use_case(
     *,
     max_iterations: int = 5,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
+    limiter: FakeRateLimiter | None = None,
+    condenser: Condenser | None = None,
+    counter: FakeTokenCounter | None = None,
+    history_token_budget: int = 1_000_000,
+    recent_token_budget: int = 1_500,
+    tool_output_token_budget: int = 1_000_000,
 ) -> GenerateReply:
     graph = build_agent_graph(
         model=model,
         tools=ToolRegistry(tools),
         max_iterations=max_iterations,
         checkpointer=checkpointer,
+        condenser=condenser or make_condenser(),
+        counter=counter or FakeTokenCounter(),
+        history_token_budget=history_token_budget,
+        recent_token_budget=recent_token_budget,
+        tool_output_token_budget=tool_output_token_budget,
     )
     return GenerateReply(
         graph=graph,
         system_prompt=SYSTEM_PROMPT,
         max_iterations=max_iterations,
+        limiter=limiter or FakeRateLimiter(),
     )
 
 
@@ -56,17 +84,17 @@ async def collect(
     use_case: GenerateReply,
     user_input: str = "hello",
     conversation_id: int | None = None,
+    owner_id: int = 1,
 ) -> list[ReplyEvent]:
-    return [
-        event
-        async for event in use_case(
-            GenerateReplyInput(
-                model="test-model",
-                user_input=user_input,
-                conversation_id=conversation_id,
-            )
+    events = await use_case(
+        GenerateReplyInput(
+            model="test-model",
+            user_input=user_input,
+            owner_id=owner_id,
+            conversation_id=conversation_id,
         )
-    ]
+    )
+    return [event async for event in events]
 
 
 def text_of(events: Sequence[ReplyEvent]) -> str:
@@ -309,3 +337,195 @@ class TestMemory:
         assert [
             message.content for message in model.seen_messages[1] if message.role == "user"
         ] == ["two"]
+
+
+class TestSpendLimit:
+    async def test_a_reply_past_the_budget_is_refused_before_the_model_is_called(self) -> None:
+        # The point of the limit: every reply spends tokens at the provider, so
+        # the refusal has to land before the graph runs, not while it streams.
+        model = FakeChatModel(turns=[[ModelChunk(text="one")], [ModelChunk(text="two")]])
+        limiter = FakeRateLimiter(max_attempts=1)
+        use_case = build_use_case(model, limiter=limiter)
+
+        await collect(use_case)
+        with pytest.raises(RateLimited):
+            await collect(use_case)
+
+        assert len(model.seen_messages) == 1
+
+    async def test_the_budget_is_counted_per_account(self) -> None:
+        model = FakeChatModel(turns=[[ModelChunk(text="one")], [ModelChunk(text="two")]])
+        limiter = FakeRateLimiter(max_attempts=1)
+        use_case = build_use_case(model, limiter=limiter)
+
+        await collect(use_case, owner_id=1)
+        # A second user is not blocked by the first one's spending.
+        await collect(use_case, owner_id=2)
+
+        assert limiter.hits == {"generate:1": 1, "generate:2": 1}
+
+
+class TestSummarization:
+    async def test_under_budget_does_not_call_the_condenser(self) -> None:
+        condenser_model = FakeChatModel()
+        condenser = make_condenser(condenser_model)
+        model = FakeChatModel(turns=[[ModelChunk(text="hi")]])
+
+        await collect(
+            build_use_case(
+                model,
+                condenser=condenser,
+                counter=FakeTokenCounter(tokens_per_message=1),
+                history_token_budget=1_000,
+            )
+        )
+
+        # The hot path must cost nothing: a short thread never reaches the model.
+        assert condenser_model.calls == 0
+
+    async def test_over_budget_replaces_the_head_with_a_summary(self) -> None:
+        condenser_model = FakeChatModel(turns=[[ModelChunk(text="SUMMARY")]])
+        node = make_summarize_node(
+            FakeTokenCounter(tokens_per_message=1_000),
+            make_condenser(condenser_model),
+            history_token_budget=3_000,
+            recent_token_budget=1_500,
+        )
+        state = AgentState(
+            messages=[
+                ChatMessage(role="system", content="SYS"),
+                ChatMessage(role="user", content="one"),
+                ChatMessage(role="assistant", content="first"),
+                ChatMessage(role="user", content="two"),
+            ]
+        )
+
+        result = await node(state)
+
+        messages = result["messages"]
+        # The sentinel tells the reducer to replace, not append.
+        assert messages[0] is RESET
+        # The system prompt is kept verbatim, the head is one summary, the tail
+        # (the most recent exchange) is intact.
+        assert messages[1] == ChatMessage(role="system", content="SYS")
+        assert "SUMMARY" in messages[2].content
+        assert messages[3:] == [
+            ChatMessage(role="assistant", content="first"),
+            ChatMessage(role="user", content="two"),
+        ]
+        assert result["summary"] == "SUMMARY"
+
+    async def test_the_cut_never_orphans_a_tool_message(self) -> None:
+        counter = FakeTokenCounter(tokens_per_message=1_000)
+        messages = [
+            ChatMessage(role="user", content="one"),
+            ChatMessage(
+                role="assistant",
+                content="",
+                tool_calls=(ToolCall(id="c", name="t", arguments={}),),
+            ),
+            ChatMessage(role="tool", content="result", tool_call_id="c"),
+            ChatMessage(role="user", content="two"),
+        ]
+
+        head, tail = _split(messages, counter, recent_token_budget=1_500)
+
+        # The tail must not start on a tool message - that would orphan it from
+        # the assistant call that asked for it.
+        assert not tail or tail[0].role != "tool"
+        # The assistant and its tool reply stay together in the head.
+        assert head[-2].role == "assistant" and head[-1].role == "tool"
+        assert tail == [ChatMessage(role="user", content="two")]
+
+    async def test_a_failing_condenser_drops_the_head_and_keeps_the_reply_alive(self) -> None:
+        node = make_summarize_node(
+            FakeTokenCounter(tokens_per_message=1_000),
+            make_condenser(FakeChatModel(fail_with=RuntimeError("boom"))),
+            history_token_budget=3_000,
+            recent_token_budget=1_500,
+        )
+        state = AgentState(
+            messages=[
+                ChatMessage(role="system", content="SYS"),
+                ChatMessage(role="user", content="one"),
+                ChatMessage(role="assistant", content="first"),
+                ChatMessage(role="user", content="two"),
+            ]
+        )
+
+        result = await node(state)
+
+        messages = result["messages"]
+        assert messages[0] is RESET
+        assert messages[1] == ChatMessage(role="system", content="SYS")
+        # The head is dropped outright, the recent tail survives.
+        assert messages[2:] == [
+            ChatMessage(role="assistant", content="first"),
+            ChatMessage(role="user", content="two"),
+        ]
+        assert result["summary"] == ""
+
+
+class TestToolOutputCompression:
+    async def test_a_small_tool_result_is_not_condensed(self) -> None:
+        condenser_model = FakeChatModel()
+        condenser = make_condenser(condenser_model)
+        tool = FakeAgentTool(name="fake_tool", result="small")
+        model = FakeChatModel(
+            turns=[[asking_for("fake_tool", query="q")], [ModelChunk(text="done")]]
+        )
+
+        await collect(
+            build_use_case(
+                model,
+                [tool],
+                condenser=condenser,
+                counter=FakeTokenCounter(tokens_per_message=1),
+                tool_output_token_budget=1_000,
+            )
+        )
+
+        # A three-line result must not cost an extra model call.
+        assert condenser_model.calls == 0
+        tool_message = next(m for m in model.seen_messages[1] if m.role == "tool")
+        assert tool_message.content == "small"
+
+    async def test_a_large_tool_result_is_condensed_and_tool_end_still_fires(self) -> None:
+        condenser_model = FakeChatModel(turns=[[ModelChunk(text="CONDENSED")]])
+        condenser = make_condenser(condenser_model)
+        tool = FakeAgentTool(name="fake_tool", result="x" * 5_000)
+        model = FakeChatModel(
+            turns=[[asking_for("fake_tool", query="q")], [ModelChunk(text="done")]]
+        )
+
+        events = await collect(
+            build_use_case(
+                model,
+                [tool],
+                condenser=condenser,
+                counter=FakeTokenCounter(tokens_per_message=2_000),
+                tool_output_token_budget=1_000,
+            )
+        )
+
+        assert condenser_model.calls == 1
+        tool_message = next(m for m in model.seen_messages[1] if m.role == "tool")
+        assert tool_message.content == "CONDENSED"
+        # The SSE contract is unchanged: TOOL_END still fires with the same shape.
+        finished = [event for event in events if isinstance(event, ReplyToolFinished)]
+        assert [(event.name, event.ok) for event in finished] == [("fake_tool", True)]
+
+
+class TestFriendlyRateLimit:
+    async def test_a_rate_limit_failure_is_reported_in_plain_words(self) -> None:
+        model = FakeChatModel(
+            turns=[[ModelChunk(text="x")]],
+            fail_with=RuntimeError("rate_limit_exceeded ... 413 Request too large"),
+        )
+
+        events = await collect(build_use_case(model))
+
+        failures = [event for event in events if isinstance(event, ReplyFailed)]
+        assert len(failures) == 1
+        assert "busy" in failures[0].detail
+        assert "413" not in failures[0].detail
