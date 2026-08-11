@@ -1,0 +1,149 @@
+/* Sign in / sign up. Every value here references a token from globals.css —
+   this file, like every other under src/, holds no literal colour. */
+
+.auth-gate {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.auth-restoring {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-muted);
+  font-size: 0.8125rem;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-ui);
+}
+
+.auth {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-2);
+  text-align: center;
+}
+
+.auth .mark {
+  width: 32px;
+  height: 32px;
+  color: var(--color-primary);
+}
+
+.auth h1 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 800;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-ui);
+}
+
+.auth__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+  max-width: 340px;
+  text-align: left;
+}
+
+.auth__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.auth__field > span {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-tab);
+}
+
+.auth__field input {
+  width: 100%;
+  padding: 12px;
+  border: var(--border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-primary);
+  font-family: var(--font-body);
+  font-size: 0.875rem;
+  line-height: 1.4;
+  /* Transform belongs to Motion; these are the properties CSS owns. */
+  transition:
+    box-shadow var(--duration-base) var(--easing),
+    border-color var(--duration-fast) var(--easing);
+}
+
+/* The field's own border is the focus indicator — an outline on top of a 2px
+   ink border reads as a double line. The shadow is what marks it active. */
+.auth__field input:focus,
+.auth__field input:focus-visible {
+  outline: none;
+  box-shadow: var(--level-2);
+}
+
+.auth__field input:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.auth__field small {
+  color: var(--color-muted);
+  font-size: 0.6875rem;
+  letter-spacing: var(--tracking-ui);
+}
+
+.auth__error {
+  margin: 0;
+  padding: var(--space-1);
+  border: var(--border-width) solid var(--color-danger);
+  color: var(--color-danger);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.auth__switch {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--color-muted);
+  font-family: var(--font-body);
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-ui);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--easing);
+}
+
+.auth__switch:hover:not(:disabled) {
+  color: var(--color-primary);
+}
+
+.auth__switch:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* --- Signed-in header controls --------------------------------------------- */
+
+.header__email {
+  color: var(--color-muted);
+  font-size: 0.6875rem;
+  letter-spacing: var(--tracking-ui);
+  /* A long address must not push the theme toggle off a narrow screen. */
+  max-width: 14ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
