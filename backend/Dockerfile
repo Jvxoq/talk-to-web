@@ -15,7 +15,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY . .
 RUN uv sync --frozen --no-dev
 
-FROM python:3.13-slim-bookworm
+FROM python:3.14-slim-bookworm
 
 RUN useradd --create-home --shell /bin/bash appuser
 
