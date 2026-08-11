@@ -1,8 +1,11 @@
 import { ApiError, requireStringFields } from '../../lib/http'
-import type { Model, ToolActivity, UploadedFile } from './types'
+import { authorizedFetch } from '../../lib/session'
+import type { DocumentSummary, Model, ToolActivity, UploadedFile } from './types'
 
 const API_URL = import.meta.env.VITE_API_URL ?? '/generate/text/'
 const UPLOAD_URL = import.meta.env.VITE_UPLOAD_URL ?? '/upload/file/'
+const INGEST_URL_URL = import.meta.env.VITE_INGEST_URL_URL ?? '/upload/url/'
+const DOCUMENTS_URL = import.meta.env.VITE_DOCUMENTS_URL ?? '/documents/'
 const MODELS_URL = import.meta.env.VITE_MODELS_URL ?? '/models/'
 
 /** One parsed frame off the SSE stream. */
@@ -28,6 +31,34 @@ interface StreamFrame {
 }
 
 /**
+ * The backend's account of a failure: its own sentence, and — on a 429 — the
+ * number of seconds it wants us to wait.
+ *
+ * The wait is read from the body rather than the `Retry-After` header because a
+ * browser cannot see that header unless the server exposes it, and this app is
+ * not always same-origin with its API. Narrowed here, at the boundary, then
+ * trusted downstream.
+ */
+async function failureOf(
+  response: Response,
+  fallback = 'Request failed',
+): Promise<{ detail: string; retryAfterSeconds?: number }> {
+  const body: unknown = await response.json().catch(() => null)
+  const record = typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {}
+
+  const detail =
+    typeof record.detail === 'string'
+      ? record.detail
+      : `${fallback} with status ${response.status}`
+  const retry = record.retry_after_seconds
+
+  return {
+    detail,
+    retryAfterSeconds: typeof retry === 'number' && retry > 0 ? retry : undefined,
+  }
+}
+
+/**
  * Opens the chat stream and yields one event per SSE frame.
  *
  * Frames carry a JSON object rather than bare text, because a token can contain
@@ -42,7 +73,7 @@ export async function* streamChat({
   conversationId,
   signal,
 }: StreamRequest): AsyncGenerator<StreamEvent> {
-  const response = await fetch(API_URL, {
+  const response = await authorizedFetch(API_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -55,7 +86,12 @@ export async function* streamChat({
   })
 
   if (!response.ok || !response.body) {
-    throw new ApiError(response.status, `Request failed with status ${response.status}`)
+    // The body is read for its `detail`, not discarded: a refusal that arrives
+    // before the stream opens - a spent rate-limit budget is the one that
+    // actually happens - carries the only sentence that tells the user how long
+    // to wait. "Request failed with status 429" tells them nothing.
+    const failure = await failureOf(response)
+    throw new ApiError(response.status, failure.detail, failure.retryAfterSeconds)
   }
 
   const reader = response.body.getReader()
@@ -110,19 +146,94 @@ export async function uploadPdf(
   const formData = new FormData()
   formData.append('file', file)
 
-  const response = await fetch(UPLOAD_URL, { method: 'POST', body: formData, signal })
+  const response = await authorizedFetch(UPLOAD_URL, {
+    method: 'POST',
+    body: formData,
+    signal,
+  })
 
   if (!response.ok) {
-    const body: unknown = await response.json().catch(() => null)
-    const detail =
-      typeof body === 'object' && body !== null && 'detail' in body
-        ? String((body as { detail: unknown }).detail)
-        : `Upload failed with status ${response.status}`
-    throw new ApiError(response.status, detail)
+    const failure = await failureOf(response, 'Upload failed')
+    throw new ApiError(response.status, failure.detail, failure.retryAfterSeconds)
   }
 
   const parsed = requireStringFields(await response.json(), ['file_path'], 'Upload')
   return { name: file.name, path: parsed.file_path }
+}
+
+/** Fetches a URL server-side and indexes its full text, the same way an upload is. */
+export async function ingestUrl(url: string, signal?: AbortSignal): Promise<UploadedFile> {
+  const response = await authorizedFetch(INGEST_URL_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+    signal,
+  })
+
+  if (!response.ok) {
+    const failure = await failureOf(response, 'Could not fetch that URL')
+    throw new ApiError(response.status, failure.detail, failure.retryAfterSeconds)
+  }
+
+  const parsed = requireStringFields(await response.json(), ['file_path'], 'Ingest')
+  return { name: url, path: parsed.file_path }
+}
+
+function documentEndpoint(...segments: (string | number)[]): string {
+  const base = DOCUMENTS_URL.endsWith('/') ? DOCUMENTS_URL : `${DOCUMENTS_URL}/`
+  return segments.length > 0 ? `${base}${segments.join('/')}` : base
+}
+
+/** Narrows one untrusted `/documents/` list item to the fields the panel reads. */
+function parseDocument(raw: unknown): DocumentSummary {
+  if (typeof raw !== 'object' || raw === null) {
+    throw new ApiError(0, 'Document: expected an object')
+  }
+  const record = raw as Record<string, unknown>
+
+  if (typeof record.id !== 'number') {
+    throw new ApiError(0, 'Document: missing "id"')
+  }
+  if (typeof record.name !== 'string') {
+    throw new ApiError(0, 'Document: missing "name"')
+  }
+
+  return {
+    id: record.id,
+    name: record.name,
+    chunksIndexed: typeof record.chunks_indexed === 'number' ? record.chunks_indexed : 0,
+  }
+}
+
+/** Every document this account has uploaded, for the document manager panel. */
+export async function fetchDocuments(signal?: AbortSignal): Promise<DocumentSummary[]> {
+  const response = await authorizedFetch(documentEndpoint(), { signal })
+
+  if (!response.ok) {
+    throw new ApiError(response.status, `Request failed with status ${response.status}`)
+  }
+
+  const raw: unknown = await response.json()
+  if (!Array.isArray(raw)) {
+    throw new ApiError(0, 'Documents: expected an array')
+  }
+  return raw.map(parseDocument)
+}
+
+/**
+ * Deletes a document: its vectors, its stored file, and its row.
+ *
+ * A POST, not a DELETE, for the same CORS reason as `deleteConversation` in
+ * `lib/conversation.ts` — this app allows only GET, POST and OPTIONS
+ * cross-origin.
+ */
+export async function deleteDocument(id: number): Promise<void> {
+  const response = await authorizedFetch(documentEndpoint(id, 'delete'), { method: 'POST' })
+
+  // 404 means it is already gone, which is the outcome the caller wanted.
+  if (!response.ok && response.status !== 404) {
+    throw new ApiError(response.status, `Could not delete document ${id}`)
+  }
 }
 
 export interface ModelsResponse {
@@ -148,7 +259,7 @@ function parseModelsResponse(raw: unknown): ModelsResponse {
 }
 
 export async function fetchModels(signal?: AbortSignal): Promise<ModelsResponse> {
-  const response = await fetch(MODELS_URL, { signal })
+  const response = await authorizedFetch(MODELS_URL, { signal })
 
   if (!response.ok) {
     throw new ApiError(response.status, `Request failed with status ${response.status}`)

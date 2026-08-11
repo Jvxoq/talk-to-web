@@ -1,4 +1,5 @@
 import { ApiError } from './http'
+import { authorizedFetch } from './session'
 
 const CONVERSATIONS_URL = import.meta.env.VITE_CONVERSATIONS_URL ?? '/conversations/'
 const STORAGE_KEY = 'conversationId'
@@ -20,6 +21,13 @@ export interface ConversationOut {
   messages: MessageOut[]
 }
 
+/** A conversation with no messages loaded — what the sidebar list renders. */
+export interface ConversationSummary {
+  id: number
+  title: string
+  model_type: string
+}
+
 /** The writable half of a turn — the server fills in ids and timestamps. */
 export interface MessageCreate {
   prompt_content: string
@@ -34,7 +42,7 @@ function endpoint(...segments: (string | number)[]): string {
 }
 
 async function requestJson(url: string, init?: RequestInit): Promise<unknown> {
-  const response = await fetch(url, init)
+  const response = await authorizedFetch(url, init)
 
   if (!response.ok) {
     const body: unknown = await response.json().catch(() => null)
@@ -80,6 +88,24 @@ function parseConversation(raw: unknown): ConversationOut {
     title: typeof record.title === 'string' ? record.title : DEFAULT_TITLE,
     model_type: typeof record.model_type === 'string' ? record.model_type : '',
     messages: Array.isArray(record.messages) ? record.messages.filter(isMessageOut) : [],
+  }
+}
+
+/** Narrows an untrusted `/conversations/` list item to the fields we read. */
+function parseConversationSummary(raw: unknown): ConversationSummary {
+  if (typeof raw !== 'object' || raw === null) {
+    throw new ApiError(0, 'Conversation: expected an object')
+  }
+  const record = raw as Record<string, unknown>
+
+  if (typeof record.id !== 'number') {
+    throw new ApiError(0, 'Conversation: missing "id"')
+  }
+
+  return {
+    id: record.id,
+    title: typeof record.title === 'string' ? record.title : DEFAULT_TITLE,
+    model_type: typeof record.model_type === 'string' ? record.model_type : '',
   }
 }
 
@@ -132,6 +158,15 @@ export async function createConversation(
   return parseConversation(raw)
 }
 
+/** Every conversation this account has, most recently active first. */
+export async function listConversations(): Promise<ConversationSummary[]> {
+  const raw = await requestJson(endpoint())
+  if (!Array.isArray(raw)) {
+    throw new ApiError(0, 'Conversations: expected an array')
+  }
+  return raw.map(parseConversationSummary)
+}
+
 export async function getConversation(id: number): Promise<ConversationOut> {
   return parseConversation(await requestJson(endpoint(id)))
 }
@@ -145,16 +180,21 @@ export async function appendMessage(id: number, message: MessageCreate): Promise
 }
 
 /**
- * Asks the server to drop the conversation as the page goes away.
+ * Deletes a conversation, on purpose rather than on unload.
  *
- * `sendBeacon` is the only request that reliably survives unload — a normal
- * fetch is cancelled with the document. It can only POST, hence the
- * `/delete` sub-path instead of a DELETE verb. Returns false when the browser
- * refuses to queue it (payload over the beacon budget, or no beacon support).
+ * This used to be a `navigator.sendBeacon` fired as the tab closed, because
+ * nobody owned a conversation and leaving one behind meant leaving it readable
+ * by anyone. Accounts made both halves of that wrong: a beacon cannot set an
+ * `Authorization` header, and a conversation with an owner should outlive the
+ * tab it was typed in. It is still a POST — the API allows GET, POST and
+ * OPTIONS across origins, and nothing else.
  */
-export function deleteConversationBeacon(id: number): boolean {
-  if (typeof navigator.sendBeacon !== 'function') return false
+export async function deleteConversation(id: number): Promise<void> {
+  const response = await authorizedFetch(endpoint(id, 'delete'), { method: 'POST' })
 
-  const payload = new Blob([JSON.stringify({ id })], { type: 'application/json' })
-  return navigator.sendBeacon(endpoint(id, 'delete'), payload)
+  // 404 means it is already gone, which is the outcome the caller wanted.
+  if (!response.ok && response.status !== 404) {
+    throw new ApiError(response.status, `Could not delete conversation ${id}`)
+  }
+  clearConversationId()
 }
