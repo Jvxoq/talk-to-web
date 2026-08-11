@@ -17,7 +17,9 @@ class StartConversation:
         self._uow_factory = uow_factory
 
     async def __call__(self, data: StartConversationInput) -> Conversation:
-        conversation = Conversation(title=data.title, model_type=data.model_type)
+        conversation = Conversation(
+            title=data.title, model_type=data.model_type, owner_id=data.owner_id
+        )
         async with self._uow_factory() as uow:
             stored = await uow.conversations.add(conversation)
             await uow.commit()

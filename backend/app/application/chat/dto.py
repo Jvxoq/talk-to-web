@@ -2,12 +2,15 @@
 
 from pydantic import BaseModel, ConfigDict
 
+from app.application.chat.models import Source
+
 
 class GenerateReplyInput(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     model: str
     user_input: str
+    owner_id: int
     temperature: float = 0.0
     # The agent's memory key. `None` means a one-off turn with no history, which
     # is what a client that never opened a conversation gets.
@@ -38,6 +41,10 @@ class ReplyToolFinished(BaseModel):
 
     name: str
     ok: bool = True
+    # What the answer can be cited to - a document name, a page title and URL.
+    # Empty on a failed call: there is nothing to cite when the tool found
+    # nothing.
+    sources: tuple[Source, ...] = ()
 
 
 class ReplyFailed(BaseModel):
@@ -62,12 +69,14 @@ class StartConversationInput(BaseModel):
 
     title: str
     model_type: str
+    owner_id: int
 
 
 class RecordExchangeInput(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     conversation_id: int
+    owner_id: int
     prompt_content: str
     response_content: str
     prompt_tokens: int | None = None

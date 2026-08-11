@@ -4,6 +4,8 @@ from collections.abc import Callable
 from typing import Protocol, Self
 
 from app.application.chat.ports import ConversationRepository
+from app.application.identity.ports import RefreshTokenRepository, UserRepository
+from app.application.ingestion.ports import DocumentRepository
 
 
 class UnitOfWork(Protocol):
@@ -15,6 +17,12 @@ class UnitOfWork(Protocol):
     """
 
     conversations: ConversationRepository
+    users: UserRepository
+    # In the same unit of work as `users` on purpose: registration inserts a
+    # person and their first session together, and a commit that landed one
+    # without the other would leave an account nobody could sign in to.
+    refresh_tokens: RefreshTokenRepository
+    documents: DocumentRepository
 
     async def __aenter__(self) -> Self: ...
 

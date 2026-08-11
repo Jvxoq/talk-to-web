@@ -21,3 +21,9 @@ class DocumentNotIndexable(IngestionError):
     def __init__(self, source: str) -> None:
         self.source = source
         super().__init__(f"No extractable text in {source}")
+
+
+class DocumentNotFound(IngestionError):
+    def __init__(self, document_id: int) -> None:
+        self.document_id = document_id
+        super().__init__(f"Document {document_id} not found")

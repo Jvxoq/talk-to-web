@@ -19,7 +19,8 @@ from app.application.chat.dto import (
     ReplyToolFinished,
     ReplyToolStarted,
 )
-from app.application.chat.models import ChatMessage
+from app.application.chat.models import ChatMessage, Source
+from app.application.chat.ports import RateLimiter
 from app.domain.chat.value_objects import UserMessage
 
 
@@ -44,16 +45,37 @@ class GenerateReply:
         graph: AgentGraph,
         system_prompt: str,
         max_iterations: int,
+        limiter: RateLimiter,
     ) -> None:
         self._graph = graph
         self._system_prompt = system_prompt
+        self._limiter = limiter
         # A backstop below LangGraph's own default, in the same units the graph
-        # counts in: one lap is an agent node plus a tool node, and the +2 covers
-        # the final answering turn. The router is what normally stops the loop;
-        # this only catches a graph miswired into a cycle the router cannot see.
-        self._recursion_limit = 2 * max_iterations + 2
+        # counts in: one lap is now an agent node, a tool node and a summarize
+        # node, and the +3 covers the final answering turn. The router is what
+        # normally stops the loop; this only catches a graph miswired into a
+        # cycle the router cannot see.
+        self._recursion_limit = 3 * max_iterations + 3
 
     async def __call__(self, data: GenerateReplyInput) -> AsyncIterator[ReplyEvent]:
+        """Spend one of this user's requests, then hand back the stream.
+
+        A plain coroutine returning the generator, rather than an async
+        generator itself, because the two do the check at different moments. An
+        async generator body runs nothing until the first `__anext__` - by which
+        point the router has already handed the iterator to `StreamingResponse`,
+        the 200 and the headers are on the wire, and a `RateLimited` raised then
+        can only truncate a response that already claimed to succeed. Awaited
+        here, the refusal happens before a single byte is sent, and the error
+        handler can answer with a real 429.
+        """
+        # Keyed on the account, not the address: this limit exists because every
+        # reply spends tokens at the model provider, and the bill follows the
+        # signed-in user wherever they connect from.
+        await self._limiter.hit(f"generate:{data.owner_id}")
+        return self._stream(data)
+
+    async def _stream(self, data: GenerateReplyInput) -> AsyncIterator[ReplyEvent]:
         # Typed `Any` on purpose. The concrete type is langchain_core's
         # `RunnableConfig`, and importing it to say so would put LangChain in the
         # application layer - which the import contract forbids, and for good
@@ -63,11 +85,20 @@ class GenerateReply:
                 # A conversation is the agent's memory key. Without one, every
                 # request is its own thread and nothing is remembered - which is
                 # exactly what a client that never opened a conversation wants.
-                "thread_id": str(data.conversation_id)
-                if data.conversation_id is not None
-                else uuid4().hex,
+                #
+                # The owner is part of the key, not decoration. A bare
+                # conversation id let anyone resume anyone's thread by guessing
+                # an integer - the checkpointer replays the whole history, so
+                # that handed over every message in it. Namespacing makes the
+                # collision impossible without adding a database round trip to
+                # a use case that has none: a stranger's id simply addresses an
+                # empty thread of their own.
+                "thread_id": _thread_id(data.owner_id, data.conversation_id),
                 "model": data.model,
                 "temperature": data.temperature,
+                # Read back by the tool node, which passes it to the tools that
+                # search the user's own documents.
+                "owner_id": data.owner_id,
             },
             "recursion_limit": self._recursion_limit,
         }
@@ -92,7 +123,7 @@ class GenerateReply:
             # The HTTP response is already open, so raising here would only
             # truncate the body. The client is told in-band instead.
             logger.warning(f"Agent run failed for model {data.model}: {exc}")
-            yield ReplyFailed(detail=str(exc))
+            yield ReplyFailed(detail=_friendly_error(str(exc)))
             return
 
         yield ReplyCompleted()
@@ -129,6 +160,15 @@ class GenerateReply:
         return not snapshot.values.get("messages")
 
 
+def _thread_id(owner_id: int, conversation_id: int | None) -> str:
+    """The checkpointer's key for this turn, scoped to the person asking."""
+    if conversation_id is None:
+        # A one-off turn remembers nothing, so it needs a key nothing else can
+        # collide with rather than a key anyone could address.
+        return uuid4().hex
+    return f"{owner_id}:{conversation_id}"
+
+
 def _user_content(message: UserMessage) -> str:
     """The user's text, with the links they mentioned called out."""
     urls = message.urls()
@@ -158,7 +198,28 @@ def _to_event(payload: object) -> ReplyEvent | None:
             summary=str(payload.get("summary", "")),
         )
     if kind == TOOL_END:
-        return ReplyToolFinished(name=str(payload.get("name", "")), ok=bool(payload.get("ok")))
+        raw_sources = payload.get("sources")
+        sources = (
+            tuple(Source(**raw) for raw in raw_sources if isinstance(raw, dict))
+            if isinstance(raw_sources, list)
+            else ()
+        )
+        return ReplyToolFinished(
+            name=str(payload.get("name", "")), ok=bool(payload.get("ok")), sources=sources
+        )
 
     logger.debug(f"Ignoring unknown agent stream payload: {payload!r}")
     return None
+
+
+def _friendly_error(detail: str) -> str:
+    """Turn a provider rate-limit failure into a sentence a person can read.
+
+    The raw detail is Groq's JSON, which is noise in front of a user. A rate
+    limit is transient - the right message is "try again in a moment", not a
+    dump of the provider's error body. Anything else passes through unchanged.
+    """
+    lowered = detail.lower()
+    if "rate_limit_exceeded" in lowered or "413" in detail or "429" in detail:
+        return "The assistant is busy right now - please try again in a moment."
+    return detail

@@ -5,8 +5,15 @@ from typing import Self
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.adapters.persistence.repositories import SqlAlchemyConversationRepository
+from app.adapters.persistence.repositories import (
+    SqlAlchemyConversationRepository,
+    SqlAlchemyDocumentRepository,
+    SqlAlchemyRefreshTokenRepository,
+    SqlAlchemyUserRepository,
+)
 from app.application.chat.ports import ConversationRepository
+from app.application.identity.ports import RefreshTokenRepository, UserRepository
+from app.application.ingestion.ports import DocumentRepository
 
 
 class SqlAlchemyUnitOfWork:
@@ -23,6 +30,9 @@ class SqlAlchemyUnitOfWork:
     # the concrete class: a protocol's attributes are invariant, so narrowing it
     # here would stop this class satisfying `UnitOfWork` at all.
     conversations: ConversationRepository
+    users: UserRepository
+    refresh_tokens: RefreshTokenRepository
+    documents: DocumentRepository
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
@@ -38,6 +48,9 @@ class SqlAlchemyUnitOfWork:
         self._session = self._session_factory()
         self._committed = False
         self.conversations = SqlAlchemyConversationRepository(self._session)
+        self.users = SqlAlchemyUserRepository(self._session)
+        self.refresh_tokens = SqlAlchemyRefreshTokenRepository(self._session)
+        self.documents = SqlAlchemyDocumentRepository(self._session)
         return self
 
     async def __aexit__(self, *exc: object) -> None:

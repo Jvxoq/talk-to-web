@@ -13,11 +13,15 @@ from app.domain.ingestion.value_objects import DocumentName
 
 class LocalFileStorage:
     """
-    Writes uploads into one directory on disk.
+    Writes uploads into a directory per owner.
 
     Satisfies `app.application.ingestion.ports.FileStorage`. The reference it
     returns is a filesystem path, which only the matching extractor may
     interpret - the use cases treat it as opaque.
+
+    One flat directory would have every account sharing a namespace it does not
+    control the keys to: two people uploading `report.pdf` overwrite each other,
+    and the second one's chat answers from the first one's document.
     """
 
     def __init__(self, directory: Path) -> None:
@@ -28,16 +32,18 @@ class LocalFileStorage:
         name: DocumentName,
         stream: AsyncIterator[bytes],
         max_bytes: int,
+        owner_id: int,
     ) -> str:
         """
-        Stream an upload to disk, refusing it the moment it exceeds `max_bytes`.
+        Stream an upload to this owner's directory, refusing it the moment it
+        exceeds `max_bytes`.
 
         The size is checked while writing rather than from a Content-Length
         header, because a header is client-supplied and a chunked upload has
         none: the only honest measure is the bytes that actually arrived.
         """
-        destination = self._resolve(name)
-        await aiofiles.os.makedirs(self._directory, exist_ok=True)
+        destination = self._resolve(name, owner_id)
+        await aiofiles.os.makedirs(destination.parent, exist_ok=True)
 
         written = 0
         try:
@@ -56,15 +62,28 @@ class LocalFileStorage:
         logger.debug(f"Saved {written} bytes to {destination}")
         return str(destination)
 
-    def _resolve(self, name: DocumentName) -> Path:
-        """Join the name onto the storage directory, refusing anything that escapes."""
+    def _resolve(self, name: DocumentName, owner_id: int) -> Path:
+        """Join the name onto the owner's directory, refusing anything that escapes."""
         directory = self._directory.resolve()
-        destination = (directory / name.value).resolve()
+        # The owner segment is an integer from a verified token, never a string
+        # from a request, so it cannot itself contain a separator. The check
+        # below is still made against the *base* directory rather than the
+        # owner's, so a traversal cannot land in someone else's folder either.
+        destination = (directory / str(owner_id) / name.value).resolve()
         # `DocumentName` already sanitizes, but path traversal is cheap to check
         # and expensive to get wrong, so it is verified again at the syscall edge.
         if not destination.is_relative_to(directory):
             raise ValueError(f"Refusing to write outside the storage directory: {name.value}")
         return destination
+
+    async def delete(self, reference: str) -> None:
+        """Remove a stored file. A reference already gone is not an error.
+
+        `reference` is the opaque path this adapter itself handed back from
+        `save`, never client input, so it is trusted here rather than
+        re-resolved through `_resolve`.
+        """
+        await self._discard(Path(reference))
 
     @staticmethod
     async def _discard(destination: Path) -> None:

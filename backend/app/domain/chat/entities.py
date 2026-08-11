@@ -30,10 +30,14 @@ class Message:
 
 @dataclass(slots=True)
 class Conversation:
-    """A titled thread of exchanges against one model."""
+    """A titled thread of exchanges against one model, belonging to one person."""
 
     title: str
     model_type: str
+    # Required, not `int | None`. A conversation with no owner is exactly the
+    # state this field exists to make impossible: it would be readable and
+    # deletable by anyone, which is what the ownerless version of this app was.
+    owner_id: int
     id: int | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None

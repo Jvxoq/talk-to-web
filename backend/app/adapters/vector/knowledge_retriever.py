@@ -4,6 +4,8 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
+from app.application.chat.models import Passage
+
 if TYPE_CHECKING:
     from app.application.ingestion.ports import Embedder, VectorIndex
 
@@ -31,13 +33,20 @@ class EmbeddedKnowledgeRetriever:
         self._limit = limit
         self._score_threshold = score_threshold
 
-    async def retrieve(self, query: str) -> list[str]:
-        """Embed the query and return the passages that come back closest to it."""
+    async def retrieve(self, query: str, owner_id: int) -> list[Passage]:
+        """Embed the query and return this owner's passages closest to it.
+
+        Translates the ingestion context's `Chunk` into chat's own `Passage`
+        here, at the seam - the one place allowed to know both shapes - so
+        that a source name earned by a vector search reaches the tool above it
+        as chat's own vocabulary, not ingestion's.
+        """
         vector = await self._embedder.embed(query)
-        passages = await self._index.search(
+        chunks = await self._index.search(
             vector=vector,
             limit=self._limit,
             score_threshold=self._score_threshold,
+            owner_id=owner_id,
         )
-        logger.debug(f"Retrieved {len(passages)} passages for a {len(query)} char query")
-        return passages
+        logger.debug(f"Retrieved {len(chunks)} passages for a {len(query)} char query")
+        return [Passage(text=chunk.text, source=chunk.source) for chunk in chunks]

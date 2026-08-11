@@ -9,12 +9,20 @@ class UploadDocumentInput:
     filename: str | None
     content_type: str | None
     stream: AsyncIterator[bytes]
+    owner_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class IngestUrlInput:
+    url: str
+    owner_id: int
 
 
 @dataclass(frozen=True, slots=True)
 class UploadDocumentResult:
     reference: str
     name: str
+    document_id: int
 
 
 @dataclass(frozen=True, slots=True)

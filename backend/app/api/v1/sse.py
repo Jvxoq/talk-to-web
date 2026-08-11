@@ -32,10 +32,19 @@ async def to_sse(events: AsyncIterator[ReplyEvent]) -> AsyncIterator[str]:
             # instead of splicing status lines into what the model said.
             case ReplyToolStarted(name=name, summary=summary):
                 yield format_frame(tool={"name": name, "status": "start", "summary": summary})
-            case ReplyToolFinished(name=name, ok=ok):
+            case ReplyToolFinished(name=name, ok=ok, sources=sources):
                 # "failed" is not an error frame: a tool that came back empty
                 # costs the answer some grounding, and the model answers anyway.
-                yield format_frame(tool={"name": name, "status": "ok" if ok else "failed"})
+                tool: dict[str, object] = {"name": name, "status": "ok" if ok else "failed"}
+                # Omitted rather than sent empty: most calls ground nothing
+                # citable (a failed search, a tool with no sources of its
+                # own), and the frontend already treats an absent key as "no
+                # sources" without needing an empty list to say so.
+                if sources:
+                    tool["sources"] = [
+                        {"label": source.label, "url": source.url} for source in sources
+                    ]
+                yield format_frame(tool=tool)
             case ReplyFailed(detail=detail):
                 yield format_frame(error=detail)
             case ReplyCompleted():

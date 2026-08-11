@@ -54,3 +54,47 @@ class ModelChunk(BaseModel):
 
     text: str = ""
     tool_calls: tuple[ToolCall, ...] = ()
+
+
+class Source(BaseModel):
+    """
+    Where a piece of grounding came from, as the UI shows it - not as the
+    model reads it.
+
+    `url` is optional because not every source has one: a passage retrieved
+    from the user's own upload is cited by the document it came from, which
+    has no address to link to. A web result always sets it.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    label: str
+    url: str | None = None
+
+
+class Passage(BaseModel):
+    """
+    One retrieved chunk of the user's own documents, with the file it came
+    from.
+
+    The chat context's own shape for this, kept apart from
+    `app.domain.ingestion.value_objects.Chunk` on purpose: that type belongs to
+    the ingestion context, and `EmbeddedKnowledgeRetriever` is the seam that
+    translates one into the other, so chat never has to import ingestion's
+    domain to know what a passage is.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    text: str
+    source: str
+
+
+class SearchResult(BaseModel):
+    """What a web search returned: the flattened text the model reads, and the
+    sources behind it for the UI to cite."""
+
+    model_config = ConfigDict(frozen=True)
+
+    text: str
+    sources: tuple[Source, ...] = ()

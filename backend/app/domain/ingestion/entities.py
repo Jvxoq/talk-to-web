@@ -3,6 +3,7 @@
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import datetime
 
 from app.domain.ingestion.value_objects import Chunk, DocumentName
 
@@ -56,3 +57,22 @@ class Document:
                 yield Chunk(text=window, source=self.name.value)
             if start + size >= len(text):
                 return
+
+
+@dataclass(slots=True)
+class UploadedDocument:
+    """
+    The persisted record of one upload: what it is, whose it is, and how much
+    of it made it into the vector index.
+
+    Distinct from `Document` above, which is the extracted text of one upload
+    at index time and is never stored. This is the row a document manager
+    lists and deletes - it survives the request that created it.
+    """
+
+    name: str
+    reference: str
+    owner_id: int
+    id: int | None = None
+    chunks_indexed: int = 0
+    created_at: datetime | None = None

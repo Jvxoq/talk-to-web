@@ -4,8 +4,9 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
+from app.application.chat.models import Source
 from app.application.chat.ports import WebContentFetcher
-from app.application.chat.tools.base import BaseTool
+from app.application.chat.tools.base import BaseTool, ToolContext, ToolResult
 
 # A ceiling on how many pages one call may open. Without it, a model that
 # hallucinates a list of thirty links turns one turn into thirty outbound
@@ -54,14 +55,21 @@ class FetchWebPages(BaseTool[FetchWebPagesArgs]):
     def __init__(self, web: WebContentFetcher) -> None:
         self._web = web
 
-    async def _run(self, args: FetchWebPagesArgs) -> str:
+    async def _run(self, args: FetchWebPagesArgs, context: ToolContext) -> ToolResult:
         # Back to plain strings at the boundary: `HttpUrl` is a validation type,
         # and the port speaks `Sequence[str]`.
         urls = [str(url) for url in args.urls]
         content = await self._web.fetch_all(urls)
         if not content.strip():
-            return (
-                f"Could not read any text from: {', '.join(urls)}. The pages may be "
-                "unreachable, empty, or blocked to automated readers."
+            return ToolResult(
+                content=(
+                    f"Could not read any text from: {', '.join(urls)}. The pages may be "
+                    "unreachable, empty, or blocked to automated readers."
+                )
             )
-        return content
+        # The sources are exactly the URLs asked for, not ones parsed back out
+        # of `content`: the fetcher already flattens several pages into one
+        # blob, and re-deriving per-page addresses from that text would be
+        # guesswork `fetch_all`'s own port has no way to settle.
+        sources = tuple(Source(label=url, url=url) for url in urls)
+        return ToolResult(content=content, sources=sources)

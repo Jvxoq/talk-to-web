@@ -3,18 +3,44 @@
 from collections.abc import AsyncIterator, Sequence
 from typing import Protocol
 
+from app.domain.ingestion.entities import UploadedDocument
 from app.domain.ingestion.value_objects import Chunk, DocumentName
 
 
 class FileStorage(Protocol):
-    """Somewhere to put an upload. The reference it returns is opaque."""
+    """Somewhere to put an upload. The reference it returns is opaque.
+
+    `owner_id` is not metadata: it is part of where the file goes. Two people
+    uploading `report.pdf` into one namespace overwrite each other, and the
+    second one silently gets the first one's document back.
+    """
 
     async def save(
         self,
         name: DocumentName,
         stream: AsyncIterator[bytes],
         max_bytes: int,
+        owner_id: int,
     ) -> str: ...
+
+    async def delete(self, reference: str) -> None:
+        """Remove a stored file. Never raises for a reference already gone."""
+        ...
+
+
+class UrlContentFetcher(Protocol):
+    """Reads the full text of one page, for something meant to be indexed.
+
+    Deliberately separate from `app.application.chat.ports.WebContentFetcher`:
+    that port fetches several URLs for one turn of a conversation and truncates
+    each to keep a prompt small, which is the wrong behaviour for a page that is
+    about to be chunked and embedded in full. Kept in this module rather than
+    imported from `chat` so ingestion never reaches across into another
+    application submodule - `AiohttpWebContentFetcher` satisfies both ports
+    structurally, with no relocation or inheritance needed.
+    """
+
+    async def fetch(self, url: str) -> str: ...
 
 
 class TextExtractor(Protocol):
@@ -28,12 +54,67 @@ class Embedder(Protocol):
 
 
 class VectorIndex(Protocol):
-    """A collection of embedded passages."""
+    """A collection of embedded passages, partitioned by who uploaded them and
+    tagged with the document each passage came from.
 
-    async def reset(self, dimensions: int) -> None: ...
+    Every method that reads or writes passages names an owner. The alternative -
+    one shared space, filtered afterwards - is what indexing used to do: a
+    single upload wiped the store for everyone, and every search read
+    everyone's documents. `document_id` narrows that same discipline one level
+    further, to the document: without it, deleting one upload could only ever
+    mean deleting every upload an owner had made.
+    """
 
-    async def upsert(self, chunks: Sequence[Chunk], vectors: Sequence[list[float]]) -> None: ...
+    async def ensure(self, dimensions: int) -> None:
+        """Create the collection if it is missing. Never destructive."""
+        ...
+
+    async def upsert(
+        self,
+        chunks: Sequence[Chunk],
+        vectors: Sequence[list[float]],
+        owner_id: int,
+        document_id: int,
+    ) -> None: ...
 
     async def search(
-        self, vector: list[float], limit: int, score_threshold: float
-    ) -> list[str]: ...
+        self, vector: list[float], limit: int, score_threshold: float, owner_id: int
+    ) -> list[Chunk]: ...
+
+    async def delete_document(self, document_id: int, owner_id: int) -> None:
+        """Drop one document's passages, leaving the owner's other documents alone."""
+        ...
+
+
+class DocumentRepository(Protocol):
+    """The persisted record of every document an owner has uploaded.
+
+    `owner_id` shapes every method here the same way it shapes
+    `ConversationRepository`: a document is only ever read, listed or deleted
+    through its owner, never by id alone.
+    """
+
+    async def get(self, document_id: int, owner_id: int) -> UploadedDocument | None: ...
+
+    async def list_by_owner(self, owner_id: int) -> list[UploadedDocument]: ...
+
+    async def add(self, document: UploadedDocument) -> UploadedDocument: ...
+
+    async def set_chunks_indexed(self, document_id: int, owner_id: int, count: int) -> None: ...
+
+    async def delete(self, document_id: int, owner_id: int) -> None: ...
+
+
+class RateLimiter(Protocol):
+    """Counts uploads against a key and refuses the ones over budget.
+
+    Declared here for the same reason as the chat one: the consumer owns its
+    port. A single adapter satisfies every copy, because `Protocol` matches on
+    methods rather than on ancestry.
+    """
+
+    async def hit(self, key: str) -> None:
+        """Record one upload, raising `RateLimited` if the budget is spent."""
+        ...
+
+    async def reset(self, key: str) -> None: ...

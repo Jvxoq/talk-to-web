@@ -10,8 +10,10 @@ class RecordExchange:
     """
     Store what the model answered against the thread that asked.
 
-    The conversation is loaded first so an exchange can never be written
-    against an id that no longer exists.
+    The conversation is loaded first - scoped to its owner - so an exchange can
+    never be written against an id that no longer exists, or against one that
+    was never the caller's. That load is what establishes ownership for the
+    insert that follows, which is why `add_message` does not repeat the check.
     """
 
     def __init__(self, uow_factory: UnitOfWorkFactory) -> None:
@@ -19,7 +21,7 @@ class RecordExchange:
 
     async def __call__(self, data: RecordExchangeInput) -> Message:
         async with self._uow_factory() as uow:
-            conversation = await uow.conversations.get(data.conversation_id)
+            conversation = await uow.conversations.get(data.conversation_id, data.owner_id)
             if conversation is None:
                 raise ConversationNotFound(data.conversation_id)
 

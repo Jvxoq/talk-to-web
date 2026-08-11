@@ -13,7 +13,20 @@ from typing import Any, ClassVar, Protocol, runtime_checkable
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from app.application.chat.models import ToolCall
+from app.application.chat.models import Source, ToolCall
+
+
+class ToolContext(BaseModel):
+    """Who this turn belongs to.
+
+    Separate from the arguments on purpose: arguments are written by the model,
+    and this is not negotiable by it. A model that could name the owner it
+    wanted to search would be a model that could read anyone's documents.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    owner_id: int
 
 
 class ToolSpec(BaseModel):
@@ -29,6 +42,23 @@ class ToolSpec(BaseModel):
     parameters: dict[str, Any]
 
 
+class ToolResult(BaseModel):
+    """
+    What `BaseTool._run` hands back on success: the text the model reads, and
+    the sources behind it for the person watching.
+
+    Kept separate from `ToolOutcome` because a tool never decides `ok` -
+    reaching `_run` at all already means the call succeeded from the tool's
+    point of view. `ok=False` is what `run()` writes when `_run` never got
+    that far.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    content: str
+    sources: tuple[Source, ...] = ()
+
+
 class ToolOutcome(BaseModel):
     """
     What a tool produced, and whether it worked.
@@ -39,12 +69,17 @@ class ToolOutcome(BaseModel):
     tool chip in the transcript red. Collapsing the two into a bare string, as an
     earlier draft did, made every failure silently indistinguishable from an
     answer.
+
+    `sources` rides along for the same audience as `ok`: the model never reads
+    it back, since the citation-worthy detail (a URL, a document name) is
+    already inline in `content` where the model can quote it.
     """
 
     model_config = ConfigDict(frozen=True)
 
     content: str
     ok: bool = True
+    sources: tuple[Source, ...] = ()
 
 
 @runtime_checkable
@@ -54,7 +89,7 @@ class AgentTool(Protocol):
     @property
     def spec(self) -> ToolSpec: ...
 
-    async def run(self, arguments: Mapping[str, Any]) -> ToolOutcome: ...
+    async def run(self, arguments: Mapping[str, Any], context: ToolContext) -> ToolOutcome: ...
 
 
 class BaseTool[ArgsT: BaseModel](ABC):
@@ -80,26 +115,31 @@ class BaseTool[ArgsT: BaseModel](ABC):
             parameters=self.args_model.model_json_schema(),
         )
 
-    async def run(self, arguments: Mapping[str, Any]) -> ToolOutcome:
+    async def run(self, arguments: Mapping[str, Any], context: ToolContext) -> ToolOutcome:
         try:
             args = self.args_model.model_validate(dict(arguments))
         except ValidationError as error:
             # Returned rather than logged and swallowed: the model wrote these
             # arguments, so the model is the one who can fix them.
             logger.debug("Tool {} got invalid arguments: {}", self.name, error)
-            return ToolOutcome(
-                content=f"Invalid arguments for {self.name}: {error}", ok=False
-            )
+            return ToolOutcome(content=f"Invalid arguments for {self.name}: {error}", ok=False)
 
         try:
-            return ToolOutcome(content=await self._run(args))  # type: ignore[arg-type]
+            result = await self._run(args, context)  # type: ignore[arg-type]
+            return ToolOutcome(content=result.content, sources=result.sources)
         except Exception as error:
             logger.warning("Tool {} failed: {}", self.name, error)
             return ToolOutcome(content=f"{self.name} is unavailable right now.", ok=False)
 
     @abstractmethod
-    async def _run(self, args: ArgsT) -> str:
-        """Do the work. Arguments are already validated; exceptions are caught."""
+    async def _run(self, args: ArgsT, context: ToolContext) -> ToolResult:
+        """Do the work. Arguments are already validated; exceptions are caught.
+
+        Every tool is handed the context whether or not it reads one. Passing it
+        only to the tools that currently need it would mean changing the
+        contract again the first time a second one does, and an optional
+        parameter is an invitation to forget it.
+        """
 
 
 class ToolRegistry:
@@ -120,9 +160,9 @@ class ToolRegistry:
     def specs(self) -> list[ToolSpec]:
         return [tool.spec for tool in self._tools.values()]
 
-    async def invoke(self, call: ToolCall) -> ToolOutcome:
+    async def invoke(self, call: ToolCall, context: ToolContext) -> ToolOutcome:
         """
-        Run one requested call.
+        Run one requested call, on behalf of the person in `context`.
 
         Never raises, for any reason: an unknown name, bad arguments and a dead
         upstream all come back as a `ToolOutcome`. The response body is already
@@ -142,7 +182,7 @@ class ToolRegistry:
             )
 
         try:
-            return await tool.run(call.arguments)
+            return await tool.run(call.arguments, context)
         except Exception as error:
             # `BaseTool.run` already catches, so reaching here means a tool that
             # does not extend it. Belt and braces, because one careless tool

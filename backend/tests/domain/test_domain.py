@@ -3,8 +3,8 @@
 import pytest
 
 from app.domain.chat.entities import Conversation, Message
-from app.domain.chat.errors import EmptyUserMessage
-from app.domain.chat.value_objects import UserMessage
+from app.domain.chat.errors import EmptyUserMessage, UnsafeUrl
+from app.domain.chat.value_objects import FetchableUrl, UserMessage
 from app.domain.ingestion.entities import Document
 from app.domain.ingestion.errors import UnsupportedDocumentType
 from app.domain.ingestion.value_objects import DocumentName
@@ -26,6 +26,47 @@ class TestUserMessage:
 
     def test_no_urls_is_empty(self) -> None:
         assert UserMessage("just a question").urls() == ()
+
+
+class TestFetchableUrl:
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "file:///etc/passwd",
+            "ftp://a.dev/x",
+            "gopher://a.dev/x",
+            "/just/a/path",
+            "https://",
+            "http://127.0.0.1:6333/collections",
+            "http://10.0.0.5/admin",
+            "http://192.168.1.1/",
+            "http://172.16.0.1/",
+            # The one every cloud provider hands credentials out of.
+            "http://169.254.169.254/latest/meta-data/",
+            "http://[::1]/",
+            # A private v4 address wearing an IPv6 costume.
+            "http://[::ffff:10.0.0.1]/",
+            "http://0.0.0.0/",
+        ],
+    )
+    def test_refuses_anything_not_on_the_public_internet(self, url: str) -> None:
+        with pytest.raises(UnsafeUrl):
+            FetchableUrl.parse(url)
+
+    def test_accepts_a_normal_page(self) -> None:
+        parsed = FetchableUrl.parse("https://en.wikipedia.org/wiki/Onion_architecture")
+        assert parsed.host == "en.wikipedia.org"
+        assert parsed.port == 443
+
+    def test_accepts_a_public_host_on_an_unusual_port(self) -> None:
+        # The address decides safety, not the port: a real article may be served
+        # from :8080 and refusing it buys nothing.
+        assert FetchableUrl.parse("http://blog.example.com:8080/post").port == 8080
+
+    def test_a_hostname_is_left_for_the_adapter_to_resolve(self) -> None:
+        # "localhost" is only dangerous once it resolves; name resolution is I/O
+        # and does not belong in the domain.
+        assert FetchableUrl.parse("http://localhost/").host == "localhost"
 
 
 class TestDocumentName:
@@ -85,7 +126,7 @@ class TestDocumentChunking:
 
 class TestConversation:
     def test_record_attaches_the_message(self) -> None:
-        conversation = Conversation(title="t", model_type="m", id=7)
+        conversation = Conversation(title="t", model_type="m", owner_id=1, id=7)
         message = conversation.record(Message(prompt_content="p", response_content="r"))
         assert conversation.messages == [message]
         assert message.conversation_id == 7

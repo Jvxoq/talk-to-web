@@ -5,7 +5,7 @@ from typing import ClassVar
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.application.chat.ports import WebSearcher
-from app.application.chat.tools.base import BaseTool
+from app.application.chat.tools.base import BaseTool, ToolContext, ToolResult
 
 
 class SearchWebArgs(BaseModel):
@@ -47,11 +47,13 @@ class SearchWeb(BaseTool[SearchWebArgs]):
         self._searcher = searcher
         self._max_results = max_results
 
-    async def _run(self, args: SearchWebArgs) -> str:
-        results = await self._searcher.search(args.query, self._max_results)
-        if not results.strip():
-            return (
-                f"The web search for {args.query!r} returned no results. Try different "
-                "wording, or answer from what you already know and say it is unverified."
+    async def _run(self, args: SearchWebArgs, context: ToolContext) -> ToolResult:
+        result = await self._searcher.search(args.query, self._max_results)
+        if not result.text.strip():
+            return ToolResult(
+                content=(
+                    f"The web search for {args.query!r} returned no results. Try different "
+                    "wording, or answer from what you already know and say it is unverified."
+                )
             )
-        return results
+        return ToolResult(content=result.text, sources=result.sources)

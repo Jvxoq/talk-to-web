@@ -20,3 +20,18 @@ class UnsupportedModel(ChatError):
     def __init__(self, model: str) -> None:
         self.model = model
         super().__init__(f"Model {model!r} is not available")
+
+
+class UnsafeUrl(ChatError):
+    """A URL the server must not open a connection to.
+
+    Anyone can put a link in a chat message, and the server fetches it with the
+    network position of the server - inside the VPC, next to the database, and
+    one hop from the cloud metadata endpoint. A refused URL is named here so the
+    reason survives into the log.
+    """
+
+    def __init__(self, url: str, reason: str) -> None:
+        self.url = url
+        self.reason = reason
+        super().__init__(f"Refusing to fetch {url}: {reason}")

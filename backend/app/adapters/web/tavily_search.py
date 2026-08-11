@@ -10,9 +10,13 @@ from typing import Any
 from loguru import logger
 from tavily import AsyncTavilyClient  # type: ignore[import-untyped]
 
+from app.application.chat.models import SearchResult, Source
+
 # One result's body is capped so a single verbose page cannot crowd the other
 # results (and the rest of the conversation) out of the context window.
 MAX_RESULT_CHARS = 4_000
+
+_EMPTY_RESULT = SearchResult(text="")
 
 
 class TavilyWebSearcher:
@@ -21,8 +25,8 @@ class TavilyWebSearcher:
     def __init__(self, client: AsyncTavilyClient) -> None:
         self._client = client
 
-    async def search(self, query: str, max_results: int) -> str:
-        """Return the best passages for `query`, best first, or "" if the search failed."""
+    async def search(self, query: str, max_results: int) -> SearchResult:
+        """Return the best passages for `query`, best first, or an empty result on failure."""
         logger.debug(f"Tavily search: {query!r} (max_results={max_results})")
         try:
             response: dict[str, Any] = await self._client.search(
@@ -37,15 +41,16 @@ class TavilyWebSearcher:
             # Deliberately broad, matching the posture of the other read paths:
             # search is an enhancement to an answer that is already streaming,
             # so a dead upstream costs grounding, never the reply. The tool
-            # above turns "" into a sentence the model can act on.
+            # above turns an empty result into a sentence the model can act on.
             logger.warning(f"Tavily search for {query!r} failed ({error}), returning no results")
-            return ""
+            return _EMPTY_RESULT
 
         return self._flatten(response)
 
     @staticmethod
-    def _flatten(response: dict[str, Any]) -> str:
+    def _flatten(response: dict[str, Any]) -> SearchResult:
         blocks: list[str] = []
+        sources: list[Source] = []
 
         answer = response.get("answer")
         if isinstance(answer, str) and answer.strip():
@@ -59,8 +64,9 @@ class TavilyWebSearcher:
             url = str(result.get("url") or "unknown")
             content = str(result.get("content") or "").strip()[:MAX_RESULT_CHARS]
             blocks.append(f"Title: {title}\nURL: {url}\n{content}")
+            sources.append(Source(label=title, url=url))
 
-        return "\n\n".join(blocks)
+        return SearchResult(text="\n\n".join(blocks), sources=tuple(sources))
 
     async def aclose(self) -> None:
         """Release Tavily's HTTP connection pool."""

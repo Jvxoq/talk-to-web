@@ -19,17 +19,28 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 from tavily import AsyncTavilyClient  # type: ignore[import-untyped]
 
 from app.adapters.embedding.gemini_embedder import GeminiEmbedder
+from app.adapters.extraction.composite_extractor import CompositeTextExtractor
+from app.adapters.extraction.docx_extractor import DocxTextExtractor
+from app.adapters.extraction.plain_text_extractor import PlainTextExtractor
 from app.adapters.extraction.pypdf_extractor import PypdfTextExtractor
+from app.adapters.llm.approximate_token_counter import ApproximateTokenCounter
 from app.adapters.llm.langchain_chat_model import LangChainChatModel
-from app.adapters.persistence.models import Base
+from app.adapters.persistence.readiness import PostgresProbe
 from app.adapters.persistence.uow import SqlAlchemyUnitOfWork
+from app.adapters.security.argon2_hasher import Argon2PasswordHasher
+from app.adapters.security.jwt_codec import JwtAccessTokenCodec
+from app.adapters.security.memory_rate_limiter import SlidingWindowRateLimiter
+from app.adapters.security.refresh_tokens import Sha256RefreshTokenFactory
 from app.adapters.storage.local_file_storage import LocalFileStorage
+from app.adapters.time.system_clock import SystemClock
 from app.adapters.transcription.deepgram import DeepgramLiveTranscriber
 from app.adapters.vector.knowledge_retriever import EmbeddedKnowledgeRetriever
 from app.adapters.vector.qdrant_index import QdrantVectorIndex
+from app.adapters.vector.readiness import QdrantProbe
 from app.adapters.web.aiohttp_scraper import AiohttpWebContentFetcher
 from app.adapters.web.tavily_search import TavilyWebSearcher
 from app.api.dependencies import Container
+from app.application.chat.agent.condenser import Condenser
 from app.application.chat.agent.graph import build_agent_graph
 from app.application.chat.tools.base import ToolRegistry
 from app.application.chat.tools.fetch_web_pages import FetchWebPages
@@ -38,9 +49,21 @@ from app.application.chat.tools.search_web import SearchWeb
 from app.application.chat.use_cases.delete_conversation import DeleteConversation
 from app.application.chat.use_cases.generate_reply import GenerateReply
 from app.application.chat.use_cases.get_conversation import GetConversation
+from app.application.chat.use_cases.list_conversations import ListConversations
 from app.application.chat.use_cases.record_exchange import RecordExchange
 from app.application.chat.use_cases.start_conversation import StartConversation
+from app.application.health.use_cases.check_readiness import CheckReadiness
+from app.application.identity.dto import RefreshCookiePolicy
+from app.application.identity.sessions import SessionMinter
+from app.application.identity.use_cases.authenticate_user import AuthenticateUser
+from app.application.identity.use_cases.identify_request import IdentifyRequest
+from app.application.identity.use_cases.refresh_session import RefreshSession
+from app.application.identity.use_cases.register_user import RegisterUser
+from app.application.identity.use_cases.revoke_session import RevokeSession
+from app.application.ingestion.use_cases.delete_document import DeleteDocument
 from app.application.ingestion.use_cases.index_document import IndexDocument
+from app.application.ingestion.use_cases.ingest_url import IngestUrl
+from app.application.ingestion.use_cases.list_documents import ListDocuments
 from app.application.ingestion.use_cases.upload_document import UploadDocument
 from app.application.transcription.use_cases.transcribe_stream import TranscribeStream
 from app.settings import Settings
@@ -71,17 +94,39 @@ class AppContainer:
     generate_reply: GenerateReply
     start_conversation: StartConversation
     get_conversation: GetConversation
+    list_conversations: ListConversations
     record_exchange: RecordExchange
     delete_conversation: DeleteConversation
     upload_document: UploadDocument
+    ingest_url: IngestUrl
     index_document: IndexDocument
+    list_documents: ListDocuments
+    delete_document: DeleteDocument
     transcribe_stream: TranscribeStream
+    register_user: RegisterUser
+    authenticate_user: AuthenticateUser
+    refresh_session: RefreshSession
+    revoke_session: RevokeSession
+    identify_request: IdentifyRequest
+    check_readiness: CheckReadiness
+    # Not a use case, and here for the same reason as the two below: writing the
+    # refresh cookie is a delivery decision that depends on where this deployment
+    # is served from, and the API may not read settings to find out.
+    refresh_cookie: RefreshCookiePolicy
+    # Whether the address on the connection came from a proxy this deployment
+    # configured, and can therefore be used as a rate-limit key.
+    trust_forwarded_client_ip: bool
     # Not a use case: the list of models this deployment will answer on. It is
     # here because the API has to reject an unknown model with a 4xx and has to
     # tell the frontend what to offer, and the API may not read settings. So
     # settings still enter at exactly one place and arrive everywhere else by
     # injection.
     chat_models: tuple[str, ...]
+    # Also not a use case, and here for the same reason: rejecting a WebSocket
+    # handshake from an unknown origin is a delivery concern that happens before
+    # any use case is reached, and `TranscribeStream` must not learn that it is
+    # being driven over a WebSocket at all.
+    websocket_origins: tuple[str, ...]
 
 
 @asynccontextmanager
@@ -96,19 +141,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Without this, a connection killed by the database or a NAT idle timeout
         # is handed to a request and fails it. The ping costs a round trip.
         pool_pre_ping=True,
+        # Managed Postgres closes idle connections on its own schedule - Neon
+        # both scales a compute to zero and reaps idle pooler connections - so a
+        # long-lived pool fills up with sockets the server has already forgotten.
+        # `pool_pre_ping` catches those and reconnects, at the cost of a failed
+        # ping first; retiring connections before they get that old avoids paying
+        # for the discovery at all.
+        pool_recycle=300,
     )
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
-    if settings.environment == "local":
-        # Convenience for `docker compose up` on a fresh volume, and deliberately
-        # local-only: concurrent replicas racing to create schema is how schema
-        # state gets corrupted. Anywhere else, migrations run as their own step.
-        async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.create_all)
-
+    # No `create_all` here, in any environment. Schema is owned by
+    # `alembic upgrade head`, which every compose file runs as its own service
+    # before the backend starts. Creating tables from application startup means
+    # concurrent replicas racing each other, and a schema that drifts from the
+    # migration history nobody then trusts.
     qdrant_client = AsyncQdrantClient(
-        host=settings.qdrant_host,
-        port=settings.qdrant_port,
+        url=settings.qdrant_url,
+        api_key=(
+            settings.qdrant_api_key.get_secret_value()
+            if settings.qdrant_api_key is not None
+            else None
+        ),
         check_compatibility=False,
     )
     genai_client = genai.Client(api_key=settings.gemini_api_key.get_secret_value())
@@ -118,11 +172,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     tavily_client = AsyncTavilyClient(api_key=settings.tavily_api_key.get_secret_value())
 
     # --- adapters ---
+    # The condenser model is added to the same adapter so it shares one HTTP
+    # client, but it is not offered in the UI: `chat_models` below stays the
+    # user-selectable list. Deduplicated in case the condenser model is also a
+    # chat model.
     chat_model = LangChainChatModel(
         provider=settings.llm_provider,
-        models=settings.llm_models,
+        models=list(dict.fromkeys([*settings.llm_models, settings.agent_condenser_model])),
         api_key=settings.llm_api_key.get_secret_value(),
         max_tokens=settings.llm_max_tokens,
+    )
+    token_counter = ApproximateTokenCounter()
+    condenser = Condenser(
+        model=chat_model,
+        model_name=settings.agent_condenser_model,
+        max_chars=settings.agent_condenser_max_chars,
+        tool_condense_prompt=settings.agent_tool_condense_prompt,
+        summary_prompt=settings.agent_summary_prompt,
     )
     vector_index = QdrantVectorIndex(client=qdrant_client, collection=settings.qdrant_collection)
     embedder = GeminiEmbedder(
@@ -139,17 +205,65 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     web = AiohttpWebContentFetcher(session=http_session)
     searcher = TavilyWebSearcher(client=tavily_client)
     storage = LocalFileStorage(directory=settings.upload_dir)
-    extractor = PypdfTextExtractor()
+    plain_text_extractor = PlainTextExtractor()
+    extractor = CompositeTextExtractor(
+        {
+            ".pdf": PypdfTextExtractor(),
+            ".txt": plain_text_extractor,
+            ".md": plain_text_extractor,
+            ".docx": DocxTextExtractor(),
+        }
+    )
+    clock = SystemClock()
+    password_hasher = Argon2PasswordHasher()
+    access_tokens = JwtAccessTokenCodec(
+        secret=settings.jwt_secret.get_secret_value(),
+        algorithm=settings.jwt_algorithm,
+        ttl_seconds=settings.access_token_ttl_seconds,
+    )
+    refresh_token_factory = Sha256RefreshTokenFactory()
+    # One limiter shared by register, login and refresh: the keys are namespaced
+    # per route, so a shared instance is one budget per key, not one for all.
+    auth_limiter = SlidingWindowRateLimiter(
+        max_attempts=settings.auth_rate_limit_attempts,
+        window_seconds=settings.auth_rate_limit_window_seconds,
+    )
+    # One limiter per budget, not one shared instance with namespaced keys: a
+    # chat request and an upload are counted against different ceilings over
+    # different windows, and a limiter holds exactly one of each.
+    chat_limiter = SlidingWindowRateLimiter(
+        max_attempts=settings.chat_rate_limit_requests,
+        window_seconds=settings.chat_rate_limit_window_seconds,
+    )
+    upload_limiter = SlidingWindowRateLimiter(
+        max_attempts=settings.upload_rate_limit_requests,
+        window_seconds=settings.upload_rate_limit_window_seconds,
+    )
     transcriber = DeepgramLiveTranscriber(
         api_key=settings.deepgram_api_key.get_secret_value(),
         model=settings.deepgram_model,
         utterance_end_ms=settings.utterance_end_ms,
     )
 
+    # Probes reuse the engine and the client the requests use, not connections of
+    # their own: a readiness check against a private connection reports "up"
+    # while an exhausted pool fails every real request behind it.
+    check_readiness = CheckReadiness(
+        probes=[PostgresProbe(engine), QdrantProbe(qdrant_client)],
+        timeout_seconds=settings.readiness_timeout_seconds,
+    )
+
     # A factory, not an instance: an AsyncSession is not safe to share between
     # concurrent requests, so every use case call gets its own unit of work.
     def uow_factory() -> SqlAlchemyUnitOfWork:
         return SqlAlchemyUnitOfWork(session_factory)
+
+    session_minter = SessionMinter(
+        access_tokens=access_tokens,
+        refresh_tokens=refresh_token_factory,
+        clock=clock,
+        refresh_ttl_seconds=settings.refresh_token_ttl_seconds,
+    )
 
     # `from_conn_string` is an async context manager, not a constructor: it owns
     # a psycopg pool that has to stay open for as long as the app serves
@@ -186,6 +300,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ),
             max_iterations=settings.agent_max_tool_iterations,
             checkpointer=checkpointer,
+            condenser=condenser,
+            counter=token_counter,
+            history_token_budget=settings.agent_history_token_budget,
+            recent_token_budget=settings.agent_recent_token_budget,
+            tool_output_token_budget=settings.agent_tool_output_token_budget,
         )
 
         # Annotated as the API's Protocol so mypy proves, here at the one place
@@ -196,12 +315,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 graph=graph,
                 system_prompt=settings.llm_system_prompt,
                 max_iterations=settings.agent_max_tool_iterations,
+                limiter=chat_limiter,
             ),
             start_conversation=StartConversation(uow_factory),
             get_conversation=GetConversation(uow_factory),
+            list_conversations=ListConversations(uow_factory),
             record_exchange=RecordExchange(uow_factory),
             delete_conversation=DeleteConversation(uow_factory),
-            upload_document=UploadDocument(storage=storage, max_bytes=settings.max_upload_bytes),
+            upload_document=UploadDocument(
+                storage=storage,
+                max_bytes=settings.max_upload_bytes,
+                limiter=upload_limiter,
+                uow_factory=uow_factory,
+            ),
+            ingest_url=IngestUrl(
+                fetcher=web,
+                storage=storage,
+                limiter=upload_limiter,
+                max_bytes=settings.max_upload_bytes,
+                uow_factory=uow_factory,
+            ),
             index_document=IndexDocument(
                 extractor=extractor,
                 embedder=embedder,
@@ -209,12 +342,50 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 chunk_size=settings.chunk_size,
                 chunk_overlap=settings.chunk_overlap,
                 embedding_dimensions=settings.embedding_dimensions,
+                uow_factory=uow_factory,
             ),
+            list_documents=ListDocuments(uow_factory),
+            delete_document=DeleteDocument(uow_factory, index=vector_index, storage=storage),
             transcribe_stream=TranscribeStream(
                 transcriber=transcriber,
                 finalize_timeout=settings.finalize_timeout_seconds,
             ),
+            register_user=RegisterUser(
+                uow_factory,
+                hasher=password_hasher,
+                sessions=session_minter,
+                limiter=auth_limiter,
+            ),
+            authenticate_user=AuthenticateUser(
+                uow_factory,
+                hasher=password_hasher,
+                sessions=session_minter,
+                limiter=auth_limiter,
+            ),
+            refresh_session=RefreshSession(
+                uow_factory,
+                refresh_tokens=refresh_token_factory,
+                sessions=session_minter,
+                clock=clock,
+                limiter=auth_limiter,
+            ),
+            revoke_session=RevokeSession(
+                uow_factory,
+                refresh_tokens=refresh_token_factory,
+                clock=clock,
+            ),
+            identify_request=IdentifyRequest(access_tokens),
+            check_readiness=check_readiness,
+            refresh_cookie=RefreshCookiePolicy(
+                name=settings.refresh_cookie_name,
+                path=settings.refresh_cookie_path,
+                secure=settings.refresh_cookie_secure,
+                samesite=settings.refresh_cookie_samesite,
+                domain=settings.refresh_cookie_domain,
+            ),
+            trust_forwarded_client_ip=settings.trust_forwarded_client_ip,
             chat_models=tuple(settings.llm_models),
+            websocket_origins=tuple(settings.allowed_websocket_origins),
         )
         app.state.container = container
 

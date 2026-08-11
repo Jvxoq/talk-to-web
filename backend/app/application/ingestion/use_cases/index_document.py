@@ -4,6 +4,7 @@ import asyncio
 
 from loguru import logger
 
+from app.application.common.uow import UnitOfWorkFactory
 from app.application.ingestion.dto import IndexDocumentResult
 from app.application.ingestion.ports import Embedder, TextExtractor, VectorIndex
 from app.domain.ingestion.entities import Document
@@ -36,6 +37,7 @@ class IndexDocument:
         chunk_size: int,
         chunk_overlap: int,
         embedding_dimensions: int,
+        uow_factory: UnitOfWorkFactory,
     ) -> None:
         self._extractor = extractor
         self._embedder = embedder
@@ -43,19 +45,23 @@ class IndexDocument:
         self._chunk_size = chunk_size
         self._chunk_overlap = chunk_overlap
         self._embedding_dimensions = embedding_dimensions
+        self._uow_factory = uow_factory
 
-    async def __call__(self, reference: str, name: str) -> IndexDocumentResult:
-        logger.debug("Indexing {} from {}", name, reference)
+    async def __call__(
+        self, reference: str, name: str, document_id: int, owner_id: int
+    ) -> IndexDocumentResult:
+        logger.debug("Indexing {} from {} for owner {}", name, reference, owner_id)
 
         text = await self._extractor.extract(reference)
         document = Document(name=DocumentName(name), content=text)
         if not document.is_indexable():
             raise DocumentNotIndexable(name)
 
-        # Preserves existing behaviour: every upload replaces the whole
-        # collection, so only the most recent document is retrievable. Known
-        # limitation, kept deliberately — not an accident.
-        await self._index.reset(self._embedding_dimensions)
+        # Tagged with `document_id` rather than clearing the owner's whole
+        # namespace first - that used to be how a second upload wiped out the
+        # first. Every owner may now hold several documents at once; only
+        # `DeleteDocument` removes one, and only its own passages.
+        await self._index.ensure(self._embedding_dimensions)
 
         chunks = list(document.chunks(self._chunk_size, self._chunk_overlap))
         vectors: list[list[float]] = []
@@ -63,7 +69,11 @@ class IndexDocument:
             batch = chunks[start : start + _EMBED_BATCH_SIZE]
             vectors.extend(await asyncio.gather(*(self._embedder.embed(c.text) for c in batch)))
 
-        await self._index.upsert(chunks, vectors)
+        await self._index.upsert(chunks, vectors, owner_id, document_id)
+
+        async with self._uow_factory() as uow:
+            await uow.documents.set_chunks_indexed(document_id, owner_id, len(chunks))
+            await uow.commit()
 
         logger.debug("Indexed {} chunk(s) from {}", len(chunks), name)
         return IndexDocumentResult(chunks_indexed=len(chunks))
