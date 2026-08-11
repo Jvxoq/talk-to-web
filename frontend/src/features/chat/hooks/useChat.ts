@@ -1,12 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   appendMessage,
-  clearConversationId,
-  createConversation,
-  deleteConversationBeacon,
   getConversation,
-  getOrCreateConversationId,
-  storeConversationId,
   type MessageCreate,
   type MessageOut,
 } from '../../../lib/conversation'
@@ -34,105 +29,71 @@ function toMessages(turns: MessageOut[]): Message[] {
 }
 
 /**
- * Picks up the pinned conversation, or opens a fresh one.
+ * Owns the transcript and the in-flight stream for one, externally-chosen
+ * conversation.
  *
- * A stored id routinely goes stale: the unload beacon deletes the row as the
- * page goes away, so anything that survives is from a page-life that never got
- * to run its beacon. A 404 there is expected, not an error.
- */
-async function resume(model: Model): Promise<{ id: number; messages: Message[] }> {
-  const storedId = getOrCreateConversationId()
-
-  if (storedId !== null) {
-    try {
-      const conversation = await getConversation(storedId)
-      return { id: conversation.id, messages: toMessages(conversation.messages) }
-    } catch (error) {
-      if (!(error instanceof ApiError) || error.status !== 404) throw error
-      clearConversationId()
-    }
-  }
-
-  const created = await createConversation(model)
-  storeConversationId(created.id)
-  return { id: created.id, messages: [] }
-}
-
-/**
- * Owns the transcript and the in-flight stream.
+ * `conversationId` is now a prop rather than something this hook resolves
+ * itself — `useConversations` owns the sidebar's list and which id is active,
+ * and this hook's only job is to load and talk into whichever one that is.
+ * Switching it is a normal prop change: the effect below reloads the
+ * transcript and cuts off any stream still running against the thread the
+ * user just left.
  *
  * The assistant's turn is appended empty and filled in place as deltas land, so
  * the list renders a pending bubble without a second piece of state to keep in
  * sync with `messages`.
  *
  * Turns are mirrored to the server as they complete, but that mirror is
- * best-effort: what is on screen stays authoritative for this page-life, and
- * the conversation is dropped again on unload.
+ * best-effort: what is on screen stays authoritative for this page-life.
  */
-export function useChat(model: Model) {
+export function useChat(model: Model, conversationId: number) {
   const [messages, setMessages] = useState<Message[]>([])
   const [isStreaming, setIsStreaming] = useState(false)
+  // An absolute deadline, not a duration: see `useCountdown`. Null when there
+  // is no wait, which is the ordinary state. Not reset on a conversation
+  // switch - the budget it tracks is per account, not per thread.
+  const [cooldownUntil, setCooldownUntil] = useState<number | null>(null)
+  // What the user typed when a send was refused, handed back to the composer so
+  // a limit they did not know about does not cost them their sentence.
+  const [restoreText, setRestoreText] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
-
-  const conversationIdRef = useRef<number | null>(null)
-  // Held as a promise so a turn sent before bootstrap settles still gets
-  // persisted, rather than being dropped against a null id.
-  const bootstrapRef = useRef<Promise<number | null> | null>(null)
-  // Read at bootstrap only, via a ref, so switching models mid-session doesn't
-  // re-run the effect and open a second conversation.
-  const modelRef = useRef(model)
-  useEffect(() => {
-    modelRef.current = model
-  }, [model])
+  const cooldownRef = useRef<number | null>(null)
 
   useEffect(() => {
-    // The ref survives StrictMode's remount, so exactly one conversation is
-    // opened in development as well as production.
-    if (bootstrapRef.current) return
+    // A reply mid-flight belongs to the thread the user is leaving, not the
+    // one they are about to see - cut it off rather than let it keep filling
+    // a bubble that is no longer on screen.
+    abortRef.current?.abort()
+    abortRef.current = null
+    setIsStreaming(false)
+    setMessages([])
 
-    bootstrapRef.current = resume(modelRef.current)
-      .then(({ id, messages: restored }) => {
-        conversationIdRef.current = id
-        if (restored.length > 0) setMessages(restored)
-        return id
+    let cancelled = false
+    getConversation(conversationId)
+      .then((conversation) => {
+        if (!cancelled) setMessages(toMessages(conversation.messages))
       })
-      .catch(() => null)
-  }, [])
+      .catch(() => {
+        // Swallowed: a history that failed to load still leaves a usable,
+        // empty composer, which beats blocking the switch entirely.
+      })
 
-  useEffect(() => {
-    const handleExit = (event: Event | PageTransitionEvent) => {
-      // A bfcache'd page can be restored, so its conversation has to outlive it.
-      if ('persisted' in event && event.persisted) return
-
-      const id = conversationIdRef.current
-      if (id === null) return
-
-      // Cleared first: browsers fire both events on an ordinary unload, and the
-      // second beacon would hit an already-deleted row.
-      conversationIdRef.current = null
-      deleteConversationBeacon(id)
-      clearConversationId()
-    }
-
-    window.addEventListener('pagehide', handleExit)
-    window.addEventListener('beforeunload', handleExit)
     return () => {
-      window.removeEventListener('pagehide', handleExit)
-      window.removeEventListener('beforeunload', handleExit)
+      cancelled = true
     }
-  }, [])
+  }, [conversationId])
 
-  const persist = useCallback(async (message: MessageCreate) => {
-    const id = conversationIdRef.current ?? (await bootstrapRef.current)
-    if (id == null) return
-
-    try {
-      await appendMessage(id, message)
-    } catch {
-      // Deliberately swallowed: a failed write is invisible to the user, and
-      // surfacing it would break up a conversation that otherwise worked.
-    }
-  }, [])
+  const persist = useCallback(
+    async (message: MessageCreate) => {
+      try {
+        await appendMessage(conversationId, message)
+      } catch {
+        // Deliberately swallowed: a failed write is invisible to the user, and
+        // surfacing it would break up a conversation that otherwise worked.
+      }
+    },
+    [conversationId],
+  )
 
   const failLastMessage = useCallback((content: string) => {
     setMessages((prev) => {
@@ -147,7 +108,8 @@ export function useChat(model: Model) {
    * Chips are keyed by tool name, one running slot each: a `start` for a name
    * already present resets that slot rather than piling on a second chip, so
    * a tool called twice in one turn just re-runs its own chip in place. An
-   * `ok`/`failed` updates the matching slot's status only.
+   * `ok`/`failed` updates the matching slot's status and, when the finished
+   * frame carried any, its sources.
    */
   const updateToolActivity = useCallback((activity: ToolActivity) => {
     setMessages((prev) => {
@@ -161,7 +123,7 @@ export function useChat(model: Model) {
       } else if (activity.status === 'start') {
         tools[index] = activity
       } else {
-        tools[index] = { ...tools[index], status: activity.status }
+        tools[index] = { ...tools[index], status: activity.status, sources: activity.sources }
       }
 
       next[next.length - 1] = { ...last, tools }
@@ -172,6 +134,14 @@ export function useChat(model: Model) {
   const send = useCallback(
     async (text: string) => {
       if (!text || abortRef.current) return
+
+      // Checked here as well as on the disabled button: the request is certain
+      // to be refused while the wait is live, and firing it anyway would show
+      // the user a second failure for a limit they are already waiting out.
+      if (cooldownRef.current !== null && cooldownRef.current > Date.now()) {
+        setRestoreText(text)
+        return
+      }
 
       const controller = new AbortController()
       abortRef.current = controller
@@ -191,7 +161,7 @@ export function useChat(model: Model) {
         for await (const event of streamChat({
           model,
           userInput: text,
-          conversationId: conversationIdRef.current,
+          conversationId,
           signal: controller.signal,
         })) {
           if (event.type === 'error') {
@@ -225,10 +195,26 @@ export function useChat(model: Model) {
       } catch (error) {
         // An abort is the user leaving, not a failure - nothing to record.
         if (isAbort(error)) return
-        failLastMessage(GENERIC_FAILURE)
+
+        // A rate limit is the one failure that is temporary, expected, and has
+        // an answer, so it says so in the user's own words rather than through
+        // GENERIC_FAILURE. "Something went wrong, please try again" would be
+        // both wrong - nothing went wrong - and the worst possible advice.
+        const limited = error instanceof ApiError && error.status === 429
+        const detail = limited ? (error as ApiError).message : GENERIC_FAILURE
+
+        if (limited) {
+          const seconds = (error as ApiError).retryAfterSeconds ?? 60
+          const until = Date.now() + seconds * 1000
+          cooldownRef.current = until
+          setCooldownUntil(until)
+          setRestoreText(text)
+        }
+
+        failLastMessage(detail)
         void persist({
           prompt_content: text,
-          response_content: GENERIC_FAILURE,
+          response_content: detail,
           is_success: false,
           status_code: error instanceof ApiError ? error.status : undefined,
         })
@@ -237,11 +223,13 @@ export function useChat(model: Model) {
         setIsStreaming(false)
       }
     },
-    [failLastMessage, model, persist, updateToolActivity],
+    [conversationId, failLastMessage, model, persist, updateToolActivity],
   )
 
   // Never leave a stream running against an unmounted component.
   useEffect(() => () => abortRef.current?.abort(), [])
 
-  return { messages, isStreaming, send }
+  const clearRestoreText = useCallback(() => setRestoreText(null), [])
+
+  return { messages, isStreaming, send, cooldownUntil, restoreText, clearRestoreText }
 }

@@ -3,6 +3,12 @@ export class ApiError extends Error {
   constructor(
     public readonly status: number,
     message: string,
+    /**
+     * How long to wait before this can succeed, on a 429. Optional because it
+     * is the only failure that has an answer: everything else here fails again
+     * at the same speed no matter how long you wait.
+     */
+    public readonly retryAfterSeconds?: number,
   ) {
     super(message)
     this.name = 'ApiError'

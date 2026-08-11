@@ -1,10 +1,11 @@
 import { memo } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
+import { ExternalLink } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { springs } from '../../../lib/motion'
 import { normalizeStreamingMarkdown } from '../markdown'
-import type { Message, ToolActivity } from '../types'
+import type { Message, Source, ToolActivity } from '../types'
 import { TypingDots } from './TypingDots'
 
 interface MessageBubbleProps {
@@ -36,6 +37,25 @@ function toolChipText(tool: ToolActivity): string {
   }
 }
 
+/**
+ * Every source behind this turn's tool calls, deduplicated across tools and
+ * across repeat calls to the same one.
+ *
+ * Keyed by URL when there is one, by label otherwise - two different
+ * documents can share no other identity, but two web results never share a
+ * URL.
+ */
+function collectSources(tools: ToolActivity[] | undefined): Source[] {
+  if (!tools) return []
+  const seen = new Map<string, Source>()
+  for (const tool of tools) {
+    for (const source of tool.sources ?? []) {
+      seen.set(source.url ?? source.label, source)
+    }
+  }
+  return [...seen.values()]
+}
+
 // Memoised because every delta re-renders the whole transcript, and reparsing
 // the markdown of settled turns on each token is the expensive part of that.
 // `tools` fits this untouched: useChat only ever replaces `message` with a
@@ -51,6 +71,7 @@ export const MessageBubble = memo(function MessageBubble({
   const markdownSource = pending
     ? normalizeStreamingMarkdown(message.content)
     : message.content
+  const sources = message.role === 'assistant' ? collectSources(message.tools) : []
 
   return (
     <motion.div
@@ -85,7 +106,13 @@ export const MessageBubble = memo(function MessageBubble({
           </AnimatePresence>
         </div>
       )}
-      <div className={`bubble${message.error ? ' error' : ''}`}>
+      {/* Announced once when it lands: the transcript is a `role="log"`, which
+          a screen reader reads politely and may not surface at all mid-stream,
+          and a refusal is the one turn the user has to act on. */}
+      <div
+        className={`bubble${message.error ? ' error' : ''}`}
+        role={message.error ? 'alert' : undefined}
+      >
         {message.content ? (
           renderMarkdown ? (
             <div className="markdown">
@@ -98,6 +125,32 @@ export const MessageBubble = memo(function MessageBubble({
           <TypingDots />
         ) : null}
       </div>
+      {sources.length > 0 && (
+        // A RAG answer with no visible source doesn't read as RAG - this is
+        // what turns "the model said so" into "here is what it read."
+        <ul className="source-list" aria-label="Sources">
+          {sources.map((source) => (
+            <li key={source.url ?? source.label}>
+              {source.url ? (
+                <a
+                  className="source-chip"
+                  href={source.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={source.label}
+                >
+                  <span className="source-chip-label">{source.label}</span>
+                  <ExternalLink strokeWidth={2} aria-hidden="true" />
+                </a>
+              ) : (
+                <span className="source-chip" title={source.label}>
+                  <span className="source-chip-label">{source.label}</span>
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
     </motion.div>
   )
 })

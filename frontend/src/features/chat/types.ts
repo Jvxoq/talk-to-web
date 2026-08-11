@@ -2,12 +2,21 @@
 // `GET /models/` via `useModels`, never hardcoded here (see hooks/useModels.ts).
 export type Model = string
 
+/** Where a piece of grounding came from — a document name, or a page with a link. */
+export interface Source {
+  label: string
+  /** Absent for a passage retrieved from the user's own upload — nothing to link to. */
+  url?: string
+}
+
 /** One tool call's lifecycle, as reported by the `tool` SSE frame. */
 export interface ToolActivity {
   name: string
   status: 'start' | 'ok' | 'failed'
   /** Present only on the `start` frame. */
   summary?: string
+  /** Present only on a successful `finished` frame that found something to cite. */
+  sources?: Source[]
 }
 
 export interface Message {
@@ -23,4 +32,11 @@ export interface Message {
 export interface UploadedFile {
   name: string
   path: string
+}
+
+/** One row in the document manager panel. */
+export interface DocumentSummary {
+  id: number
+  name: string
+  chunksIndexed: number
 }

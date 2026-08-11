@@ -94,3 +94,39 @@
   height: 20px;
   flex-shrink: 0;
 }
+
+/* ---------------------------------------------------------------------------
+   Crash screen — the ErrorBoundary fallback.
+
+   Deliberately static: no Motion, no tokens beyond colour and spacing. It has
+   to render when the rest of the tree has already failed, so it depends on as
+   little as possible.
+   --------------------------------------------------------------------------- */
+.crash {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-start;
+  max-width: 52ch;
+  margin: var(--space-10) auto;
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--color-danger);
+  box-shadow: var(--level-error);
+  background: var(--color-surface);
+  color: var(--color-primary);
+}
+
+.crash__title {
+  margin: 0;
+  color: var(--color-danger);
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  letter-spacing: var(--tracking-ui);
+  text-transform: uppercase;
+}
+
+.crash__body {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.6;
+}

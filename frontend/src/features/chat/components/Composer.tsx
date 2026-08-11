@@ -7,10 +7,11 @@ import {
   type KeyboardEvent,
 } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
-import { ArrowUp, Mic, Paperclip, X } from 'lucide-react'
+import { ArrowUp, Link2, Mic, Paperclip, X } from 'lucide-react'
 import { buttonClass } from '../../../components/ui'
 import { easeStandard, springs, timing } from '../../../lib/motion'
 import { useFileUpload } from '../hooks/useFileUpload'
+import { useCountdown } from '../hooks/useCountdown'
 import { useModels } from '../hooks/useModels'
 import { isVoiceInputSupported, useVoiceInput } from '../hooks/useVoiceInput'
 import type { Model } from '../types'
@@ -20,6 +21,11 @@ interface ComposerProps {
   onModelChange: (model: Model) => void
   onSend: (text: string) => void
   isStreaming: boolean
+  /** Epoch ms until which sending is refused by the server, or null. */
+  cooldownUntil: number | null
+  /** Text handed back after a refused send, so the user does not lose it. */
+  restoreText: string | null
+  onTextRestored: () => void
 }
 
 const stripMotion = {
@@ -30,8 +36,17 @@ const stripMotion = {
   style: { overflow: 'hidden' as const },
 }
 
-export function Composer({ model, onModelChange, onSend, isStreaming }: ComposerProps) {
+export function Composer({
+  model,
+  onModelChange,
+  onSend,
+  isStreaming,
+  cooldownUntil,
+  restoreText,
+  onTextRestored,
+}: ComposerProps) {
   const [input, setInput] = useState('')
+  const [urlInput, setUrlInput] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const reduce = useReducedMotion()
 
@@ -56,7 +71,19 @@ export function Composer({ model, onModelChange, onSend, isStreaming }: Composer
   const voice = useVoiceInput(appendTranscript)
   const isRecording = voice.status !== 'idle'
   const voiceSupported = isVoiceInputSupported()
-  const canSend = !isStreaming && input.trim().length > 0
+
+  const sendWait = useCountdown(cooldownUntil)
+  const uploadWait = useCountdown(upload.cooldownUntil)
+  const canSend = !isStreaming && sendWait === 0 && input.trim().length > 0
+
+  // A refused send hands the text back rather than swallowing it: the limits
+  // are tight enough to meet in normal use, and losing a typed message to one
+  // would be the app's fault, not the user's.
+  useEffect(() => {
+    if (restoreText === null) return
+    setInput(restoreText)
+    onTextRestored()
+  }, [restoreText, onTextRestored])
 
   const submit = () => {
     if (!canSend) return
@@ -78,7 +105,24 @@ export function Composer({ model, onModelChange, onSend, isStreaming }: Composer
     if (file) void upload.upload(file)
   }
 
-  const showAttachmentStrip = Boolean(upload.file || upload.isUploading || upload.error)
+  const submitUrl = () => {
+    const url = urlInput?.trim()
+    setUrlInput(null)
+    if (url) void upload.ingestUrl(url)
+  }
+
+  const handleUrlKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      submitUrl()
+    } else if (e.key === 'Escape') {
+      setUrlInput(null)
+    }
+  }
+
+  const showAttachmentStrip = Boolean(
+    upload.file || upload.isUploading || upload.error || sendWait > 0,
+  )
   const showVoiceStrip = isRecording || Boolean(voice.error)
 
   return (
@@ -105,6 +149,15 @@ export function Composer({ model, onModelChange, onSend, isStreaming }: Composer
 
               {!upload.isUploading && upload.error && (
                 <span className="status-label is-error">{upload.error}</span>
+              )}
+
+              {/* `role="status"` rather than `alert`: this updates every second,
+                  and an assertive region would interrupt a screen reader on
+                  every tick instead of announcing the limit once. */}
+              {sendWait > 0 && (
+                <span className="status-label is-error" role="status">
+                  Message limit reached. You can send again in {sendWait}s
+                </span>
               )}
             </motion.div>
           )}
@@ -138,10 +191,31 @@ export function Composer({ model, onModelChange, onSend, isStreaming }: Composer
         <input
           ref={fileInputRef}
           type="file"
-          accept="application/pdf"
+          accept=".pdf,.txt,.md,.docx,application/pdf,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
           onChange={handleFileSelect}
           hidden
         />
+
+        <AnimatePresence initial={false}>
+          {urlInput !== null && (
+            <motion.div className="composer-strip" {...stripMotion}>
+              <label className="sr-only" htmlFor="composer-url-input">
+                Page URL
+              </label>
+              <input
+                id="composer-url-input"
+                type="url"
+                className="composer-url-input"
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                onKeyDown={handleUrlKeyDown}
+                onBlur={() => setUrlInput(null)}
+                placeholder="Paste a URL to fetch and index… (Enter to submit)"
+                autoFocus
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         <label className="sr-only" htmlFor="composer-input">
           Message
@@ -162,14 +236,35 @@ export function Composer({ model, onModelChange, onSend, isStreaming }: Composer
               type="button"
               className={buttonClass('secondary', { icon: true })}
               onClick={() => fileInputRef.current?.click()}
-              disabled={isStreaming || upload.isUploading}
-              whileHover={{ x: -2, y: -2 }}
+              disabled={isStreaming || upload.isUploading || uploadWait > 0}
+              whileHover={uploadWait > 0 ? undefined : { x: -2, y: -2 }}
               whileTap={{ x: 0, y: 0 }}
               transition={springs.press}
-              aria-label="Attach a PDF"
-              title="Attach a PDF"
+              aria-label={
+                uploadWait > 0 ? `Upload limit reached, wait ${uploadWait} seconds` : 'Attach a PDF'
+              }
+              title={
+                uploadWait > 0
+                  ? `Upload limit reached. Try again in ${uploadWait}s`
+                  : 'Attach a PDF'
+              }
             >
               <Paperclip strokeWidth={2} aria-hidden="true" />
+            </motion.button>
+
+            <motion.button
+              type="button"
+              className={buttonClass('secondary', { icon: true, selected: urlInput !== null })}
+              onClick={() => setUrlInput((current) => (current === null ? '' : null))}
+              disabled={isStreaming || upload.isUploading || uploadWait > 0}
+              whileHover={uploadWait > 0 ? undefined : { x: -2, y: -2 }}
+              whileTap={{ x: 0, y: 0 }}
+              transition={springs.press}
+              aria-pressed={urlInput !== null}
+              aria-label="Paste a URL to fetch and index"
+              title="Paste a URL to fetch and index"
+            >
+              <Link2 strokeWidth={2} aria-hidden="true" />
             </motion.button>
 
             <span className="mic-wrap">
@@ -235,9 +330,19 @@ export function Composer({ model, onModelChange, onSend, isStreaming }: Composer
               whileHover={canSend ? { x: -2, y: -2 } : undefined}
               whileTap={{ x: 0, y: 0 }}
               transition={springs.press}
-              aria-label="Send message"
+              aria-label={
+                sendWait > 0 ? `Message limit reached, wait ${sendWait} seconds` : 'Send message'
+              }
+              title={sendWait > 0 ? `Try again in ${sendWait}s` : undefined}
             >
-              <ArrowUp strokeWidth={2.5} aria-hidden="true" />
+              {/* The seconds replace the arrow rather than sitting beside it:
+                  the button is one square, and the number is the only thing
+                  worth reading while the wait is live. */}
+              {sendWait > 0 ? (
+                <span className="send-countdown">{sendWait}</span>
+              ) : (
+                <ArrowUp strokeWidth={2.5} aria-hidden="true" />
+              )}
             </motion.button>
           </div>
         </div>

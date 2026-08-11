@@ -1,4 +1,5 @@
 export { Button, type ButtonProps } from './Button'
 export { buttonClass, type ButtonVariant } from './buttonVariants'
+export { ErrorBoundary } from './ErrorBoundary'
 export { IconButton, type IconButtonProps } from './IconButton'
 export { Mark } from './Mark'

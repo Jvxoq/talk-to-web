@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { getAccessToken } from '../../../lib/session'
 
 export type VoiceStatus = 'idle' | 'connecting' | 'listening'
 
@@ -6,6 +7,10 @@ const WS_PATH = '/ws/transcribe/'
 // Deepgram's recommended rate for speech: enough fidelity, a third of the
 // bandwidth of 48kHz. The browser resamples the mic stream to match.
 const TARGET_SAMPLE_RATE = 16000
+
+// Sent as the first offered subprotocol, ahead of the token itself - see
+// `socketUrl` below and `_token_from_subprotocols` in the backend router.
+const TOKEN_SUBPROTOCOL = 'access_token'
 
 interface ServerMessage {
   type: 'ready' | 'transcript' | 'done' | 'error'
@@ -23,9 +28,35 @@ interface Session {
   node: AudioWorkletNode
 }
 
+/**
+ * Where to open the transcription socket.
+ *
+ * Every other call this app makes is same-origin, because a rewrite in front of
+ * the static host forwards it to the backend. A WebSocket cannot be one of them:
+ * Vercel's rewrites do not carry an Upgrade handshake, so on a Vercel-hosted
+ * frontend a same-origin `wss://` resolves to the Vercel domain and the
+ * connection is refused. `VITE_WS_URL` is the escape hatch - set it to the
+ * backend's own domain (`wss://api.example.com/ws/transcribe/`) and this one
+ * request goes direct.
+ *
+ * Unset, it falls back to same-origin, which is correct for `npm run dev`
+ * (Vite's proxy forwards the upgrade) and for the nginx parity harness. Note the
+ * backend checks the handshake's Origin either way, so the domain serving this
+ * page has to be in ALLOWED_WEBSOCKET_ORIGINS.
+ *
+ * The access token rides in the offered subprotocols rather than the query
+ * string: browsers offer no way to set an `Authorization` header on a WebSocket
+ * handshake, but the `protocols` argument to the `WebSocket` constructor is a
+ * real one, and it never lands in a server access log or the browser's own
+ * history the way a URL does. `TOKEN_SUBPROTOCOL` rides alongside it as a fixed
+ * marker the backend accepts with, so the token is never echoed back into a
+ * response header either.
+ */
 function socketUrl(): string {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${protocol}//${window.location.host}${WS_PATH}`
+  return (
+    import.meta.env.VITE_WS_URL ??
+    `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}${WS_PATH}`
+  )
 }
 
 export const isVoiceInputSupported = () =>
@@ -78,6 +109,15 @@ export function useVoiceInput(onFinalTranscript: (text: string) => void) {
   const start = useCallback(async () => {
     if (sessionRef.current) return
 
+    // Checked before the microphone is touched: the handshake would be refused
+    // anyway, and asking someone for mic permission only to drop the connection
+    // is the worst order to do these two things in.
+    const token = getAccessToken()
+    if (token === null) {
+      setError('Your session has expired. Please sign in again.')
+      return
+    }
+
     setError(null)
     setInterim('')
     setStatus('connecting')
@@ -117,7 +157,7 @@ export function useVoiceInput(onFinalTranscript: (text: string) => void) {
       return
     }
 
-    const socket = new WebSocket(socketUrl())
+    const socket = new WebSocket(socketUrl(), [TOKEN_SUBPROTOCOL, token])
     socket.binaryType = 'arraybuffer'
     sessionRef.current = { socket, context, stream, node }
 
