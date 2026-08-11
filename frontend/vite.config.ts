@@ -1,4 +1,6 @@
-import { defineConfig } from 'vite'
+// `defineConfig` re-exported by vitest rather than vite: same function, but the
+// type carries the `test` block below.
+import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
 // https://vite.dev/config/
@@ -9,6 +11,10 @@ export default defineConfig({
   server: {
     host: true,
     proxy: {
+      // Sign in, sign up, refresh and sign out. Proxied rather than called
+      // cross-origin so the refresh cookie is first-party in development —
+      // a `SameSite=None; Secure` cookie is never stored over plain http.
+      '/auth': backendUrl,
       '/generate': backendUrl,
       '/upload': backendUrl,
       '/conversations': backendUrl,
@@ -21,5 +27,11 @@ export default defineConfig({
       // treating it as a plain HTTP request.
       '/ws': { target: backendUrl, ws: true },
     },
+  },
+  // Both units under test are plain modules — no DOM, so no jsdom dependency.
+  // A component test added later needs `environment: 'jsdom'` and the package.
+  test: {
+    environment: 'node',
+    include: ['src/**/*.test.ts'],
   },
 })
