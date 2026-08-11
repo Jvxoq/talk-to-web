@@ -1,0 +1,64 @@
+# TLS termination and the only thing on this box listening to the internet.
+#
+# Caddy rather than nginx for one reason: it obtains and renews the Let's Encrypt
+# certificate itself, on first request, with no certbot and no renewal cron to
+# forget about. `frontend/nginx.conf` still exists, but it serves the built SPA
+# in the local parity harness - it is not what terminates TLS in production.
+#
+# API_DOMAIN comes from the root `.env` (see `.env.example`). Setting it to
+# `localhost` makes Caddy issue a certificate from its own internal CA instead of
+# talking to Let's Encrypt, which is what makes the parity harness runnable on a
+# laptop.
+#
+# There is deliberately no ACME contact address configured. Caddy's `email`
+# global option refuses an empty argument and fails the whole config at startup,
+# so wiring it to an environment variable turns "the operator left a variable
+# blank" into "the proxy will not boot". Renewal does not need it. To receive
+# Let's Encrypt expiry notices anyway, add a global block above the site with a
+# literal address:
+#
+#     {
+#         email you@example.com
+#     }
+
+{$API_DOMAIN} {
+	# The upload endpoint accepts 25 MiB. Rejecting anything past that here means
+	# an oversized body is refused at the edge after a few packets, rather than
+	# streamed all the way into the application to be counted and refused there.
+	request_body {
+		max_size 30MB
+	}
+
+	# One correlation id per request, minted here when the client did not bring
+	# one, so this access log entry and the application's log lines for the same
+	# request can be joined. Caddy's JSON log records the request headers, and
+	# the application adopts a well-formed `X-Request-ID` rather than generating
+	# its own - so the id below is the one that reaches the logs, the response
+	# header and any Sentry event.
+	@unidentified not header X-Request-ID *
+	request_header @unidentified X-Request-ID {http.request.uuid}
+
+	log {
+		output stdout
+		format json
+	}
+
+	reverse_proxy backend:8000 {
+		# The whole point of this file for the chat endpoint. Caddy buffers
+		# proxied responses by default, which turns a token-by-token SSE stream
+		# into one silent wait followed by the entire answer at once. -1 flushes
+		# every write straight through.
+		#
+		# WebSocket upgrades need no configuration here: Caddy detects the
+		# Upgrade header and switches to a bidirectional stream on its own, and
+		# imposes no idle timeout, so a voice session that goes quiet between
+		# utterances is not cut off.
+		flush_interval -1
+
+		# If the app cannot answer its liveness probe, fail fast with a 502
+		# instead of holding requests against a process that is not serving.
+		health_uri /health
+		health_interval 10s
+		health_timeout 5s
+	}
+}

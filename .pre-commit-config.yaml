@@ -1,0 +1,57 @@
+# Local mirror of the fast half of CI: the parts that catch a mistake in
+# seconds and never need a database, a vector store or an API key. mypy,
+# lint-imports, pytest and the frontend's own test/build steps stay CI-only -
+# they need a full environment and are exactly what CI is for; this file is
+# for the checks worth paying on every commit.
+#
+#   uv run pre-commit install     # from backend/, once per clone
+#   uv run pre-commit run --all-files
+#
+# Build output and caches nobody hand-edits - matched once, at the top level,
+# rather than repeated as a per-hook `exclude`.
+exclude: '(^|/)(dist|node_modules|\.venv|\.mypy_cache|\.ruff_cache|\.pytest_cache|\.import_linter_cache|uploads)/|\.tsbuildinfo$'
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+        # `.vscode/*.json` and `tsconfig*.json` carry `//` comments, which are
+        # valid JSONC but not valid JSON - this hook would flag every one of
+        # them as broken.
+        exclude: '(^|/)(\.vscode/.*\.json|tsconfig.*\.json)$'
+      # Refuses a commit that still has a real private key in it. Cheap, and
+      # exactly the class of mistake a linter never catches because the file
+      # parses fine.
+      - id: detect-private-key
+
+  # Pinned to the version `backend/pyproject.toml` and `uv.lock` already pin,
+  # so a hook failure and a CI failure never disagree about which rule fired.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.1
+    hooks:
+      - id: ruff-format
+        files: ^backend/
+      - id: ruff
+        files: ^backend/
+        args: ["--fix"]
+
+  # oxlint has no pre-commit mirror of its own and is fast enough (Rust, no
+  # type information) that shelling out per commit is not worth avoiding.
+  # `--prefix` rather than a `cd`, so this still works when pre-commit is
+  # invoked from any directory in the repo.
+  - repo: local
+    hooks:
+      - id: oxlint
+        name: oxlint (frontend)
+        entry: npm run lint --prefix frontend --
+        language: system
+        files: ^frontend/src/.*\.(ts|tsx)$
+        pass_filenames: false

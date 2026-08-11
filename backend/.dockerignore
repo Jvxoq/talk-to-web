@@ -2,9 +2,23 @@
 __pycache__
 **/__pycache__
 *.pyc
-.env
 .git
+
+# Every env file, not just `.env`. The production compose file loads
+# `.env.production` at runtime through `env_file:`, which is the only way secrets
+# should reach the container - baked into an image they travel to every registry
+# the image is pushed to and survive in a layer even if a later step deletes them.
+.env
+.env.*
+
 uploads/*.pdf
 uploads/*.txt
+
+# Tool caches: build inputs, never runtime ones.
+.ruff_cache
+.mypy_cache
+.pytest_cache
+.import_linter_cache
+
 DESIGN.md
 README.md

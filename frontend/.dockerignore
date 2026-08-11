@@ -2,3 +2,11 @@ node_modules
 dist
 .git
 *.tsbuildinfo
+.env*
+!.env.example
+
+# Vite bakes every VITE_* value into the bundle at build time, so an .env
+# copied into the image ships to the browser. Only the examples may be seen.
+.env
+.env.*
+!.env.example

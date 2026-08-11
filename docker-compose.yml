@@ -1,3 +1,13 @@
+# Development: the whole stack on one machine, with hot reload.
+#
+# Unlike `docker-compose.prod.yml`, this one runs its own Postgres and Qdrant -
+# nobody should need a Neon project to check out the repo and send a message.
+# What it does share with production is the shape of startup: migrations run as
+# their own step, and the backend waits for its dependencies instead of racing
+# them.
+#
+#   docker compose up --build
+
 services:
   qdrant:
     image: qdrant/qdrant:latest
@@ -5,6 +15,14 @@ services:
       - "6333:6333"
     volumes:
       - qdrant_data:/qdrant/storage
+    healthcheck:
+      # The image has no curl or wget, but it does ship the `qdrant` binary's
+      # own readiness endpoint - and bash, which can open a TCP socket.
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/localhost/6333' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+      retries: 10
 
   postgres:
     image: postgres:17-alpine
@@ -16,16 +34,43 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # `-U`/`-d` matter: without them pg_isready asks about a database named
+      # after the OS user, which does not exist, and reports failure forever.
+      test: ["CMD-SHELL", "pg_isready -U postgres -d talk_to_the_web"]
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+      retries: 10
 
-  backend:
+  # Dev gets its schema the same way production does. The composition root used
+  # to call `Base.metadata.create_all` when ENVIRONMENT was "local"; it no longer
+  # does, in any environment, so this service is what creates the tables.
+  migrate:
     build:
       context: ./backend
       dockerfile: Dockerfile.dev
+    # Shared with `backend` below so the image is built once, not twice.
+    image: talk-to-the-web-backend:dev
+    command: ["uv", "run", "alembic", "upgrade", "head"]
     env_file:
       - ./backend/.env
     environment:
-      QDRANT_HOST: qdrant
-      QDRANT_PORT: 6333
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/talk_to_the_web
+    volumes:
+      - ./backend:/app
+      - backend_venv:/app/.venv
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    image: talk-to-the-web-backend:dev
+    env_file:
+      - ./backend/.env
+    environment:
+      QDRANT_URL: http://qdrant:6333
       DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/talk_to_the_web
     ports:
       - "8000:8000"
@@ -34,8 +79,12 @@ services:
       - backend_venv:/app/.venv
       - backend_uploads:/app/uploads
     depends_on:
-      - qdrant
-      - postgres
+      qdrant:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   frontend:
     build:
@@ -50,6 +99,31 @@ services:
       - frontend_node_modules:/app/node_modules
     depends_on:
       - backend
+
+  # One-shot housekeeping, the same shape as `migrate`: it runs, it exits, and
+  # nothing depends on it. Not started by `docker compose up` - it needs its own
+  # profile so a routine `up` does not run it before the schema it reads even
+  # exists. Trigger it by hand or from cron:
+  #
+  #   docker compose --profile jobs run --rm cleanup-refresh-tokens
+  cleanup-refresh-tokens:
+    profiles: ["jobs"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    image: talk-to-the-web-backend:dev
+    command: ["uv", "run", "python", "-m", "app.cleanup_expired_refresh_tokens"]
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/talk_to_the_web
+    volumes:
+      - ./backend:/app
+      - backend_venv:/app/.venv
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
 
 volumes:
   qdrant_data:

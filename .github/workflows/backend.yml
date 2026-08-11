@@ -1,0 +1,193 @@
+name: backend
+
+# Path-filtered so a frontend-only change does not pay for a Python job. Note
+# that a filtered workflow reports no status at all when it is skipped, so these
+# checks must not be marked "required" in branch protection until there is a
+# separate always-running gate job to depend on.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  # One job, not four. The suite runs in under four seconds and every step reuses
+  # the same `uv sync`, so splitting lint/type/test across parallel jobs would
+  # spend more on environment setup than the parallelism buys back.
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v9
+        with:
+          python-version: '3.13'
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      # `--locked` rather than `--frozen`: it fails when uv.lock has drifted from
+      # pyproject.toml, which makes lockfile staleness a build failure for free.
+      - name: Install dependencies
+        run: uv sync --all-groups --locked
+
+      # Every step is scoped to `app tests`. A bare `.` would pull in the
+      # pre-refactor modules at the backend root, which are superseded and not
+      # held to these standards.
+      - name: Format
+        run: uv run ruff format --check app tests
+
+      - name: Lint
+        run: uv run ruff check app tests --output-format=github
+
+      # Strict mypy is what proves the fakes in tests/fakes.py still satisfy the
+      # Protocol ports; it is a correctness check here, not a style one.
+      - name: Type check
+        run: uv run mypy app tests
+
+      # Runs after the full sync on purpose: `include_external_packages = true`
+      # means lint-imports needs every runtime dependency importable, so it
+      # cannot run against a lint-only install.
+      - name: Architecture contracts
+        run: uv run lint-imports
+
+      # The coverage floor lives in [tool.coverage.report] in pyproject.toml, so
+      # this command behaves identically on a laptop.
+      - name: Test
+        run: uv run pytest --cov=app --cov-report=term-missing --cov-report=xml
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: backend-coverage
+          path: backend/coverage.xml
+          if-no-files-found: warn
+
+  # Its own job, because it is the only one that needs infrastructure. Keeping it
+  # out of `quality` is what lets the fast suite stay a four-second job that a
+  # laptop can reproduce with no daemon running, and lets this one fail for its
+  # own reasons rather than as "the backend job is red".
+  #
+  # The two are not redundant. `quality` runs everything against fakes, SQLite
+  # and Qdrant's in-process local mode; this runs the handful of claims those
+  # cannot make - timestamptz, unique violations, real FK cascades, two
+  # connections, Qdrant payload indexes, and the Alembic history itself.
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          # The maintenance database the suite connects to in order to create
+          # and drop its own scratch databases. It never holds a test's tables.
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        # A service container has no `depends_on`, so this health check is the
+        # only thing standing between the job and a connection refused on the
+        # first test.
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+      qdrant:
+        image: qdrant/qdrant:latest
+        ports:
+          - 6333:6333
+        # No curl, wget or shell utilities in the image, but bash can open a TCP
+        # socket - the same trick `docker-compose.yml` uses for this service.
+        options: >-
+          --health-cmd "timeout 2 bash -c '</dev/tcp/localhost/6333' || exit 1"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v9
+        with:
+          python-version: '3.13'
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Install dependencies
+        run: uv sync --all-groups --locked
+
+      # `-m integration` replaces the `-m "not integration"` in pyproject.toml
+      # rather than adding to it, which is what selects exactly this suite.
+      #
+      # Deliberately its own variables, not DATABASE_URL: these tests create and
+      # drop databases and run `alembic downgrade base`, and nothing destructive
+      # should read the variable a real deployment is configured with.
+      #
+      # The skip check is the other half of the gate. Missing services or a
+      # renamed variable make every test skip, and pytest exits 0 for a run that
+      # skipped everything - so without this the job would go green having
+      # tested nothing, which is the most likely way for this gate to stop being
+      # one. `pipefail` keeps pytest's own exit code from being swallowed by the
+      # pipe into tee.
+      - name: Integration tests
+        env:
+          INTEGRATION_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/postgres
+          INTEGRATION_QDRANT_URL: http://localhost:6333
+        run: |
+          set -o pipefail
+          uv run pytest -m integration -rs | tee result.txt
+          if grep -qE '[0-9]+ skipped' result.txt; then
+            echo "::error::integration tests skipped - services or env vars are missing"
+            exit 1
+          fi
+
+  # Blocking, because the standing advisory list is empty: aiohttp, cryptography,
+  # h2, pyasn1 and pypdf were bumped in uv.lock when this pipeline was written, so
+  # a red audit from here on means a newly published advisory rather than a known
+  # backlog. That is the only state in which this gate carries information.
+  #
+  # The trade-off is that a CVE published against a transitive dependency will
+  # fail an unrelated PR. That is intended - it is how you find out - but if it
+  # ever needs muting, `continue-on-error: true` on this job is the one-line
+  # release valve, and `--ignore-vuln <ID>` silences a single finding.
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v9
+        with:
+          python-version: '3.13'
+
+      - name: Export runtime dependencies
+        run: uv export --frozen --no-dev --no-hashes --format requirements-txt -o requirements-audit.txt
+
+      # `--no-deps --disable-pip`: uv has already produced a fully-pinned,
+      # complete transitive set, so there is nothing left to resolve. Without
+      # both flags pip-audit builds a throwaway virtualenv and re-resolves the
+      # tree through pip, which is slow and fails in constrained environments.
+      - name: Audit
+        run: uvx pip-audit --no-deps --disable-pip --progress-spinner=off -r requirements-audit.txt

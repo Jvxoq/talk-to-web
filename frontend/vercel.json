@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "framework": "vite",
+  "rewrites": [
+    { "source": "/auth/:path*", "destination": "https://api.example.com/auth/:path*" },
+    { "source": "/generate/:path*", "destination": "https://api.example.com/generate/:path*" },
+    { "source": "/upload/:path*", "destination": "https://api.example.com/upload/:path*" },
+    {
+      "source": "/conversations/:path*",
+      "destination": "https://api.example.com/conversations/:path*"
+    },
+    { "source": "/models/:path*", "destination": "https://api.example.com/models/:path*" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}

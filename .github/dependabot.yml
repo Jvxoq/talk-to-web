@@ -1,0 +1,51 @@
+# Dependency update PRs, one config per ecosystem this repo actually has.
+#
+# Grouped into one weekly PR per ecosystem rather than one PR per package - a
+# security-relevant bump for a dependency graph this size is rare enough that a
+# grouped update stays reviewable, and thirty individual PRs a week would just
+# get batch-approved unread anyway, which defeats the point of review.
+#
+# `backend.yml`'s `audit` job and `frontend.yml`'s `audit` job are the other
+# half of this: dependabot proposes the bump, CI proves it does not break
+# anything and that nothing else in the tree has a known vulnerability.
+version: 2
+updates:
+  # `uv.lock` - dependabot's "uv" ecosystem understands it directly, the same
+  # way `astral-sh/setup-uv` in backend.yml does.
+  - package-ecosystem: "uv"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+    groups:
+      backend-dependencies:
+        patterns: ["*"]
+
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+    groups:
+      frontend-dependencies:
+        patterns: ["*"]
+
+  # Both Dockerfiles pin a base image tag; this is what notices when
+  # `python:3.13-slim-bookworm` or `node:22-alpine` gets a security update.
+  - package-ecosystem: "docker"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "docker"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+
+  # The workflow files themselves - actions/checkout, astral-sh/setup-uv and
+  # the rest, each pinned to a major version.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns: ["*"]
