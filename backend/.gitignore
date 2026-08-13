@@ -22,3 +22,7 @@ uploads/
 .ruff_cache/
 .mypy_cache/
 .pytest_cache/
+
+# Eval run artifacts - reproducible from evals/datasets and a real run, never
+# something to commit.
+evals/results/

@@ -18,7 +18,10 @@
 
 services:
   caddy:
-    image: caddy:2-alpine
+    build:
+      context: .
+      dockerfile: Caddy.Dockerfile
+    image: talk-to-the-web-caddy:latest
     restart: unless-stopped
     ports:
       - "80:80"
@@ -64,6 +67,33 @@ services:
   backend:
     image: talk-to-the-web-backend:latest
     restart: unless-stopped
+    # Overrides the image's `fastapi run` (see `backend/Dockerfile`) with plain
+    # uvicorn, because `fastapi run` has no `--limit-concurrency`: one worker,
+    # refusing the sixth simultaneous connection outright instead of queuing it
+    # forever behind five that are each holding a streamed reply open.
+    command:
+      [
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--workers",
+        "1",
+        "--limit-concurrency",
+        "5",
+      ]
+    # The equivalent of a systemd unit's `MemoryMax=`/`CPUQuota=`, applied where
+    # this process is actually supervised: `docker compose` already restarts it
+    # on exit (`restart: unless-stopped`) and the daemon that runs it is itself
+    # a systemd service, so a second, bespoke unit wrapping bare uvicorn would
+    # duplicate that supervision rather than add to it. These limits are what
+    # make a memory or CPU spike a killed-and-restarted container instead of a
+    # t3/t2.micro (1 vCPU, 1 GiB RAM) locking up entirely - sized to leave room
+    # for caddy and the OS on that instance; raise them if the box is bigger.
+    mem_limit: 700m
+    cpus: 0.8
     env_file:
       - ./backend/.env.production
     environment:

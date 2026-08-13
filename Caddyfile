@@ -38,6 +38,26 @@
 	@unidentified not header X-Request-ID *
 	request_header @unidentified X-Request-ID {http.request.uuid}
 
+	# Second layer behind Cloudflare, in case Cloudflare is bypassed: no single
+	# address may call the metered routes - chat replies and uploads - more
+	# than a handful of times a minute. This is deliberately looser than the
+	# per-account limits the application itself enforces
+	# (`CHAT_RATE_LIMIT_REQUESTS`, `UPLOAD_RATE_LIMIT_REQUESTS`) - it exists to
+	# blunt a script hammering the edge before a TCP connection even reaches
+	# the backend, not to be the primary budget. Requires the `caddy-ratelimit`
+	# module, built into this image by `Caddy.Dockerfile` - the stock
+	# `caddy:2-alpine` image has no `rate_limit` directive at all.
+	rate_limit {
+		zone metered_routes {
+			match {
+				path /generate* /upload*
+			}
+			key {remote_host}
+			events 20
+			window 1m
+		}
+	}
+
 	log {
 		output stdout
 		format json
