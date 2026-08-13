@@ -42,8 +42,11 @@ class RetrieveDocuments(BaseTool[RetrieveDocumentsArgs]):
         "Search the documents this user has uploaded and return the passages that "
         "match. Use this first for any question that refers to 'my document', "
         "'the PDF', 'the file I uploaded', a report, a contract, or anything else "
-        "the user appears to have supplied rather than published on the web. This "
-        "searches private uploaded files only - it cannot see the public internet."
+        "the user appears to have supplied rather than published on the web - and "
+        "also for any question naming a specific person, company, product or topic "
+        "you don't already know, even without that phrasing, since the answer may "
+        "be in a file the user uploaded. This searches private uploaded files only "
+        "- it cannot see the public internet."
     )
     args_model: ClassVar[type[BaseModel]] = RetrieveDocumentsArgs
 
@@ -60,7 +63,8 @@ class RetrieveDocuments(BaseTool[RetrieveDocumentsArgs]):
                 content=(
                     f"No passages in the uploaded documents matched {args.query!r}. "
                     "Nothing relevant has been uploaded, or the wording is too far "
-                    "from the text."
+                    "from the text. If this is about current or public information, "
+                    "try search_web next; otherwise answer from what you already know."
                 )
             )
 

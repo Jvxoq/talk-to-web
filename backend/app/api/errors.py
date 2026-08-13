@@ -14,6 +14,7 @@ from app.domain.chat.errors import (
     ConversationNotFound,
     EmptyUserMessage,
     UnsafeUrl,
+    UnsafeUserMessage,
     UnsupportedModel,
 )
 from app.domain.identity.errors import (
@@ -52,6 +53,11 @@ _STATUS: dict[type[Exception], int] = {
     DocumentTooLarge: status.HTTP_413_CONTENT_TOO_LARGE,
     UnsupportedModel: status.HTTP_400_BAD_REQUEST,
     UnsafeUrl: status.HTTP_400_BAD_REQUEST,
+    # 422, not 400: the request is syntactically well-formed JSON with a valid
+    # message field - nothing about the wire format was wrong. Not 403 either:
+    # that status asserts an authorization decision ("we know who you are and
+    # the answer is no"), and a guardrail refusal is not about who is asking.
+    UnsafeUserMessage: status.HTTP_422_UNPROCESSABLE_CONTENT,
     MalformedStartFrame: status.HTTP_400_BAD_REQUEST,
     TranscriptionUnavailable: status.HTTP_503_SERVICE_UNAVAILABLE,
     # 401 for all three: "who are you" was not answered. A 403 would mean the

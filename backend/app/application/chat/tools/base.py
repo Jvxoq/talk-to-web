@@ -13,6 +13,7 @@ from typing import Any, ClassVar, Protocol, runtime_checkable
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from app.application.chat.guardrails.tool_output import ToolOutputGuard
 from app.application.chat.models import Source, ToolCall
 
 
@@ -152,10 +153,19 @@ class ToolRegistry:
     added.
     """
 
-    def __init__(self, tools: Sequence[AgentTool]) -> None:
+    def __init__(self, tools: Sequence[AgentTool], *, guard: ToolOutputGuard) -> None:
+        # `guard` is required, not `ToolOutputGuard | None = None`. This
+        # module's own tools argue that "an optional parameter is an
+        # invitation to forget it" (see `BaseTool._run`'s docstring) - the same
+        # reasoning applies here with higher stakes: a guard that defaults to
+        # off is a guard that is off in production, silently, the first time a
+        # caller forgets to pass one. Forcing every call site to supply a
+        # guard means the choice to fence tool output is made once, at the
+        # composition root, and cannot be quietly skipped anywhere else.
         self._tools = {tool.spec.name: tool for tool in tools}
         if len(self._tools) != len(tools):
             raise ValueError("Two tools share a name; the model could not tell them apart.")
+        self._guard = guard
 
     def specs(self) -> list[ToolSpec]:
         return [tool.spec for tool in self._tools.values()]
@@ -169,11 +179,24 @@ class ToolRegistry:
         streaming by the time this runs, so an exception here could only
         truncate a reply that the model was perfectly capable of finishing
         without that tool.
+
+        This is also the single choke point every tool result passes through
+        on its way back to the model, which is why the fence is applied here
+        and nowhere else - a future caller cannot add a new tool, or a new way
+        to invoke one, that bypasses it.
         """
         tool = self._tools.get(call.name)
         if tool is None:
             # Models do occasionally invent a tool. Telling it which ones are
             # real costs one round trip; raising would cost the whole reply.
+            #
+            # This string is NOT fenced. Unlike a tool's `content`, it is text
+            # this app wrote from a fixed template plus the model's own
+            # requested name and this registry's own tool names - nothing an
+            # external source shaped. Fencing it anyway would suggest to the
+            # model that its own name choice was untrusted external data,
+            # which it is not; the fence exists for content that crossed a
+            # trust boundary, and this string never did.
             available = ", ".join(self._tools) or "none"
             logger.warning("Model asked for unknown tool {!r}", call.name)
             return ToolOutcome(
@@ -182,10 +205,37 @@ class ToolRegistry:
             )
 
         try:
-            return await tool.run(call.arguments, context)
+            outcome = await tool.run(call.arguments, context)
         except Exception as error:
             # `BaseTool.run` already catches, so reaching here means a tool that
             # does not extend it. Belt and braces, because one careless tool
             # must not be able to kill an open stream.
+            #
+            # Same reasoning as the unknown-tool message above: this string is
+            # ours, not the failed tool's output, so it is not fenced either.
             logger.warning("Tool {} raised out of run(): {}", call.name, error)
             return ToolOutcome(content=f"{call.name} is unavailable right now.", ok=False)
+
+        if not outcome.ok:
+            # A `BaseTool.run` failure path (invalid arguments, a caught
+            # exception) is also this app's own text, not the external
+            # content a tool fetched - same reasoning, no fence.
+            return outcome
+
+        fenced_content, findings = self._guard.wrap(tool=call.name, content=outcome.content)
+        if findings:
+            # Findings are for observability, never control flow: `invoke`
+            # keeps its guarantee of never raising and never blocking a
+            # successful tool call on what the fence stripped. Logged at
+            # warning so a stripped instruction line in fetched content shows
+            # up in both the trace and the log, without slowing the model
+            # down waiting on a decision nobody is making here.
+            categories = ", ".join(sorted({finding.category.value for finding in findings}))
+            logger.warning(
+                "Tool {} output contained {} finding(s) ({}); stripped before returning",
+                call.name,
+                len(findings),
+                categories,
+            )
+
+        return ToolOutcome(content=fenced_content, ok=outcome.ok, sources=outcome.sources)

@@ -39,7 +39,10 @@ class SearchWeb(BaseTool[SearchWebArgs]):
         "knowledge: current events, prices, releases, schedules, statistics, "
         "anything that changed recently, and any question where being out of date "
         "would be wrong. Use it also when you need a page's address before calling "
-        "fetch_web_pages. Do not use it when the user already gave you the link."
+        "fetch_web_pages. Do not use it when the user already gave you the link. "
+        "If the question names a specific person, company, product or topic you "
+        "don't recognize, try retrieve_documents first - it may be in a file the "
+        "user uploaded - and only reach for this once that comes back empty."
     )
     args_model: ClassVar[type[BaseModel]] = SearchWebArgs
 

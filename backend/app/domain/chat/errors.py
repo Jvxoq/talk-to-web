@@ -22,6 +22,21 @@ class UnsupportedModel(ChatError):
         super().__init__(f"Model {model!r} is not available")
 
 
+class UnsafeUserMessage(ChatError):
+    """A message a guardrail refused to send to the model.
+
+    The message this carries is deliberately generic, and the reason lives in
+    `reason` for the log and the trace rather than in the text the caller reads.
+    Telling a caller which pattern fired is a free oracle: it turns "refused"
+    into a signal you can iterate against until you find the phrasing that gets
+    through, which is exactly the loop a guardrail exists to deny.
+    """
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__("This message was refused by a safety check")
+
+
 class UnsafeUrl(ChatError):
     """A URL the server must not open a connection to.
 
