@@ -431,6 +431,15 @@ a.source-chip:hover {
   flex-shrink: 0;
 }
 
+/* --- Usage note ---------------------------------------------------------- */
+
+.usage-note {
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-tab);
+  color: var(--color-muted);
+}
+
 .bubble {
   max-width: 84%;
   padding: var(--space-1) 14px;

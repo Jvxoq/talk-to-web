@@ -19,6 +19,16 @@ export interface ToolActivity {
   sources?: Source[]
 }
 
+/** What one reply spent, as reported by the `usage` SSE frame. */
+export interface Usage {
+  promptTokens: number
+  completionTokens: number
+  costUsd: number
+  model: string
+  /** False means no price was on file for that model — not that it was free. */
+  priced: boolean
+}
+
 export interface Message {
   /** Stable across re-renders so AnimatePresence keys off identity, not order. */
   id: string
@@ -27,6 +37,8 @@ export interface Message {
   error?: boolean
   /** Tool calls made while producing this (assistant) turn, keyed by name. */
   tools?: ToolActivity[]
+  /** Present once the `usage` frame lands, just before the assistant turn completes. */
+  usage?: Usage
 }
 
 export interface UploadedFile {

@@ -6,6 +6,7 @@ import remarkGfm from 'remark-gfm'
 import { springs } from '../../../lib/motion'
 import { normalizeStreamingMarkdown } from '../markdown'
 import type { Message, Source, ToolActivity } from '../types'
+import { formatCost, formatTokens } from '../usage'
 import { TypingDots } from './TypingDots'
 
 interface MessageBubbleProps {
@@ -150,6 +151,13 @@ export const MessageBubble = memo(function MessageBubble({
             </li>
           ))}
         </ul>
+      )}
+      {message.usage && !pending && (
+        // Quiet, dev-facing detail — plain text, not a chip with a border like
+        // tool/source chips, so it reads as a footnote rather than a headline.
+        <span className="usage-note" title={message.usage.model}>
+          {formatTokens(message.usage)} · {formatCost(message.usage)}
+        </span>
       )}
     </motion.div>
   )

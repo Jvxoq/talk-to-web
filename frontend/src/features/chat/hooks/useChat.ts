@@ -178,6 +178,15 @@ export function useChat(model: Model, conversationId: number) {
             updateToolActivity(event.activity)
             continue
           }
+          if (event.type === 'usage') {
+            setMessages((prev) => {
+              const next = [...prev]
+              const last = next[next.length - 1]
+              next[next.length - 1] = { ...last, usage: event.usage }
+              return next
+            })
+            continue
+          }
           assembled += event.text
           setMessages((prev) => {
             const next = [...prev]

@@ -1,6 +1,7 @@
 import { ApiError, requireStringFields } from '../../lib/http'
 import { authorizedFetch } from '../../lib/session'
-import type { DocumentSummary, Model, ToolActivity, UploadedFile } from './types'
+import { parseUsage } from './usage'
+import type { DocumentSummary, Model, ToolActivity, UploadedFile, Usage } from './types'
 
 const API_URL = import.meta.env.VITE_API_URL ?? '/generate/text/'
 const UPLOAD_URL = import.meta.env.VITE_UPLOAD_URL ?? '/upload/file/'
@@ -12,6 +13,7 @@ const MODELS_URL = import.meta.env.VITE_MODELS_URL ?? '/models/'
 export type StreamEvent =
   | { type: 'delta'; text: string }
   | { type: 'tool'; activity: ToolActivity }
+  | { type: 'usage'; usage: Usage }
   | { type: 'error'; message: string }
 
 interface StreamRequest {
@@ -26,6 +28,8 @@ interface StreamRequest {
 interface StreamFrame {
   delta?: string
   tool?: ToolActivity
+  /** Raw and unnarrowed here — `parseUsage` does the boundary check below. */
+  usage?: unknown
   done?: boolean
   error?: string
 }
@@ -129,6 +133,13 @@ export async function* streamChat({
         if (parsed.done) return
         if (parsed.tool !== undefined) {
           yield { type: 'tool', activity: parsed.tool }
+        }
+        if (parsed.usage !== undefined) {
+          // A frame this build doesn't yet know the shape of is dropped, the
+          // same way an unparsable frame is dropped above — not a reason to
+          // tear down an otherwise-working stream.
+          const usage = parseUsage(parsed.usage)
+          if (usage) yield { type: 'usage', usage }
         }
         if (parsed.delta) yield { type: 'delta', text: parsed.delta }
       }
