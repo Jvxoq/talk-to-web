@@ -1,0 +1,15 @@
+Aurora Robotics Overview
+
+Aurora Robotics is a fictional company founded in 2019 that builds warehouse
+picking robots. Its flagship product is the AR-7 arm, which can pick up to
+900 items per hour. The company is headquartered in Fictionville and was
+founded by Maya Chen and Tomas Ruiz. Aurora Robotics raised a Series B round
+of 40 million dollars in 2022, led by Fictional Ventures. As of the most
+recent fictional annual report, the company employs 140 people across three
+sites.
+
+The AR-7 arm uses a six-axis design and a suction-and-pinch gripper that
+switches automatically depending on the shape of the item being picked. It is
+rated for continuous operation in refrigerated warehouses down to minus 20
+degrees Celsius, which is the feature most often cited by customers in the
+cold-storage sector.

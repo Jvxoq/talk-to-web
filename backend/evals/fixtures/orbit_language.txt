@@ -1,0 +1,13 @@
+The Orbit Programming Language
+
+Orbit is a fictional programming language designed for teaching functional
+programming. It was created in 2015 by Dr. Elena Popov. Orbit programs are
+written in files ending with the .orb extension. The language has no mutable
+variables: every binding is immutable by default, and the only way to change
+a value is to produce a new one. Orbit's package manager is called orbit-pm,
+and its standard library is called orbit-core.
+
+Orbit compiles to bytecode run by a small virtual machine called orbit-vm.
+The language's most distinctive feature is that every function must declare
+whether it can fail, using a trailing question mark on its name - a function
+named divide? can return an error, while one named divide cannot.
