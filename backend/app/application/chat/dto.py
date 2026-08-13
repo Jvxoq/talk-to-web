@@ -55,13 +55,37 @@ class ReplyFailed(BaseModel):
     detail: str
 
 
+class ReplyUsage(BaseModel):
+    """What this reply spent, totalled across every model call it made.
+
+    Every lap counts, not just the answering one: a reply that called three
+    tools and condensed twice paid for the condenser too, and a number that
+    omitted that would understate the expensive replies by the most.
+
+    `cost_usd` is 0.0 for a model with no price on file. That is reported as
+    unpriced rather than as free - see `app.domain.usage.value_objects.CostBook`.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    prompt_tokens: int
+    completion_tokens: int
+    cost_usd: float
+    model: str
+    # False when no price was on file, so a reader can tell "this cost nothing"
+    # from "nobody told me what this costs".
+    priced: bool = True
+
+
 class ReplyCompleted(BaseModel):
     """The model finished cleanly."""
 
     model_config = ConfigDict(frozen=True)
 
 
-ReplyEvent = ReplyDelta | ReplyToolStarted | ReplyToolFinished | ReplyFailed | ReplyCompleted
+ReplyEvent = (
+    ReplyDelta | ReplyToolStarted | ReplyToolFinished | ReplyUsage | ReplyFailed | ReplyCompleted
+)
 
 
 class StartConversationInput(BaseModel):

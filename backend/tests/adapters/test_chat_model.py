@@ -35,6 +35,7 @@ from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResu
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from pydantic import Field
+from tenacity import wait_none
 
 from app.adapters.llm.langchain_chat_model import (
     LangChainChatModel,
@@ -64,6 +65,11 @@ class ScriptedChatModel(BaseChatModel):
 
     chunks: list[AIMessageChunk] = Field(default_factory=list)
     fail_with: Exception | None = None
+    # How many calls raise `fail_with` before a call is let through to stream
+    # `chunks` instead - a real provider erroring on the first N attempts of a
+    # retried call, then recovering on the next.
+    fail_calls: int = 10**9
+    calls: int = 0
     # What the model was actually called with. Recorded at the call rather than
     # at `bind`, so the assertions are about what reached the provider and not
     # about which Runnable wrapper carried it there.
@@ -95,7 +101,8 @@ class ScriptedChatModel(BaseChatModel):
     ) -> AsyncIterator[ChatGenerationChunk]:
         self.seen_messages.append(messages)
         self.seen_kwargs.update(kwargs)
-        if self.fail_with is not None:
+        self.calls += 1
+        if self.fail_with is not None and self.calls <= self.fail_calls:
             raise self.fail_with
         for chunk in self.chunks:
             yield ChatGenerationChunk(message=chunk)
@@ -119,15 +126,29 @@ class ScriptedChatModel(BaseChatModel):
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=""))])
 
 
-def scripted(*chunks: AIMessageChunk, fails: Exception | None = None) -> LangChainChatModel:
+def scripted(
+    *chunks: AIMessageChunk,
+    fails: Exception | None = None,
+    fail_calls: int = 10**9,
+    retry_attempts: int = 1,
+) -> LangChainChatModel:
     """A `LangChainChatModel` wired to a scripted provider, built without one.
 
     `__new__` rather than `__init__` because the constructor's whole job is to
     call `init_chat_model`, which is the thing a streaming test is not about.
     The constructor gets its own tests below.
+
+    `retry_attempts` defaults to 1 (no retry) so a test asserting a failure
+    surfaces doesn't also have to wait through the production backoff; a test
+    of the retry itself opts in with a higher count and `wait_none()` so it
+    stays instant too.
     """
     adapter = LangChainChatModel.__new__(LangChainChatModel)
-    adapter._models = {MODEL: ScriptedChatModel(chunks=list(chunks), fail_with=fails)}
+    adapter._models = {
+        MODEL: ScriptedChatModel(chunks=list(chunks), fail_with=fails, fail_calls=fail_calls)
+    }
+    adapter._retry_attempts = retry_attempts
+    adapter._retry_wait = wait_none()
     return adapter
 
 
@@ -380,16 +401,12 @@ class TestBindsTheRequest:
 
 
 class TestFailures:
-    async def test_an_unknown_model_name_is_refused_by_name(self) -> None:
+    async def test_an_unknown_model_name_is_refused_naming_it_and_what_is_configured(
+        self,
+    ) -> None:
         model = scripted(text("ok"))
 
-        with pytest.raises(ValueError, match="Unknown model 'gpt-9'"):
-            await collect(model.stream(model="gpt-9", temperature=0.5, messages=[], tools=[]))
-
-    async def test_the_refusal_lists_what_is_actually_configured(self) -> None:
-        model = scripted(text("ok"))
-
-        with pytest.raises(ValueError, match=MODEL):
+        with pytest.raises(ValueError, match=f"Unknown model 'gpt-9'.*{MODEL}"):
             await collect(model.stream(model="gpt-9", temperature=0.5, messages=[], tools=[]))
 
     async def test_a_provider_failure_becomes_a_runtime_error(self) -> None:
@@ -410,6 +427,65 @@ class TestFailures:
             await collect(model.stream(model=MODEL, temperature=0.5, messages=[], tools=[]))
 
         assert caught.value.__cause__ is original
+
+
+class TestRetries:
+    async def test_a_failure_before_any_text_is_retried_and_recovers(self) -> None:
+        model = scripted(
+            text("Once "),
+            text("upon a time."),
+            fails=TimeoutError("upstream went away"),
+            fail_calls=1,
+            retry_attempts=3,
+        )
+        provider = model._models[MODEL]
+        assert isinstance(provider, ScriptedChatModel)
+
+        chunks = await collect(model.stream(model=MODEL, temperature=0.5, messages=[], tools=[]))
+
+        assert [chunk.text for chunk in chunks] == ["Once ", "upon a time."]
+        assert provider.calls == 2
+
+    async def test_exhausting_every_attempt_still_becomes_a_runtime_error(self) -> None:
+        model = scripted(fails=TimeoutError("upstream went away"), retry_attempts=3)
+        provider = model._models[MODEL]
+        assert isinstance(provider, ScriptedChatModel)
+
+        with pytest.raises(RuntimeError, match="Completion provider failed"):
+            await collect(model.stream(model=MODEL, temperature=0.5, messages=[], tools=[]))
+
+        assert provider.calls == 3
+
+    async def test_a_failure_after_text_has_streamed_is_not_retried(self) -> None:
+        # A retry here would replay "Once " on an SSE stream a client has
+        # already rendered - not safe once any token has reached the caller.
+        model = scripted(
+            text("Once "),
+            fails=TimeoutError("upstream went away"),
+            fail_calls=10**9,
+            retry_attempts=3,
+        )
+        provider = model._models[MODEL]
+        assert isinstance(provider, ScriptedChatModel)
+        # Make the scripted provider stream the chunk, then fail, on every call.
+        provider.calls = 0
+
+        async def _astream_then_fail(
+            messages: list[BaseMessage],
+            stop: list[str] | None = None,
+            run_manager: AsyncCallbackManagerForLLMRun | None = None,
+            **kwargs: Any,
+        ) -> AsyncIterator[ChatGenerationChunk]:
+            provider.calls += 1
+            yield ChatGenerationChunk(message=text("Once "))
+            raise TimeoutError("upstream went away")
+
+        provider._astream = _astream_then_fail  # type: ignore[method-assign]
+
+        with pytest.raises(RuntimeError, match="Completion provider failed"):
+            await collect(model.stream(model=MODEL, temperature=0.5, messages=[], tools=[]))
+
+        assert provider.calls == 1
 
 
 class TestConstruction:

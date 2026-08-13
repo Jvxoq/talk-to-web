@@ -30,6 +30,70 @@ class Settings(BaseSettings):
     # a model call. Turn it up deliberately, in small fractions.
     sentry_traces_sample_rate: float = 0.0
 
+    # --- Tracing (Langfuse) ---
+    # Unset means the tracer is never built: the app runs on `NullTracer`, no
+    # key is held locally, and a test run sends nothing anywhere. Same posture
+    # as `sentry_dsn` above, for the same reason.
+    #
+    # Cloud rather than self-hosted, deliberately. Self-hosting Langfuse is five
+    # more containers - web, worker, ClickHouse, MinIO, Redis - plus its own
+    # Postgres, and this deployment is a 1 GiB instance where the backend alone
+    # is capped at 700m. The hosted free tier costs two variables.
+    langfuse_public_key: SecretStr | None = None
+    langfuse_secret_key: SecretStr | None = None
+    langfuse_host: str = "https://cloud.langfuse.com"
+    # Whether prompts and completions ride along with the trace. On, because a
+    # trace without the text is a latency chart. Safe *because* the input
+    # guardrail redacts before any span is opened - turn it off for a deployment
+    # where that is not enough.
+    langfuse_capture_content: bool = True
+    # How long shutdown waits for queued spans. Bounded, and far below the
+    # compose `stop_grace_period` of 30s: a tracing host that has gone away must
+    # not turn a deploy into a hang.
+    langfuse_flush_timeout_seconds: float = 2.0
+
+    # --- Guardrails ---
+    # Redact secrets and personal data out of the user's message before it
+    # reaches the model, the checkpointer or the trace. Everything downstream
+    # sees the redacted text, which is what keeps a pasted API key from being
+    # archived by three systems at once.
+    guardrail_pii_redaction_enabled: bool = True
+    # Whether a suspected prompt injection is refused or merely recorded.
+    #
+    # Off, deliberately, and not as timidity. "Ignore the previous paragraph and
+    # summarize the rest" is a sentence a real user types at a real PDF, and a
+    # heuristic that blocks it on day one refuses honest work to stop an attack
+    # nobody has measured yet. Flag first, read the false-positive rate off
+    # `evals/datasets/benign.jsonl`, then turn it on.
+    guardrail_block_on_injection: bool = False
+    # Strip instruction-shaped lines out of tool results before the model reads
+    # them. The fence around untrusted content is always applied; this is the
+    # second, sharper pass on top of it.
+    guardrail_strip_tool_instructions: bool = True
+    # How much text any single detector will scan.
+    #
+    # This is a concurrency limit wearing a size limit's clothes. Regex is
+    # synchronous, this deployment runs one uvicorn worker with
+    # `--limit-concurrency 5`, and Python offers no way to time a match out - so
+    # a scan that runs long does not slow one reply, it stalls every open stream
+    # on the box. A user message is capped at 32k by the request schema, but a
+    # tool result is ten fetched pages at 20k each, and that is the input this
+    # bound exists for.
+    guardrail_max_scan_chars: int = 50_000
+
+    # --- Spend accounting ---
+    # (input, output) USD per million tokens, keyed by model name. Prices move
+    # when a provider moves them, so they are configuration rather than code.
+    # A model missing from this map still answers; its cost is reported as
+    # unpriced rather than as zero - see `app.domain.usage.value_objects`.
+    model_prices_usd_per_million: dict[str, tuple[float, float]] = Field(
+        default_factory=lambda: {
+            "openai/gpt-oss-120b": (0.15, 0.60),
+            "openai/gpt-oss-20b": (0.05, 0.20),
+            "llama-3.1-8b-instant": (0.05, 0.08),
+        }
+    )
+
     # --- HTTP ---
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
     # Origins allowed to open the speech-to-text WebSocket. CORS middleware does
@@ -86,9 +150,15 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 2048
     llm_system_prompt: str = (
         "You are a helpful assistant with access to tools.\n"
-        "Use `retrieve_documents` for questions about the user's uploaded files.\n"
+        "Use `retrieve_documents` for questions about the user's uploaded files, "
+        "and also whenever the question names a specific person, company, product "
+        "or other entity you do not already know - the user may have uploaded a "
+        "document about it without saying so. Try this before `search_web` in "
+        "that case; it is a cheap, private lookup and coming back empty costs "
+        "only one extra call.\n"
         "Use `fetch_web_pages` when the user gives a URL they want read.\n"
-        "Use `search_web` for current information you do not already know.\n"
+        "Use `search_web` for current information you do not already know, or "
+        "after `retrieve_documents` comes back empty for a named entity.\n"
         "Answer directly, without calling a tool, when you already know the answer."
     )
 
@@ -216,6 +286,17 @@ class Settings(BaseSettings):
     chat_rate_limit_window_seconds: int = 60
     upload_rate_limit_requests: int = 2
     upload_rate_limit_window_seconds: int = 10 * 60
+
+    # One ceiling shared by every account, on top of the per-user ones above.
+    # Registration has no CAPTCHA, so the per-user limits alone are only a limit
+    # on how fast any *one* account can spend - someone willing to sign up
+    # repeatedly can still multiply that by as many accounts as they create.
+    # This is the backstop: one counter, one key, hit by chat replies, uploads,
+    # URL ingestion and transcription sessions alike, so the total spend across
+    # every caller on this deployment cannot exceed what the default 200/day
+    # covers regardless of how many accounts asked for it.
+    global_daily_call_budget: int = 200
+    global_daily_call_budget_window_seconds: int = 24 * 60 * 60
 
     # --- Ingestion ---
     upload_dir: Path = Path("uploads")

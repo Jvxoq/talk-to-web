@@ -42,6 +42,29 @@ class ChatMessage(BaseModel):
     tool_call_id: str | None = None
 
 
+class TokenUsage(BaseModel):
+    """What one model turn actually spent, as the provider reported it.
+
+    Reported rather than estimated. The agent already carries a `TokenCounter`
+    for deciding when to condense, and approximate is the right posture there -
+    being 10% out only moves a threshold. It is the wrong posture for a bill:
+    "this reply cost $0.0004" is a claim about money, and a claim about money
+    that was guessed is worth nothing.
+
+    Providers do not all report it, so this rides as an optional field on
+    `ModelChunk` and the counter is what fills the gap.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+
 class ModelChunk(BaseModel):
     """
     One step of a streaming model turn: text, or a decision to call tools.
@@ -54,6 +77,10 @@ class ModelChunk(BaseModel):
 
     text: str = ""
     tool_calls: tuple[ToolCall, ...] = ()
+    # Set on the final chunk of a turn, when the provider reported usage at all.
+    # `None` everywhere else, including on every chunk from a provider that
+    # reports nothing - which is why consumers must not treat absence as zero.
+    usage: TokenUsage | None = None
 
 
 class Source(BaseModel):

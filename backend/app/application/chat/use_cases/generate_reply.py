@@ -1,6 +1,7 @@
 """Stream one agent reply, turning graph events into events the API can frame."""
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 from uuid import uuid4
@@ -10,6 +11,7 @@ from loguru import logger
 from app.application.chat.agent.graph import AgentGraph
 from app.application.chat.agent.nodes import DELTA, TOOL_END, TOOL_START
 from app.application.chat.agent.state import AgentState
+from app.application.chat.agent.usage import USAGE
 from app.application.chat.dto import (
     GenerateReplyInput,
     ReplyCompleted,
@@ -18,10 +20,15 @@ from app.application.chat.dto import (
     ReplyFailed,
     ReplyToolFinished,
     ReplyToolStarted,
+    ReplyUsage,
 )
+from app.application.chat.guardrails.policy import GuardVerdict, InputGuardPolicy
 from app.application.chat.models import ChatMessage, Source
-from app.application.chat.ports import RateLimiter
+from app.application.chat.ports import RateLimiter, Tracer
+from app.domain.chat.errors import UnsafeUserMessage
 from app.domain.chat.value_objects import UserMessage
+from app.domain.usage.value_objects import NO_COST, CostBook, ReplyCost
+from app.observability.metrics import emit_reply_metrics
 
 
 class GenerateReply:
@@ -46,10 +53,18 @@ class GenerateReply:
         system_prompt: str,
         max_iterations: int,
         limiter: RateLimiter,
+        daily_budget: RateLimiter,
+        guards: InputGuardPolicy,
+        cost_book: CostBook,
+        tracer: Tracer,
     ) -> None:
         self._graph = graph
         self._system_prompt = system_prompt
         self._limiter = limiter
+        self._daily_budget = daily_budget
+        self._guards = guards
+        self._cost_book = cost_book
+        self._tracer = tracer
         # A backstop below LangGraph's own default, in the same units the graph
         # counts in: one lap is now an agent node, a tool node and a summarize
         # node, and the +3 covers the final answering turn. The router is what
@@ -69,13 +84,48 @@ class GenerateReply:
         here, the refusal happens before a single byte is sent, and the error
         handler can answer with a real 429.
         """
+        # One counter shared with every upload, URL ingestion and transcription
+        # session in the deployment - see `Settings.global_daily_call_budget`.
+        # Checked first: a per-user budget only bounds one account, and
+        # registration has no CAPTCHA to stop someone spending it many times
+        # over with fresh ones.
+        await self._daily_budget.hit("global")
+
         # Keyed on the account, not the address: this limit exists because every
         # reply spends tokens at the model provider, and the bill follows the
         # signed-in user wherever they connect from.
         await self._limiter.hit(f"generate:{data.owner_id}")
-        return self._stream(data)
 
-    async def _stream(self, data: GenerateReplyInput) -> AsyncIterator[ReplyEvent]:
+        # Inspected here, for the same reason the limits are: this is the last
+        # moment a refusal can still be an HTTP status. Once `_stream` is handed
+        # to `StreamingResponse` the 200 is committed, and a guardrail that
+        # fired then could only truncate a response that already claimed to
+        # succeed.
+        #
+        # It also has to run before anything downstream sees the text. Whatever
+        # this returns is what reaches the model, the checkpointer and the
+        # trace - so a secret the user pasted is redacted once, here, instead of
+        # being archived by three systems that each thought it was somebody
+        # else's problem.
+        verdict = self._guards.inspect(data.user_input)
+        if verdict.action == "block":
+            raise UnsafeUserMessage(", ".join(verdict.categories()))
+        if verdict.findings:
+            # Recorded even when nothing was blocked. With blocking off by
+            # default, this line is the entire dataset for deciding whether it
+            # can ever be turned on.
+            logger.info(
+                "Guardrail {} on input for owner {}: {}",
+                verdict.action,
+                data.owner_id,
+                ", ".join(verdict.categories()),
+            )
+
+        return self._stream(data, verdict)
+
+    async def _stream(
+        self, data: GenerateReplyInput, verdict: GuardVerdict
+    ) -> AsyncIterator[ReplyEvent]:
         # Typed `Any` on purpose. The concrete type is langchain_core's
         # `RunnableConfig`, and importing it to say so would put LangChain in the
         # application layer - which the import contract forbids, and for good
@@ -103,38 +153,129 @@ class GenerateReply:
             "recursion_limit": self._recursion_limit,
         }
 
+        # Every model call this reply makes, keyed by the model that made it -
+        # the answering model and the condenser are priced differently, and a
+        # reply that condensed twice really did pay for it.
+        spend: dict[str, list[int]] = {}
+        tools_used: list[str] = []
+        started = time.perf_counter()
+        outcome = "completed"
+
         try:
-            state = AgentState(
-                messages=await self._new_messages(data, config),
-                # Reset per request. The count is a ceiling on this reply's tool
-                # laps; carried over from the checkpoint it would only ever climb.
-                iterations=0,
+            async with self._tracer.span(
+                "chat.reply",
+                user_id=data.owner_id,
+                session_id=config["configurable"]["thread_id"],
+                model=data.model,
+                temperature=data.temperature,
+                guardrail_action=verdict.action,
+                guardrail_categories=list(verdict.categories()),
+            ) as span:
+                try:
+                    state = AgentState(
+                        messages=await self._new_messages(data, verdict.text, config),
+                        # Reset per request. The count is a ceiling on this reply's tool
+                        # laps; carried over from the checkpoint it would only ever climb.
+                        iterations=0,
+                    )
+
+                    async for payload in self._graph.astream(state, config, stream_mode="custom"):
+                        # Bookkeeping, not an event. Usage is intercepted here
+                        # rather than translated by `_to_event` because it is an
+                        # internal protocol between the nodes and this use case -
+                        # the client is told the total once, at the end, not one
+                        # model call at a time.
+                        if _record_usage(payload, spend):
+                            continue
+
+                        event = _to_event(payload)
+                        if event is None:
+                            continue
+                        if isinstance(event, ReplyToolStarted):
+                            tools_used.append(event.name)
+                        yield event
+                except asyncio.CancelledError:
+                    # The client hung up. Let it propagate: swallowing it leaves the
+                    # graph running for a response nobody is reading.
+                    outcome = "cancelled"
+                    raise
+                except Exception as exc:
+                    # The HTTP response is already open, so raising here would only
+                    # truncate the body. The client is told in-band instead.
+                    outcome = "failed"
+                    span.record_error(exc)
+                    logger.warning(f"Agent run failed for model {data.model}: {exc}")
+                    yield ReplyFailed(detail=_friendly_error(str(exc)))
+                    return
+
+                cost = self._total_cost(spend)
+                span.set(
+                    outcome=outcome,
+                    tools_used=tools_used,
+                    prompt_tokens=cost.prompt_tokens,
+                    completion_tokens=cost.completion_tokens,
+                    cost_usd=cost.usd,
+                    priced=cost.priced,
+                    latency_ms=_elapsed_ms(started),
+                )
+
+                if spend:
+                    # Skipped entirely when no provider reported usage. Sending
+                    # zeros would be a claim about money that nobody made.
+                    yield ReplyUsage(
+                        prompt_tokens=cost.prompt_tokens,
+                        completion_tokens=cost.completion_tokens,
+                        cost_usd=round(cost.usd, 6),
+                        model=data.model,
+                        priced=cost.priced,
+                    )
+
+                yield ReplyCompleted()
+        finally:
+            # In a `finally` so a cancelled reply is still counted. A user who
+            # closed the tab halfway through still spent the tokens.
+            cost = self._total_cost(spend)
+            emit_reply_metrics(
+                outcome=outcome,
+                model=data.model,
+                owner_id=data.owner_id,
+                tools=tools_used,
+                prompt_tokens=cost.prompt_tokens,
+                completion_tokens=cost.completion_tokens,
+                cost_usd=round(cost.usd, 6),
+                priced=cost.priced,
+                guardrail_action=verdict.action,
+                guardrail_categories=list(verdict.categories()),
+                latency_ms=_elapsed_ms(started),
             )
 
-            async for payload in self._graph.astream(state, config, stream_mode="custom"):
-                event = _to_event(payload)
-                if event is not None:
-                    yield event
-        except asyncio.CancelledError:
-            # The client hung up. Let it propagate: swallowing it leaves the
-            # graph running for a response nobody is reading.
-            raise
-        except Exception as exc:
-            # The HTTP response is already open, so raising here would only
-            # truncate the body. The client is told in-band instead.
-            logger.warning(f"Agent run failed for model {data.model}: {exc}")
-            yield ReplyFailed(detail=_friendly_error(str(exc)))
-            return
+    def _total_cost(self, spend: dict[str, list[int]]) -> ReplyCost:
+        """Price every model this reply used, and total them.
 
-        yield ReplyCompleted()
+        Totalled rather than reported per model because the question a bill
+        answers is "what did this reply cost", and the split across the
+        answering model and the condenser is a detail for the trace. `ReplyCost`
+        carries `priced` through the sum, so one unpriced model makes the whole
+        total honestly a lower bound.
+        """
+        total = NO_COST
+        for model, (prompt_tokens, completion_tokens) in spend.items():
+            total = total + self._cost_book.price(model, prompt_tokens, completion_tokens)
+        return total
 
     async def _new_messages(
         self,
         data: GenerateReplyInput,
+        user_text: str,
         config: Any,
     ) -> list[ChatMessage]:
-        """Only what this turn adds - the checkpointer already holds the rest."""
-        message = UserMessage(data.user_input)
+        """Only what this turn adds - the checkpointer already holds the rest.
+
+        `user_text` rather than `data.user_input`, because by here the guardrail
+        may have rewritten it. Taking it as an argument is what makes it
+        impossible to reach for the unredacted original by habit.
+        """
+        message = UserMessage(user_text)
         messages: list[ChatMessage] = []
 
         if await self._is_new_thread(config):
@@ -182,6 +323,38 @@ def _user_content(message: UserMessage) -> str:
     # once per thread, and these links belong to this message only.
     listed = ", ".join(urls)
     return f"{message.text}\n\n[The user linked: {listed}. Read them with fetch_web_pages.]"
+
+
+def _elapsed_ms(started: float) -> int:
+    return int((time.perf_counter() - started) * 1000)
+
+
+def _record_usage(payload: object, spend: dict[str, list[int]]) -> bool:
+    """Add one usage payload to the running total. True if that is what it was.
+
+    Returning a flag rather than an event, because usage is not something the
+    client is told mid-reply: the model calls a reply makes are an implementation
+    detail, and streaming five separate token counts would invite a frontend to
+    add them up itself and disagree with the one number sent at the end.
+
+    Tolerant of a malformed payload on purpose. This runs on the reply path, and
+    a bookkeeping line that cannot be parsed is worth losing - the reply is not.
+    """
+    if not isinstance(payload, dict) or payload.get("type") != USAGE:
+        return False
+
+    try:
+        model = str(payload["model"])
+        prompt_tokens = int(payload.get("prompt_tokens", 0))
+        completion_tokens = int(payload.get("completion_tokens", 0))
+    except (KeyError, TypeError, ValueError):
+        logger.debug(f"Ignoring malformed usage payload: {payload!r}")
+        return True
+
+    running = spend.setdefault(model, [0, 0])
+    running[0] += prompt_tokens
+    running[1] += completion_tokens
+    return True
 
 
 def _to_event(payload: object) -> ReplyEvent | None:

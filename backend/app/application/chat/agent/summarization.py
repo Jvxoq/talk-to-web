@@ -16,7 +16,7 @@ from app.application.chat.agent.condenser import Condenser
 from app.application.chat.agent.nodes import Node
 from app.application.chat.agent.state import RESET, AgentState
 from app.application.chat.models import ChatMessage
-from app.application.chat.ports import TokenCounter
+from app.application.chat.ports import TokenCounter, Tracer
 
 # The prefix on the summary message, so the model can tell a summary of the past
 # from the live thread it is answering.
@@ -28,38 +28,49 @@ def make_summarize_node(
     condenser: Condenser,
     history_token_budget: int,
     recent_token_budget: int,
+    tracer: Tracer,
 ) -> Node:
     """Build the node that shortens the thread when it outgrows its budget."""
 
     async def summarize(state: AgentState) -> dict[str, Any]:
-        if counter.count(state.messages) <= history_token_budget:
-            # Under budget: no state change, no model call. This is the hot path
-            # for most replies, so it must cost nothing.
-            return {}
+        tokens_before = counter.count(state.messages)
+        async with tracer.span("summarize", kind="span") as span:
+            if tokens_before <= history_token_budget:
+                # Under budget: no state change, no model call. This is the hot
+                # path for most replies, so it must cost nothing - not even a
+                # generation span, which is why the condenser is never reached
+                # here.
+                span.set(tokens_before=tokens_before, tokens_after=tokens_before, summarized=False)
+                return {}
 
-        system = (
-            state.messages[0] if state.messages and state.messages[0].role == "system" else None
-        )
-        rest = state.messages[1:] if system is not None else state.messages
-        head, tail = _split(rest, counter, recent_token_budget)
+            system = (
+                state.messages[0] if state.messages and state.messages[0].role == "system" else None
+            )
+            rest = state.messages[1:] if system is not None else state.messages
+            head, tail = _split(rest, counter, recent_token_budget)
 
-        summary_text = await condenser.summarize(head)
+            summary_text = await condenser.summarize(head)
 
-        new_messages: list[ChatMessage] = [RESET]
-        if system is not None:
-            new_messages.append(system)
-        if summary_text is not None:
-            new_messages.append(ChatMessage(role="system", content=_SUMMARY_PREFIX + summary_text))
-        new_messages.extend(tail)
+            new_messages: list[ChatMessage] = [RESET]
+            if system is not None:
+                new_messages.append(system)
+            if summary_text is not None:
+                new_messages.append(
+                    ChatMessage(role="system", content=_SUMMARY_PREFIX + summary_text)
+                )
+            new_messages.extend(tail)
 
-        if summary_text is None:
-            # The condenser failed. Dropping the head outright still bounds the
-            # thread and keeps the reply alive - losing grounding is acceptable,
-            # losing the reply is not.
-            logger.warning("History summarization failed; dropping the older messages")
-            return {"messages": new_messages, "summary": state.summary}
+            tokens_after = counter.count(new_messages[1:])
+            span.set(tokens_before=tokens_before, tokens_after=tokens_after, summarized=True)
 
-        return {"messages": new_messages, "summary": summary_text}
+            if summary_text is None:
+                # The condenser failed. Dropping the head outright still bounds
+                # the thread and keeps the reply alive - losing grounding is
+                # acceptable, losing the reply is not.
+                logger.warning("History summarization failed; dropping the older messages")
+                return {"messages": new_messages, "summary": state.summary}
+
+            return {"messages": new_messages, "summary": summary_text}
 
     return summarize
 

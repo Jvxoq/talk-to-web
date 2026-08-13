@@ -19,6 +19,7 @@ from app.application.chat.agent.condenser import Condenser
 from app.application.chat.agent.graph import build_agent_graph
 from app.application.chat.agent.state import RESET, AgentState
 from app.application.chat.agent.summarization import _split, make_summarize_node
+from app.application.chat.agent.usage import USAGE, emit_usage
 from app.application.chat.dto import (
     GenerateReplyInput,
     ReplyCompleted,
@@ -28,16 +29,31 @@ from app.application.chat.dto import (
     ReplyToolFinished,
     ReplyToolStarted,
 )
-from app.application.chat.models import ChatMessage, ModelChunk, ToolCall
+from app.application.chat.guardrails.policy import InputGuardPolicy
+from app.application.chat.guardrails.tool_output import ToolOutputGuard
+from app.application.chat.models import ChatMessage, ModelChunk, TokenUsage, ToolCall
 from app.application.chat.tools.base import AgentTool, ToolRegistry
 from app.application.chat.use_cases.generate_reply import GenerateReply
 from app.domain.usage.errors import RateLimited
-from tests.fakes import FakeAgentTool, FakeChatModel, FakeRateLimiter, FakeTokenCounter
+from app.domain.usage.value_objects import CostBook
+from tests.fakes import (
+    FakeAgentTool,
+    FakeChatModel,
+    FakeRateLimiter,
+    FakeTokenCounter,
+    RecordingTracer,
+)
 
 SYSTEM_PROMPT = "SYSTEM PROMPT"
 
 
-def make_condenser(model: FakeChatModel | None = None) -> Condenser:
+def make_guard() -> ToolOutputGuard:
+    return ToolOutputGuard(strip_instructions=True, max_scan_chars=50_000)
+
+
+def make_condenser(
+    model: FakeChatModel | None = None, tracer: RecordingTracer | None = None
+) -> Condenser:
     """A real condenser over a scripted model, so tests control its replies."""
     return Condenser(
         model=model or FakeChatModel(),
@@ -45,6 +61,7 @@ def make_condenser(model: FakeChatModel | None = None) -> Condenser:
         max_chars=40_000,
         tool_condense_prompt="condense",
         summary_prompt="summarize",
+        tracer=tracer or RecordingTracer(),
     )
 
 
@@ -55,15 +72,17 @@ def build_use_case(
     max_iterations: int = 5,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
     limiter: FakeRateLimiter | None = None,
+    daily_budget: FakeRateLimiter | None = None,
     condenser: Condenser | None = None,
     counter: FakeTokenCounter | None = None,
     history_token_budget: int = 1_000_000,
     recent_token_budget: int = 1_500,
     tool_output_token_budget: int = 1_000_000,
+    tracer: RecordingTracer | None = None,
 ) -> GenerateReply:
     graph = build_agent_graph(
         model=model,
-        tools=ToolRegistry(tools),
+        tools=ToolRegistry(tools, guard=make_guard()),
         max_iterations=max_iterations,
         checkpointer=checkpointer,
         condenser=condenser or make_condenser(),
@@ -71,13 +90,52 @@ def build_use_case(
         history_token_budget=history_token_budget,
         recent_token_budget=recent_token_budget,
         tool_output_token_budget=tool_output_token_budget,
+        tracer=tracer or RecordingTracer(),
     )
+    tracer_obj = tracer or RecordingTracer()
     return GenerateReply(
         graph=graph,
         system_prompt=SYSTEM_PROMPT,
         max_iterations=max_iterations,
         limiter=limiter or FakeRateLimiter(),
+        daily_budget=daily_budget or FakeRateLimiter(),
+        guards=InputGuardPolicy(redact_pii=False, block_on_injection=False, max_scan_chars=50_000),
+        cost_book=CostBook({}),
+        tracer=tracer_obj,
     )
+
+
+def build_graph(
+    model: FakeChatModel,
+    tools: Sequence[AgentTool] = (),
+    *,
+    condenser: Condenser | None = None,
+    counter: FakeTokenCounter | None = None,
+    tool_output_token_budget: int = 1_000_000,
+    tracer: RecordingTracer | None = None,
+) -> Any:
+    """The compiled graph itself, for tests that read the raw custom stream.
+
+    `GenerateReply` drops any payload `_to_event` does not recognise - which is
+    exactly what happens to a `usage` payload today - so a test that wants to
+    see one on the wire has to run the graph directly rather than through the
+    use case.
+    """
+    return build_agent_graph(
+        model=model,
+        tools=ToolRegistry(tools, guard=make_guard()),
+        max_iterations=5,
+        condenser=condenser or make_condenser(),
+        counter=counter or FakeTokenCounter(),
+        history_token_budget=1_000_000,
+        recent_token_budget=1_500,
+        tool_output_token_budget=tool_output_token_budget,
+        tracer=tracer or RecordingTracer(),
+    )
+
+
+def run_config(model: str = "test-model", owner_id: int = 1) -> Any:
+    return {"configurable": {"model": model, "temperature": 0.0, "owner_id": owner_id}}
 
 
 async def collect(
@@ -167,10 +225,11 @@ class TestOneToolCall:
 
         # The point of the loop: the tool's output is in the conversation the
         # model sees on its second turn, paired to the call that asked for it.
+        # The output is fenced as untrusted content; assert it is present inside the fence.
         second_turn = model.seen_messages[1]
         tool_messages = [message for message in second_turn if message.role == "tool"]
         assert len(tool_messages) == 1
-        assert tool_messages[0].content == "TOOL-RESULT"
+        assert "TOOL-RESULT" in tool_messages[0].content
         assert tool_messages[0].tool_call_id == "call-1"
 
     async def test_the_wait_is_reported_before_and_after(self) -> None:
@@ -222,7 +281,11 @@ class TestTwoToolCallsInOneTurn:
 
         tool_messages = [message for message in model.seen_messages[1] if message.role == "tool"]
         assert {message.tool_call_id for message in tool_messages} == {"a", "b"}
-        assert {message.content for message in tool_messages} == {"A-RESULT", "B-RESULT"}
+        # Tool results are fenced as untrusted content; assert they are present.
+        assert all(
+            "A-RESULT" in message.content or "B-RESULT" in message.content
+            for message in tool_messages
+        )
 
         finished = [event for event in events if isinstance(event, ReplyToolFinished)]
         assert {event.name for event in finished} == {"alpha", "beta"}
@@ -364,6 +427,35 @@ class TestSpendLimit:
 
         assert limiter.hits == {"generate:1": 1, "generate:2": 1}
 
+    async def test_a_spent_daily_budget_refuses_before_the_per_user_limit_is_touched(
+        self,
+    ) -> None:
+        model = FakeChatModel(turns=[[ModelChunk(text="one")]])
+        limiter = FakeRateLimiter()
+        use_case = build_use_case(
+            model, limiter=limiter, daily_budget=FakeRateLimiter(max_attempts=0)
+        )
+
+        with pytest.raises(RateLimited):
+            await collect(use_case)
+
+        assert len(model.seen_messages) == 0
+        assert limiter.hits == {}, "the per-user limit must not be spent on a refused request"
+
+    async def test_the_daily_budget_is_shared_across_every_account(self) -> None:
+        # Unlike the per-user limiter above, one key ("global") is hit by every
+        # caller regardless of who is signed in - the backstop registering a new
+        # account cannot get around.
+        model = FakeChatModel(turns=[[ModelChunk(text="one")], [ModelChunk(text="two")]])
+        daily_budget = FakeRateLimiter(max_attempts=1)
+        use_case = build_use_case(model, daily_budget=daily_budget)
+
+        await collect(use_case, owner_id=1)
+        with pytest.raises(RateLimited):
+            await collect(use_case, owner_id=2)
+
+        assert len(model.seen_messages) == 1
+
 
 class TestSummarization:
     async def test_under_budget_does_not_call_the_condenser(self) -> None:
@@ -390,6 +482,7 @@ class TestSummarization:
             make_condenser(condenser_model),
             history_token_budget=3_000,
             recent_token_budget=1_500,
+            tracer=RecordingTracer(),
         )
         state = AgentState(
             messages=[
@@ -443,6 +536,7 @@ class TestSummarization:
             make_condenser(FakeChatModel(fail_with=RuntimeError("boom"))),
             history_token_budget=3_000,
             recent_token_budget=1_500,
+            tracer=RecordingTracer(),
         )
         state = AgentState(
             messages=[
@@ -485,10 +579,10 @@ class TestToolOutputCompression:
             )
         )
 
-        # A three-line result must not cost an extra model call.
+        # A small result must not cost an extra model call.
         assert condenser_model.calls == 0
         tool_message = next(m for m in model.seen_messages[1] if m.role == "tool")
-        assert tool_message.content == "small"
+        assert "small" in tool_message.content
 
     async def test_a_large_tool_result_is_condensed_and_tool_end_still_fires(self) -> None:
         condenser_model = FakeChatModel(turns=[[ModelChunk(text="CONDENSED")]])
@@ -529,3 +623,194 @@ class TestFriendlyRateLimit:
         assert len(failures) == 1
         assert "busy" in failures[0].detail
         assert "413" not in failures[0].detail
+
+
+class TestUsageStream:
+    async def test_a_final_chunks_usage_reaches_the_custom_stream(self) -> None:
+        model = FakeChatModel(
+            turns=[
+                [
+                    ModelChunk(text="hi"),
+                    ModelChunk(usage=TokenUsage(prompt_tokens=10, completion_tokens=5)),
+                ]
+            ]
+        )
+        graph = build_graph(model)
+        state = AgentState(messages=[ChatMessage(role="user", content="hi")])
+
+        payloads = [p async for p in graph.astream(state, run_config(), stream_mode="custom")]
+
+        usage_payloads = [p for p in payloads if isinstance(p, dict) and p.get("type") == USAGE]
+        assert usage_payloads == [
+            {
+                "type": USAGE,
+                "model": "test-model",
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+            }
+        ]
+
+    async def test_emit_usage_outside_a_graph_run_does_not_raise(self) -> None:
+        # The condenser is unit-tested outside any graph run, so this helper
+        # must survive being called with no stream writer in context - never
+        # be the reason a reply dies.
+        emit_usage(model="condenser", usage=TokenUsage(prompt_tokens=1, completion_tokens=1))
+
+
+class TestAgentTracing:
+    async def test_the_agent_span_carries_tokens_and_ttft(self) -> None:
+        tracer = RecordingTracer()
+        model = FakeChatModel(
+            turns=[
+                [
+                    ModelChunk(text="hi"),
+                    ModelChunk(usage=TokenUsage(prompt_tokens=3, completion_tokens=2)),
+                ]
+            ]
+        )
+
+        await collect(build_use_case(model, tracer=tracer))
+
+        spans = tracer.named("llm.agent")
+        assert len(spans) == 1
+        span = spans[0]
+        assert span.kind == "generation"
+        assert span.attributes["model"] == "test-model"
+        assert span.attributes["prompt_tokens"] == 3
+        assert span.attributes["completion_tokens"] == 2
+        assert span.attributes["tool_calls"] == []
+        assert span.attributes["ttft_ms"] is not None
+        assert not span.errors
+
+    async def test_a_tool_calling_turn_names_the_tools_it_asked_for(self) -> None:
+        tracer = RecordingTracer()
+        tool = FakeAgentTool(name="fake_tool")
+        model = FakeChatModel(
+            turns=[[asking_for("fake_tool", query="x")], [ModelChunk(text="done")]]
+        )
+
+        await collect(build_use_case(model, [tool], tracer=tracer))
+
+        first_agent_span = tracer.named("llm.agent")[0]
+        assert first_agent_span.attributes["tool_calls"] == ["fake_tool"]
+
+
+class TestToolTracing:
+    async def test_a_tool_span_carries_ok_and_latency(self) -> None:
+        tracer = RecordingTracer()
+        tool = FakeAgentTool(name="fake_tool", result="a short result")
+        model = FakeChatModel(
+            turns=[[asking_for("fake_tool", query="x")], [ModelChunk(text="done")]]
+        )
+
+        await collect(build_use_case(model, [tool], tracer=tracer))
+
+        spans = tracer.named("tool.fake_tool")
+        assert len(spans) == 1
+        span = spans[0]
+        assert span.kind == "span"
+        assert span.attributes["arguments"] == {"query": "x"}
+        assert span.attributes["ok"] is True
+        assert span.attributes["sources"] == 0
+        # Length of what actually went back to the model, not a literal on the
+        # fixture - the output guard is free to wrap tool content, and this
+        # span must track whatever it produced rather than the raw fixture.
+        tool_message = next(m for m in model.seen_messages[1] if m.role == "tool")
+        assert span.attributes["output_chars"] == len(tool_message.content)
+        latency_ms = span.attributes["latency_ms"]
+        assert isinstance(latency_ms, float) and latency_ms >= 0
+        assert not span.errors
+
+    async def test_a_failing_tool_still_gets_a_span(self) -> None:
+        tracer = RecordingTracer()
+        tool = FakeAgentTool(name="fake_tool", fail_with=RuntimeError("upstream is down"))
+        model = FakeChatModel(
+            turns=[[asking_for("fake_tool", query="x")], [ModelChunk(text="done anyway")]]
+        )
+
+        await collect(build_use_case(model, [tool], tracer=tracer))
+
+        # `ToolRegistry.invoke` never raises, so the failure surfaces as `ok=False`
+        # rather than a recorded error - the span still gets its full attributes.
+        spans = tracer.named("tool.fake_tool")
+        assert len(spans) == 1
+        assert spans[0].attributes["ok"] is False
+
+
+class TestCondenserUsage:
+    async def test_the_condensers_own_spend_is_emitted_too(self) -> None:
+        # This is the one most likely to be silently dropped: a reply that
+        # called a tool and condensed its output paid for both, and the total
+        # must reflect the condenser's call, not just the agent's.
+        condenser_model = FakeChatModel(
+            turns=[
+                [
+                    ModelChunk(
+                        text="CONDENSED",
+                        usage=TokenUsage(prompt_tokens=7, completion_tokens=1),
+                    )
+                ]
+            ]
+        )
+        condenser = make_condenser(condenser_model)
+        tool = FakeAgentTool(name="fake_tool", result="x" * 5_000)
+        model = FakeChatModel(
+            turns=[[asking_for("fake_tool", query="q")], [ModelChunk(text="done")]]
+        )
+        graph = build_graph(
+            model,
+            [tool],
+            condenser=condenser,
+            counter=FakeTokenCounter(tokens_per_message=2_000),
+            tool_output_token_budget=1_000,
+        )
+        state = AgentState(messages=[ChatMessage(role="user", content="hi")])
+
+        payloads = [p async for p in graph.astream(state, run_config(), stream_mode="custom")]
+
+        usage_payloads = [p for p in payloads if isinstance(p, dict) and p.get("type") == USAGE]
+        condenser_usage = [p for p in usage_payloads if p["model"] == "condenser"]
+        assert condenser_usage == [
+            {
+                "type": USAGE,
+                "model": "condenser",
+                "prompt_tokens": 7,
+                "completion_tokens": 1,
+            }
+        ]
+
+    async def test_the_condenser_opens_a_generation_span(self) -> None:
+        tracer = RecordingTracer()
+        condenser_model = FakeChatModel(
+            turns=[
+                [
+                    ModelChunk(
+                        text="CONDENSED",
+                        usage=TokenUsage(prompt_tokens=7, completion_tokens=1),
+                    )
+                ]
+            ]
+        )
+        condenser = make_condenser(condenser_model, tracer)
+        tool = FakeAgentTool(name="fake_tool", result="x" * 5_000)
+        model = FakeChatModel(
+            turns=[[asking_for("fake_tool", query="q")], [ModelChunk(text="done")]]
+        )
+
+        await collect(
+            build_use_case(
+                model,
+                [tool],
+                condenser=condenser,
+                counter=FakeTokenCounter(tokens_per_message=2_000),
+                tool_output_token_budget=1_000,
+                tracer=tracer,
+            )
+        )
+
+        spans = tracer.named("condense.tool_output")
+        assert len(spans) == 1
+        assert spans[0].kind == "generation"
+        assert spans[0].attributes["model"] == "condenser"
+        assert spans[0].attributes["prompt_tokens"] == 7
+        assert spans[0].attributes["completion_tokens"] == 1

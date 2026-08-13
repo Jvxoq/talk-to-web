@@ -6,7 +6,8 @@ pointing inward.
 """
 
 from collections.abc import AsyncIterator, Sequence
-from typing import Protocol
+from contextlib import AbstractAsyncContextManager
+from typing import Literal, Protocol
 
 from app.application.chat.models import ChatMessage, ModelChunk, Passage, SearchResult
 from app.application.chat.tools.base import ToolSpec
@@ -108,6 +109,52 @@ class KnowledgeRetriever(Protocol):
     """
 
     async def retrieve(self, query: str, owner_id: int) -> list[Passage]: ...
+
+
+class Span(Protocol):
+    """One timed step inside a reply, and somewhere to hang what it did.
+
+    Attributes are set rather than passed at open time because most of what is
+    worth recording - how many tokens it spent, which tool it picked, whether it
+    worked - is only known once the step has run.
+    """
+
+    def set(self, **attributes: object) -> None: ...
+
+    def record_error(self, error: BaseException) -> None: ...
+
+
+class Tracer(Protocol):
+    """
+    Opens spans. Says nothing about where they go.
+
+    Nested by ambient context rather than by explicit parenting, and that is
+    forced by LangGraph: a node is handed its state and nothing else, so there
+    is no parameter a parent span could arrive on. The adapter keeps the current
+    span in context, which asyncio copies into child tasks at creation - so a
+    node inherits the reply's root span, and a span opened inside a node stays
+    invisible to its siblings.
+
+    `kind` separates a plain step from a model call, because the two are read
+    differently: a generation is where tokens and cost are, and a tracing
+    backend that knows which spans are generations can total them.
+
+    Never raises. Tracing is not on the critical path, and an exporter having a
+    bad day must not cost a user their reply - the adapter swallows its own
+    failures the way `Condenser` does.
+    """
+
+    def span(
+        self,
+        name: str,
+        *,
+        kind: Literal["span", "generation"] = "span",
+        **attributes: object,
+    ) -> AbstractAsyncContextManager[Span]: ...
+
+    async def flush(self) -> None:
+        """Send anything still queued. Called once, at shutdown, under a timeout."""
+        ...
 
 
 class RateLimiter(Protocol):

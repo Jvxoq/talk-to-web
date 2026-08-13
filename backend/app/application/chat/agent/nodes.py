@@ -8,6 +8,7 @@ shared by every request in flight.
 """
 
 import asyncio
+import time
 from typing import Any, Final, Protocol
 
 from langgraph.config import get_config, get_stream_writer
@@ -15,8 +16,9 @@ from loguru import logger
 
 from app.application.chat.agent.condenser import Condenser
 from app.application.chat.agent.state import AgentState
+from app.application.chat.agent.usage import emit_usage
 from app.application.chat.models import ChatMessage, ToolCall
-from app.application.chat.ports import ChatModel, TokenCounter
+from app.application.chat.ports import ChatModel, TokenCounter, Tracer
 from app.application.chat.tools.base import ToolContext, ToolRegistry
 
 # The vocabulary of the custom stream. These payloads are an internal protocol
@@ -55,7 +57,7 @@ def _summarise(call: ToolCall) -> str:
     return f"{call.name}({rendered})"
 
 
-def make_agent_node(model: ChatModel, tools: ToolRegistry) -> Node:
+def make_agent_node(model: ChatModel, tools: ToolRegistry, tracer: Tracer) -> Node:
     """Build the node that asks the model what to do next."""
     # The tool specs cannot change between requests - the registry is built at
     # startup - so they are computed once rather than per turn.
@@ -74,17 +76,35 @@ def make_agent_node(model: ChatModel, tools: ToolRegistry) -> Node:
         parts: list[str] = []
         requested: tuple[ToolCall, ...] = ()
 
-        async for chunk in model.stream(
-            model=model_name,
-            temperature=temperature,
-            messages=state.messages,
-            tools=specs,
-        ):
-            if chunk.text:
-                parts.append(chunk.text)
-                writer({"type": DELTA, "text": chunk.text})
-            if chunk.tool_calls:
-                requested += chunk.tool_calls
+        async with tracer.span(
+            "llm.agent", kind="generation", model=model_name, temperature=temperature
+        ) as span:
+            start = time.perf_counter()
+            ttft_ms: float | None = None
+            try:
+                async for chunk in model.stream(
+                    model=model_name,
+                    temperature=temperature,
+                    messages=state.messages,
+                    tools=specs,
+                ):
+                    if chunk.text:
+                        if ttft_ms is None:
+                            ttft_ms = (time.perf_counter() - start) * 1000
+                        parts.append(chunk.text)
+                        writer({"type": DELTA, "text": chunk.text})
+                    if chunk.tool_calls:
+                        requested += chunk.tool_calls
+                    if chunk.usage is not None:
+                        emit_usage(model=model_name, usage=chunk.usage)
+                        span.set(
+                            prompt_tokens=chunk.usage.prompt_tokens,
+                            completion_tokens=chunk.usage.completion_tokens,
+                        )
+            except Exception as error:
+                span.record_error(error)
+                raise
+            span.set(tool_calls=[call.name for call in requested], ttft_ms=ttft_ms)
 
         message = ChatMessage(role="assistant", content="".join(parts), tool_calls=requested)
         # `iterations` has no reducer, so the incremented value is written whole.
@@ -98,6 +118,7 @@ def make_tool_node(
     condenser: Condenser,
     counter: TokenCounter,
     tool_output_token_budget: int,
+    tracer: Tracer,
 ) -> Node:
     """Build the node that runs whatever the model asked for."""
 
@@ -119,10 +140,27 @@ def make_tool_node(
             # Announced before the call, so the spinner has a reason on it for
             # the whole of a slow fetch rather than after the fact.
             writer({"type": TOOL_START, "name": call.name, "summary": _summarise(call)})
-            outcome = await tools.invoke(call, context)
-            content = await _compress(
-                outcome.content, call, condenser, counter, tool_output_token_budget
-            )
+            # One span per call, not per node: the node runs every call in this
+            # turn concurrently, and lumping them into one span would hide
+            # which one was slow.
+            async with tracer.span(
+                f"tool.{call.name}", kind="span", arguments=call.arguments
+            ) as span:
+                start = time.perf_counter()
+                try:
+                    outcome = await tools.invoke(call, context)
+                    content = await _compress(
+                        outcome.content, call, condenser, counter, tool_output_token_budget
+                    )
+                except Exception as error:
+                    span.record_error(error)
+                    raise
+                span.set(
+                    ok=outcome.ok,
+                    sources=len(outcome.sources),
+                    output_chars=len(content),
+                    latency_ms=(time.perf_counter() - start) * 1000,
+                )
             writer(
                 {
                     "type": TOOL_END,

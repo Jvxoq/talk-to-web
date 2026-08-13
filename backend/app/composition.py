@@ -25,6 +25,8 @@ from app.adapters.extraction.plain_text_extractor import PlainTextExtractor
 from app.adapters.extraction.pypdf_extractor import PypdfTextExtractor
 from app.adapters.llm.approximate_token_counter import ApproximateTokenCounter
 from app.adapters.llm.langchain_chat_model import LangChainChatModel
+from app.adapters.observability.langfuse_tracer import LangfuseTracer
+from app.adapters.observability.null_tracer import NullTracer
 from app.adapters.persistence.readiness import PostgresProbe
 from app.adapters.persistence.uow import SqlAlchemyUnitOfWork
 from app.adapters.security.argon2_hasher import Argon2PasswordHasher
@@ -42,6 +44,9 @@ from app.adapters.web.tavily_search import TavilyWebSearcher
 from app.api.dependencies import Container
 from app.application.chat.agent.condenser import Condenser
 from app.application.chat.agent.graph import build_agent_graph
+from app.application.chat.guardrails.policy import InputGuardPolicy
+from app.application.chat.guardrails.tool_output import ToolOutputGuard
+from app.application.chat.ports import Tracer
 from app.application.chat.tools.base import ToolRegistry
 from app.application.chat.tools.fetch_web_pages import FetchWebPages
 from app.application.chat.tools.retrieve_documents import RetrieveDocuments
@@ -66,6 +71,7 @@ from app.application.ingestion.use_cases.ingest_url import IngestUrl
 from app.application.ingestion.use_cases.list_documents import ListDocuments
 from app.application.ingestion.use_cases.upload_document import UploadDocument
 from app.application.transcription.use_cases.transcribe_stream import TranscribeStream
+from app.domain.usage.value_objects import CostBook, ModelPrice
 from app.settings import Settings
 
 # `postgresql+psycopg://` and friends. SQLAlchemy spells the driver into the
@@ -171,6 +177,56 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     tavily_client = AsyncTavilyClient(api_key=settings.tavily_api_key.get_secret_value())
 
+    # --- observability ---
+    # Built before anything that traces, because the condenser and the graph
+    # both take it. Unset keys are the normal case: local runs and the whole
+    # test suite get `NullTracer` and send nothing anywhere, the same way
+    # `configure_sentry` no-ops with no DSN.
+    tracer: Tracer = NullTracer()
+    if settings.langfuse_public_key and settings.langfuse_secret_key:
+        candidate = LangfuseTracer(
+            public_key=settings.langfuse_public_key.get_secret_value(),
+            secret_key=settings.langfuse_secret_key.get_secret_value(),
+            host=settings.langfuse_host,
+            capture_content=settings.langfuse_capture_content,
+            flush_timeout_seconds=settings.langfuse_flush_timeout_seconds,
+        )
+        # Checked once, here, rather than probed on `/ready`. Readiness is
+        # `all(...)` by design, so putting tracing behind it would let a Langfuse
+        # outage return 503 and pull this app out of rotation over a dependency
+        # that is deliberately not on the critical path. A typo in a key is the
+        # only failure this check was ever really for, and one startup log line
+        # catches it.
+        if await candidate.credentials_valid():
+            tracer = candidate
+            logger.info("Langfuse tracing enabled")
+        else:
+            logger.warning("Langfuse credentials rejected; tracing disabled")
+
+    # Prices are configuration because providers move them; the arithmetic and
+    # the "unpriced is not free" rule are the domain's.
+    cost_book = CostBook(
+        {
+            model: ModelPrice(input_usd_per_million=prices[0], output_usd_per_million=prices[1])
+            for model, prices in settings.model_prices_usd_per_million.items()
+        }
+    )
+    for configured in (*settings.llm_models, settings.agent_condenser_model):
+        if not cost_book.knows(configured):
+            logger.warning(
+                f"No price on file for model {configured!r}; its cost reports as unpriced"
+            )
+
+    input_guard = InputGuardPolicy(
+        redact_pii=settings.guardrail_pii_redaction_enabled,
+        block_on_injection=settings.guardrail_block_on_injection,
+        max_scan_chars=settings.guardrail_max_scan_chars,
+    )
+    tool_output_guard = ToolOutputGuard(
+        strip_instructions=settings.guardrail_strip_tool_instructions,
+        max_scan_chars=settings.guardrail_max_scan_chars,
+    )
+
     # --- adapters ---
     # The condenser model is added to the same adapter so it shares one HTTP
     # client, but it is not offered in the UI: `chat_models` below stays the
@@ -189,6 +245,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         max_chars=settings.agent_condenser_max_chars,
         tool_condense_prompt=settings.agent_tool_condense_prompt,
         summary_prompt=settings.agent_summary_prompt,
+        tracer=tracer,
     )
     vector_index = QdrantVectorIndex(client=qdrant_client, collection=settings.qdrant_collection)
     embedder = GeminiEmbedder(
@@ -238,6 +295,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     upload_limiter = SlidingWindowRateLimiter(
         max_attempts=settings.upload_rate_limit_requests,
         window_seconds=settings.upload_rate_limit_window_seconds,
+    )
+    # One instance, one key ("global"), shared by every use case that spends
+    # money at a provider - chat replies, uploads, URL ingestion and
+    # transcription alike. Unlike the limiters above, this one is not
+    # namespaced per caller: the whole point is a ceiling nobody's account can
+    # get around by signing up again.
+    daily_budget_limiter = SlidingWindowRateLimiter(
+        max_attempts=settings.global_daily_call_budget,
+        window_seconds=settings.global_daily_call_budget_window_seconds,
     )
     transcriber = DeepgramLiveTranscriber(
         api_key=settings.deepgram_api_key.get_secret_value(),
@@ -296,7 +362,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     RetrieveDocuments(knowledge),
                     FetchWebPages(web),
                     SearchWeb(searcher, max_results=settings.tavily_max_results),
-                ]
+                ],
+                guard=tool_output_guard,
             ),
             max_iterations=settings.agent_max_tool_iterations,
             checkpointer=checkpointer,
@@ -305,6 +372,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             history_token_budget=settings.agent_history_token_budget,
             recent_token_budget=settings.agent_recent_token_budget,
             tool_output_token_budget=settings.agent_tool_output_token_budget,
+            tracer=tracer,
         )
 
         # Annotated as the API's Protocol so mypy proves, here at the one place
@@ -316,6 +384,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 system_prompt=settings.llm_system_prompt,
                 max_iterations=settings.agent_max_tool_iterations,
                 limiter=chat_limiter,
+                daily_budget=daily_budget_limiter,
+                guards=input_guard,
+                cost_book=cost_book,
+                tracer=tracer,
             ),
             start_conversation=StartConversation(uow_factory),
             get_conversation=GetConversation(uow_factory),
@@ -327,6 +399,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 max_bytes=settings.max_upload_bytes,
                 limiter=upload_limiter,
                 uow_factory=uow_factory,
+                daily_budget=daily_budget_limiter,
             ),
             ingest_url=IngestUrl(
                 fetcher=web,
@@ -334,6 +407,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 limiter=upload_limiter,
                 max_bytes=settings.max_upload_bytes,
                 uow_factory=uow_factory,
+                daily_budget=daily_budget_limiter,
             ),
             index_document=IndexDocument(
                 extractor=extractor,
@@ -349,6 +423,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             transcribe_stream=TranscribeStream(
                 transcriber=transcriber,
                 finalize_timeout=settings.finalize_timeout_seconds,
+                daily_budget=daily_budget_limiter,
             ),
             register_user=RegisterUser(
                 uow_factory,
@@ -396,6 +471,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # Without this block a redeploy leaks connections until the database
             # refuses new ones. The checkpointer's own pool is closed by the exit
             # stack unwinding immediately after.
+            # First, and under its own timeout inside the adapter: anything
+            # still queued describes work this process just did, and after the
+            # clients close there is nothing left worth tracing.
+            await tracer.flush()
             await chat_model.aclose()
             await vector_index.aclose()
             await web.aclose()

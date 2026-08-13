@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
+import pytest
 import sentry_sdk
 from pytest import MonkeyPatch
 
@@ -32,19 +33,15 @@ def serving(request_id: str) -> Iterator[None]:
 
 
 class TestConfigureSentry:
-    def test_no_dsn_means_no_initialization(self) -> None:
-        """The local and CI default. Reporting must be something a deployment
-        opts into, not something a missing variable half-enables."""
+    @pytest.mark.parametrize("dsn", [None, ""])
+    def test_no_dsn_means_no_initialization(self, dsn: str | None) -> None:
+        """`None` is the local and CI default; `""` is how `SENTRY_DSN=` in an env
+        file usually spells "off" by accident, and the SDK would otherwise take
+        the empty string as a configuration error. Either way, reporting must be
+        something a deployment opts into, not something a missing variable
+        half-enables."""
         assert (
-            configure_sentry(dsn=None, environment="local", release=None, traces_sample_rate=0.0)
-            is False
-        )
-
-    def test_an_empty_dsn_is_treated_as_no_dsn(self) -> None:
-        """`SENTRY_DSN=` in an env file is how "off" is usually spelled by
-        accident; the SDK would take the empty string as a configuration error."""
-        assert (
-            configure_sentry(dsn="", environment="local", release=None, traces_sample_rate=0.0)
+            configure_sentry(dsn=dsn, environment="local", release=None, traces_sample_rate=0.0)
             is False
         )
 

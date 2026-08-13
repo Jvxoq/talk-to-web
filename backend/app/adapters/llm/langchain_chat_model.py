@@ -23,9 +23,14 @@ from langchain_core.messages import (
 from langchain_core.messages import ToolCall as LangChainToolCall
 from langchain_core.runnables import Runnable
 from loguru import logger
+from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential_jitter
+from tenacity.wait import wait_base
 
-from app.application.chat.models import ChatMessage, ModelChunk, ToolCall
+from app.application.chat.models import ChatMessage, ModelChunk, TokenUsage, ToolCall
 from app.application.chat.tools.base import ToolSpec
+
+_DEFAULT_RETRY_WAIT = wait_exponential_jitter(initial=1, max=8)
+"""Module-level singleton so it isn't rebuilt on every call to the default."""
 
 
 def _to_langchain_message(message: ChatMessage) -> BaseMessage:
@@ -75,6 +80,8 @@ class LangChainChatModel:
         models: Sequence[str],
         api_key: str,
         max_tokens: int,
+        retry_attempts: int = 3,
+        retry_wait: wait_base = _DEFAULT_RETRY_WAIT,
     ) -> None:
         if not models:
             raise ValueError("At least one model name must be configured")
@@ -92,6 +99,9 @@ class LangChainChatModel:
                 # on `bind_tools`, so refuse loudly rather than fail per request.
                 raise RuntimeError(f"Provider {provider!r} did not return a usable chat model")
             self._models[name] = built
+
+        self._retry_attempts = retry_attempts
+        self._retry_wait = retry_wait
 
         logger.info(f"Chat models ready via {provider!r}: {', '.join(self._models)}")
 
@@ -112,17 +122,39 @@ class LangChainChatModel:
         # can be parsed until the stream ends. `AIMessageChunk.__add__` is what
         # reassembles them; reading `.tool_calls` before the end sees fragments.
         accumulated: AIMessageChunk | None = None
-        try:
-            async for chunk in runnable.astream(payload):
-                if not isinstance(chunk, AIMessageChunk):
-                    continue
-                accumulated = chunk if accumulated is None else accumulated + chunk
 
-                text = str(chunk.text)
-                if text:
-                    # `model_construct` skips validation: this runs once per
-                    # token, on data we just built ourselves.
-                    yield ModelChunk.model_construct(text=text)
+        # A dropped connection or a 429/5xx before the first token is a
+        # provider hiccup worth one silent retry; a failure after tokens have
+        # already reached the caller is not retryable - the SSE stream is
+        # already in flight, and replaying it would duplicate text the client
+        # rendered. `started` gates the predicate on that boundary rather than
+        # on exception type, which keeps this generic across whatever provider
+        # `init_chat_model` resolved.
+        started = False
+
+        def _retryable(_: BaseException) -> bool:
+            return not started
+
+        try:
+            async for attempt in AsyncRetrying(
+                stop=stop_after_attempt(self._retry_attempts),
+                wait=self._retry_wait,
+                retry=retry_if_exception(_retryable),
+                reraise=True,
+            ):
+                with attempt:
+                    accumulated = None
+                    async for chunk in runnable.astream(payload):
+                        if not isinstance(chunk, AIMessageChunk):
+                            continue
+                        accumulated = chunk if accumulated is None else accumulated + chunk
+
+                        text = str(chunk.text)
+                        if text:
+                            started = True
+                            # `model_construct` skips validation: this runs
+                            # once per token, on data we just built ourselves.
+                            yield ModelChunk.model_construct(text=text)
         except Exception as error:
             logger.warning(f"Chat stream failed for model {model}: {error}")
             raise RuntimeError(f"Completion provider failed: {error}") from error
@@ -131,6 +163,34 @@ class LangChainChatModel:
         if requested:
             logger.debug(f"Model {model} asked for {len(requested)} tool call(s)")
             yield ModelChunk(tool_calls=requested)
+
+        usage = self._usage(accumulated, model=model)
+        if usage is not None:
+            yield ModelChunk(usage=usage)
+
+    @staticmethod
+    def _usage(accumulated: AIMessageChunk | None, *, model: str) -> TokenUsage | None:
+        """Read what the provider reported, if it reported anything at all.
+
+        Absence has to stay absence: not every provider fills in
+        `usage_metadata`, and a fabricated zero would look identical to "the
+        model really used no tokens" downstream, in a cost report. Reading it
+        is best-effort by design - a malformed dict here must not cost a reply
+        that has already streamed successfully.
+        """
+        if accumulated is None:
+            return None
+        try:
+            reported = accumulated.usage_metadata
+            if reported is None:
+                return None
+            return TokenUsage(
+                prompt_tokens=reported.get("input_tokens", 0),
+                completion_tokens=reported.get("output_tokens", 0),
+            )
+        except Exception as error:
+            logger.debug(f"Could not read usage for model {model}: {error}")
+            return None
 
     def _runnable(
         self,

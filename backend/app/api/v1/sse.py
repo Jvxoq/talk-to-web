@@ -15,6 +15,7 @@ from app.application.chat.dto import (
     ReplyFailed,
     ReplyToolFinished,
     ReplyToolStarted,
+    ReplyUsage,
 )
 
 
@@ -45,6 +46,25 @@ async def to_sse(events: AsyncIterator[ReplyEvent]) -> AsyncIterator[str]:
                         {"label": source.label, "url": source.url} for source in sources
                     ]
                 yield format_frame(tool=tool)
+            # Its own frame rather than folded into `done`, so a frontend that
+            # does not know about cost yet ignores an unrecognised key and
+            # keeps working - nothing about the existing frames changes shape.
+            case ReplyUsage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cost_usd=cost_usd,
+                model=model,
+                priced=priced,
+            ):
+                yield format_frame(
+                    usage={
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "cost_usd": cost_usd,
+                        "model": model,
+                        "priced": priced,
+                    }
+                )
             case ReplyFailed(detail=detail):
                 yield format_frame(error=detail)
             case ReplyCompleted():
