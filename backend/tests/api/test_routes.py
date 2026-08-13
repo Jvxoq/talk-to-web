@@ -767,6 +767,25 @@ class TestTranscriptionAuth:
         assert stub.calls == 0, "a refused handshake must never start a session"
 
 
+class TestTranscriptionDailyBudget:
+    """`RateLimited` raised mid-session gets its own branch in the router,
+    distinct from the generic `except Exception` catch-all."""
+
+    def test_a_spent_daily_budget_sends_a_busy_error_not_a_generic_failure(self) -> None:
+        stub = StubUseCase(raises=RateLimited(retry_after_seconds=30))
+
+        with (
+            ws_client(StubContainer(transcribe_stream=stub)) as client,
+            client.websocket_connect(
+                WS_URL, subprotocols=WS_SUBPROTOCOLS, headers={"origin": WS_ORIGINS[0]}
+            ) as socket,
+        ):
+            assert socket.receive_json() == {
+                "type": "error",
+                "detail": "Service is busy right now - please try again later.",
+            }
+
+
 class TestErrorsAndHealth:
     async def test_an_unexpected_failure_never_leaks_its_message(self) -> None:
         stub = StubUseCase(raises=RuntimeError("postgresql://user:hunter2@db:5432"))

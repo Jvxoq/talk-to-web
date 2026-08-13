@@ -20,7 +20,14 @@ def _use_case(
     fetcher = fetcher or FakeUrlContentFetcher(text="the full page text")
     storage = storage or FakeFileStorage()
     limiter = limiter or FakeRateLimiter()
-    use_case = IngestUrl(fetcher, storage, limiter, MAX_BYTES, uow_factory=UnitOfWorkSpy())
+    use_case = IngestUrl(
+        fetcher,
+        storage,
+        limiter,
+        MAX_BYTES,
+        uow_factory=UnitOfWorkSpy(),
+        daily_budget=FakeRateLimiter(),
+    )
     return use_case, fetcher, storage, limiter
 
 
@@ -84,3 +91,23 @@ class TestIngestUrl:
             await use_case(IngestUrlInput(url="https://example.com", owner_id=OWNER))
 
         assert storage.saved == []
+
+    async def test_a_spent_daily_budget_refuses_before_the_per_user_limit_is_touched(
+        self,
+    ) -> None:
+        fetcher = FakeUrlContentFetcher(text="hello")
+        limiter = FakeRateLimiter()
+        use_case = IngestUrl(
+            fetcher,
+            FakeFileStorage(),
+            limiter,
+            MAX_BYTES,
+            uow_factory=UnitOfWorkSpy(),
+            daily_budget=FakeRateLimiter(max_attempts=0),
+        )
+
+        with pytest.raises(RateLimited):
+            await use_case(IngestUrlInput(url="https://example.com", owner_id=OWNER))
+
+        assert fetcher.calls == []
+        assert limiter.hits == {}, "the per-user limit must not be spent on a refused request"

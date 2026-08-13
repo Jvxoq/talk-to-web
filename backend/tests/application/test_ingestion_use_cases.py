@@ -39,9 +39,14 @@ def upload_document(
     max_bytes: int,
     limiter: FakeRateLimiter,
     factory: UnitOfWorkSpy | None = None,
+    daily_budget: FakeRateLimiter | None = None,
 ) -> UploadDocument:
     return UploadDocument(
-        storage, max_bytes=max_bytes, limiter=limiter, uow_factory=factory or UnitOfWorkSpy()
+        storage,
+        max_bytes=max_bytes,
+        limiter=limiter,
+        uow_factory=factory or UnitOfWorkSpy(),
+        daily_budget=daily_budget or FakeRateLimiter(),
     )
 
 
@@ -228,6 +233,21 @@ class TestUploadDocument:
         )
 
         assert limiter.hits == {f"upload:{OWNER}": 1, f"upload:{STRANGER}": 1}
+
+    async def test_a_spent_daily_budget_refuses_before_anything_is_stored(self) -> None:
+        storage = FakeFileStorage()
+        limiter = FakeRateLimiter()
+        upload = upload_document(
+            storage, 1024, limiter, daily_budget=FakeRateLimiter(max_attempts=0)
+        )
+
+        with pytest.raises(RateLimited):
+            await upload(
+                UploadDocumentInput("a.pdf", "application/pdf", bytes_stream(b"%PDF-1.7"), OWNER)
+            )
+
+        assert storage.saved == []
+        assert limiter.hits == {}, "the per-user limit must not be spent on a refused request"
 
 
 class TestIndexDocument:

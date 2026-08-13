@@ -656,3 +656,56 @@ class FakeReadinessProbe:
             await asyncio.sleep(self._delay)
         if self._error is not None:
             raise self._error
+
+
+@dataclass
+class RecordedSpan:
+    """One span a test can assert on, after the fact."""
+
+    name: str
+    kind: str
+    attributes: dict[str, object] = field(default_factory=dict)
+    errors: list[BaseException] = field(default_factory=list)
+
+    def set(self, **attributes: object) -> None:
+        self.attributes.update(attributes)
+
+    def record_error(self, error: BaseException) -> None:
+        self.errors.append(error)
+
+
+class RecordingTracer:
+    """Collects spans in memory, so a test can prove a reply was traced.
+
+    Records rather than asserts: a test that wanted "the agent opened a
+    generation span carrying token counts" should be able to say exactly that,
+    without a network, a Langfuse key, or a mock's did-you-call-me bookkeeping.
+
+    Deliberately not nesting. The real adapter nests through OpenTelemetry
+    context, which is machinery no fake should try to reproduce; every span
+    lands in one flat list in the order it was opened, which is enough to assert
+    what ran and what it carried.
+    """
+
+    def __init__(self) -> None:
+        self.spans: list[RecordedSpan] = []
+        self.flushes = 0
+
+    @asynccontextmanager
+    async def span(
+        self,
+        name: str,
+        *,
+        kind: str = "span",
+        **attributes: object,
+    ) -> AsyncIterator[RecordedSpan]:
+        recorded = RecordedSpan(name=name, kind=kind, attributes=dict(attributes))
+        self.spans.append(recorded)
+        yield recorded
+
+    async def flush(self) -> None:
+        self.flushes += 1
+
+    def named(self, name: str) -> list[RecordedSpan]:
+        """Every span opened under this name, in order."""
+        return [span for span in self.spans if span.name == name]

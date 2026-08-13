@@ -29,6 +29,7 @@ from loguru import logger
 from app.api.dependencies import IdentifyRequestDep, TranscribeStreamDep, WebSocketOriginsDep
 from app.api.v1.websocket_transport import WebSocketTransport
 from app.domain.identity.errors import IdentityError
+from app.domain.usage.errors import RateLimited
 
 router = APIRouter(tags=["transcription"])
 
@@ -94,6 +95,12 @@ async def transcribe(
     except WebSocketDisconnect:
         # The ordinary ending: the user stopped recording or closed the tab.
         logger.debug("Transcription client disconnected")
+    except RateLimited:
+        # The deployment-wide daily budget is spent. Distinguished from the
+        # catch-all below so the client hears why, not a generic failure.
+        logger.warning("Rejected transcription session: daily call budget spent")
+        with suppress(Exception):
+            await transport.error("Service is busy right now - please try again later.")
     except Exception as exc:
         logger.opt(exception=exc).warning("Transcription session failed")
         # Best effort only — the socket is quite likely already gone, and a

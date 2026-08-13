@@ -8,6 +8,7 @@ from loguru import logger
 from app.application.transcription.ports import (
     ClientTransport,
     LiveTranscriber,
+    RateLimiter,
     TranscriptionSession,
 )
 from app.domain.transcription.entities import AudioFormat
@@ -41,11 +42,23 @@ class TranscribeStream:
     provider starves and the transcript drifts behind the speaker.
     """
 
-    def __init__(self, transcriber: LiveTranscriber, finalize_timeout: float) -> None:
+    def __init__(
+        self,
+        transcriber: LiveTranscriber,
+        finalize_timeout: float,
+        daily_budget: RateLimiter,
+    ) -> None:
         self._transcriber = transcriber
         self._finalize_timeout = finalize_timeout
+        self._daily_budget = daily_budget
 
     async def __call__(self, transport: ClientTransport) -> None:
+        # One counter shared with every chat reply, upload and URL ingestion in
+        # the deployment - see `Settings.global_daily_call_budget`. Checked
+        # before the handshake is negotiated, so a spent budget costs no
+        # Deepgram session at all, only a socket that was already open.
+        await self._daily_budget.hit("global")
+
         audio_format = await self._negotiate(transport)
         if audio_format is None:
             return

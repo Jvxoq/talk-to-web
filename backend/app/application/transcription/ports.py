@@ -37,6 +37,21 @@ class ClientTransport(Protocol):
     async def error(self, detail: str) -> None: ...
 
 
+class RateLimiter(Protocol):
+    """Counts requests against a key and refuses the ones over budget.
+
+    Declared here rather than imported from chat or ingestion, even though the
+    shape is identical: a port belongs to the layer that consumes it. One
+    adapter satisfies all three, structurally, without knowing the others exist.
+    """
+
+    async def hit(self, key: str) -> None:
+        """Record one request, raising `RateLimited` if the budget is spent."""
+        ...
+
+    async def reset(self, key: str) -> None: ...
+
+
 class TranscriptionSession(Protocol):
     """An open connection to the speech-to-text provider."""
 

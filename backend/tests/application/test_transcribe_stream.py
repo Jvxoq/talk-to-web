@@ -8,7 +8,8 @@ import pytest
 from app.application.transcription.ports import ClientFrame
 from app.application.transcription.use_cases.transcribe_stream import TranscribeStream
 from app.domain.transcription.entities import Transcript
-from tests.fakes import FakeClientTransport, FakeLiveTranscriber
+from app.domain.usage.errors import RateLimited
+from tests.fakes import FakeClientTransport, FakeLiveTranscriber, FakeRateLimiter
 
 
 def start(sample_rate: int | object = 16_000) -> ClientFrame:
@@ -21,7 +22,8 @@ STOP = ClientFrame(kind="text", text=json.dumps({"type": "stop"}))
 async def run(transport: FakeClientTransport, transcriber: FakeLiveTranscriber) -> None:
     # The relay never ends on its own — a real provider socket stays open — so a
     # hang here is a genuine bug, not a slow test.
-    await asyncio.wait_for(TranscribeStream(transcriber, finalize_timeout=0.1)(transport), 2.0)
+    use_case = TranscribeStream(transcriber, finalize_timeout=0.1, daily_budget=FakeRateLimiter())
+    await asyncio.wait_for(use_case(transport), 2.0)
 
 
 class TestHandshake:
@@ -108,3 +110,20 @@ class TestStreaming:
         await run(transport, transcriber)
 
         assert transcriber.session.audio == []
+
+
+class TestDailyBudget:
+    async def test_a_spent_budget_refuses_before_the_handshake_is_read(self) -> None:
+        # Checked before `_negotiate`, so a spent budget never costs a provider
+        # session - not even the handshake frame is read off the socket.
+        transport = FakeClientTransport([start(), STOP])
+        transcriber = FakeLiveTranscriber()
+        use_case = TranscribeStream(
+            transcriber, finalize_timeout=0.1, daily_budget=FakeRateLimiter(max_attempts=0)
+        )
+
+        with pytest.raises(RateLimited):
+            await asyncio.wait_for(use_case(transport), 2.0)
+
+        assert transcriber.opened_with is None
+        assert transport.sent == []

@@ -55,15 +55,25 @@ class UploadDocument:
         max_bytes: int,
         limiter: RateLimiter,
         uow_factory: UnitOfWorkFactory,
+        daily_budget: RateLimiter,
         allowed_content_types: frozenset[str] = frozenset(_ACCEPTED),
     ) -> None:
         self._storage = storage
         self._max_bytes = max_bytes
         self._limiter = limiter
         self._uow_factory = uow_factory
+        self._daily_budget = daily_budget
         self._allowed_content_types = allowed_content_types
 
     async def __call__(self, data: UploadDocumentInput) -> UploadDocumentResult:
+        # One counter shared with every chat reply, URL ingestion and
+        # transcription session in the deployment - see
+        # `Settings.global_daily_call_budget`. Checked before the per-user limit
+        # for the same reason as there: the per-user one alone caps a single
+        # account, not the total spend across as many accounts as someone cares
+        # to create.
+        await self._daily_budget.hit("global")
+
         # Counted first, before the type check and before a byte is read. An
         # upload is the expensive half of this app - every accepted file is
         # extracted, chunked and embedded at the provider's per-token price - and

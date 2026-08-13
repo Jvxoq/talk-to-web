@@ -46,14 +46,20 @@ class IngestUrl:
         limiter: RateLimiter,
         max_bytes: int,
         uow_factory: UnitOfWorkFactory,
+        daily_budget: RateLimiter,
     ) -> None:
         self._fetcher = fetcher
         self._storage = storage
         self._limiter = limiter
         self._max_bytes = max_bytes
         self._uow_factory = uow_factory
+        self._daily_budget = daily_budget
 
     async def __call__(self, data: IngestUrlInput) -> UploadDocumentResult:
+        # One counter shared with every chat reply, upload and transcription
+        # session in the deployment - see `Settings.global_daily_call_budget`.
+        await self._daily_budget.hit("global")
+
         # Same reasoning as `UploadDocument`: counted before any fetch happens,
         # so a loop of refused requests cannot run for free.
         await self._limiter.hit(f"ingest_url:{data.owner_id}")
