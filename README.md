@@ -180,7 +180,8 @@ Finally put the Vercel domain in `backend/.env.production` under both
 ### Checking it before AWS
 
 `docker-compose.prod.yml` has a `parity` profile that adds the built frontend
-behind nginx on `:8080`, so the production images can be exercised locally:
+behind nginx on `:8080`, so the production images can be exercised locally —
+same Dockerfiles, same Caddy TLS setup, on your laptop instead of EC2:
 
 ```bash
 docker compose -f docker-compose.prod.yml --profile parity up --build
@@ -190,6 +191,34 @@ With `API_DOMAIN=localhost` Caddy issues a certificate from its own internal
 CA instead of calling Let's Encrypt, so `curl -k https://localhost/health`
 works on a laptop. Add `http://localhost:8080` to `ALLOWED_WEBSOCKET_ORIGINS`
 for the run, since that is the origin the parity frontend is served from.
+
+By default `migrate`/`backend` read `backend/.env.production`, same as the
+real deploy — which means an unmodified parity run hits the real Neon `main`
+branch and the real Qdrant Cloud cluster. To exercise the managed services
+without touching production data, add `docker-compose.parity.yml`:
+
+```bash
+cp backend/.env.parity.example backend/.env.parity   # then fill it in
+docker compose -f docker-compose.prod.yml -f docker-compose.parity.yml \
+  --profile parity up --build
+```
+
+Postgres and Qdrant are handled differently, because only one of them has a
+safe "same service, different copy" option:
+
+- **Postgres** stays Neon. `backend/.env.parity` sets
+  `DATABASE_URL`/`DATABASE_MIGRATION_URL` to a branch created off `main` (a
+  full copy-on-write clone, so schema and data look real without ever writing
+  back to production). `env_file` lists append across `-f` files rather than
+  being replaced, so this file only needs to carry what differs —
+  `JWT_SECRET`, provider keys, `CORS_ORIGINS`, etc. still come from
+  `.env.production` unchanged.
+- **Qdrant** is not Qdrant Cloud at all. It has no branch equivalent, so
+  `docker-compose.parity.yml` runs its own throwaway local Qdrant container
+  (same as plain local dev) and points `backend`/`migrate` at it via a
+  top-level `environment:` override, which wins over whatever `env_file` set
+  — that's what actually keeps the real `QDRANT_URL`/`QDRANT_API_KEY` off a
+  parity run, not anything in `.env.parity`.
 
 ## Operational concerns
 
@@ -206,7 +235,19 @@ for the run, since that is the origin the parity frontend is served from.
 - **Rate limiting.** Auth endpoints are rate-limited in-memory
   (`auth_rate_limit_attempts` per `auth_rate_limit_window_seconds`), which
   only works correctly with a single backend process — a multi-instance
-  deployment needs a shared store (Redis) instead.
+  deployment needs a shared store (Redis) instead. On top of the per-account
+  chat/upload limits sits one deployment-wide ceiling
+  (`global_daily_call_budget`, default 200/day) shared by chat replies,
+  uploads, URL ingestion and transcription alike — registration has no
+  CAPTCHA, so the per-account limits alone only cap one account's spend, not
+  the total across as many as someone is willing to create. `Caddyfile` adds a
+  second, edge-level layer in front of that: `caddy-ratelimit` (built into the
+  `caddy` image by `Caddy.Dockerfile`, since the stock image has no
+  rate-limiting module) caps requests per address on `/generate*` and
+  `/upload*` before they reach the backend at all. Both are meant to sit behind
+  a CDN/WAF (e.g. Cloudflare, proxying DNS in front of the EC2 instance) doing
+  the first-line filtering — this layer is the backstop for whatever gets
+  through, not a replacement for one.
 - **Monitoring.** Every request gets an id (`X-Request-ID`), visible in logs,
   500 bodies, and Sentry events — see `backend/README.md` for how that's
   wired. Sentry itself is opt-in via `SENTRY_DSN`; nothing is sent from local
@@ -217,6 +258,75 @@ for the run, since that is the origin the parity frontend is served from.
   (every push/PR to `main` plus weekly), pre-commit hooks mirroring the fast
   half of CI, and a `cleanup-refresh-tokens` job (see `backend/README.md`)
   that must be run on a schedule — it does not run on a plain `docker compose up`.
+
+## Observability
+
+Langfuse is the tracing backend. A `Tracer` port in `app/application/chat/ports.py`
+has two adapters: `LangfuseTracer` (when credentials are set) and `NullTracer`
+(the default, when unset). Credentials are checked once at startup and fall back
+gracefully — no keys means the app runs normally on `NullTracer` and nothing
+leaves the process, just like `SENTRY_DSN`.
+
+Spans are nested: `chat.reply` (root) contains `agent.run`, `summarize`, and
+`llm.agent` (carries model/tokens/time-to-first-token). Tool calls emit a
+`tool.<name>` span with latency and output character count. Tool-output
+compression and history summarization get their own `condense.tool_output` and
+`condense.summary` spans.
+
+Langfuse is deliberately cloud-hosted, not self-hosted. Self-hosting needs five
+extra containers (web, worker, ClickHouse, MinIO, Redis) plus its own Postgres,
+and this deployment is 1 GiB where the backend alone is capped at 700 MB. The
+hosted free tier costs two environment variables.
+
+Because traces of a chat reply are long and expensive, Langfuse itself is never
+on the `/ready` probe — a tracing outage must not return 503. Set `LANGFUSE_*`
+keys in `backend/.env.production` to enable it; unset, tracing is off.
+
+[Langfuse trace screenshot goes here]
+
+## Evals and guardrails
+
+**Guardrails** are a domain-layer concern: detectors live in
+`app/domain/chat/guardrails.py` as stdlib code that never imports a framework.
+Input inspection runs in `GenerateReply` before the stream opens, so refusals
+are real 422 responses; redacted text is what the model, the LangGraph checkpointer,
+and the trace all see. Tool output is fenced as `<untrusted_content source="...">` by
+`ToolRegistry.invoke`, the single choke point — this is indirect prompt-injection
+defence and matters because the agent fetches arbitrary URLs and reads user PDFs.
+`guardrail_block_on_injection` ships false: flag first, measure the false-positive
+rate against real user data, then turn on.
+
+**Evals** measure what matters. The driver is `backend/evals/` — deliberately
+outside `app/` — as a CLI runner with JSONL datasets, an LLM judge, and results
+in JSON. It runs fast and costs zero API calls on the deterministic red-team
+suite (pytest in `tests/application/test_guardrails_redteam.py`), which is gated
+in CI.
+
+Run the full suite locally (requires local Qdrant):
+
+```bash
+cd backend
+docker compose up -d qdrant
+uv run python -m evals --suite tools --limit 10 --concurrency 4 --out evals/results/latest.json
+uv run python -m evals --suite rag --limit 10 --concurrency 4 --out evals/results/latest.json
+```
+
+Sample results from a full run (exact match, overuse, latency, cost per reply):
+
+| Suite | Metric | Value | Notes |
+|-------|--------|-------|-------|
+| tools | exact-match rate | 1.00 | Agent called the right tool for the task |
+| tools | over-calling rate | 0.00 | No wasted tool invocations |
+| tools | p50 latency | 8582 ms | Time to final reply |
+| tools | mean cost | $0.000447 | Per-reply spend at current pricing |
+| rag | hit_rate@3 | 0.33 | Retriever found the answer in top 3 |
+| rag | mrr@3 | 0.33 | Mean reciprocal rank of correct chunk |
+| rag | mean groundedness | 0.67 | Response factual w.r.t. source |
+| rag | mean relevance | 0.67 | Response directly answered the question |
+
+The `rag` suite caught a real miss: asked "who founded Aurora Robotics", the
+agent chose `search_web` instead of `retrieve_documents`. That is exactly what
+the suite exists for.
 
 ## Known limits
 
