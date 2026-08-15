@@ -23,10 +23,9 @@ export interface ToolActivity {
 export interface Usage {
   promptTokens: number
   completionTokens: number
-  costUsd: number
+  /** Wall-clock time for the whole reply, in milliseconds. */
+  elapsedMs: number
   model: string
-  /** False means no price was on file for that model — not that it was free. */
-  priced: boolean
 }
 
 export interface Message {

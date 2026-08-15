@@ -62,19 +62,16 @@ class ReplyUsage(BaseModel):
     tools and condensed twice paid for the condenser too, and a number that
     omitted that would understate the expensive replies by the most.
 
-    `cost_usd` is 0.0 for a model with no price on file. That is reported as
-    unpriced rather than as free - see `app.domain.usage.value_objects.CostBook`.
+    `elapsed_ms` is wall-clock time for the whole reply - from the first byte
+    of work to the last event - not just one model call.
     """
 
     model_config = ConfigDict(frozen=True)
 
     prompt_tokens: int
     completion_tokens: int
-    cost_usd: float
+    elapsed_ms: int
     model: str
-    # False when no price was on file, so a reader can tell "this cost nothing"
-    # from "nobody told me what this costs".
-    priced: bool = True
 
 
 class ReplyCompleted(BaseModel):

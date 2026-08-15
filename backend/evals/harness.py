@@ -60,7 +60,6 @@ from app.application.chat.tools.search_web import SearchWeb
 from app.application.chat.use_cases.generate_reply import GenerateReply
 from app.domain.ingestion.entities import Document
 from app.domain.ingestion.value_objects import DocumentName
-from app.domain.usage.value_objects import CostBook, ModelPrice
 from app.settings import Settings
 from evals.cases import EvalCase
 from evals.judge import Judge
@@ -269,13 +268,6 @@ async def build_harness(
             tracer = candidate
             logger.info("Langfuse tracing enabled for this eval run")
 
-    cost_book = CostBook(
-        {
-            name: ModelPrice(input_usd_per_million=prices[0], output_usd_per_million=prices[1])
-            for name, prices in settings.model_prices_usd_per_million.items()
-        }
-    )
-
     chat_model = LangChainChatModel(
         provider=settings.llm_provider,
         models=list(dict.fromkeys([*settings.llm_models, settings.agent_condenser_model])),
@@ -344,7 +336,6 @@ async def build_harness(
         limiter=limiter,
         daily_budget=limiter,
         guards=input_guard,
-        cost_book=cost_book,
         tracer=tracer,
     )
     judge = Judge(model=chat_model, model_name=settings.agent_condenser_model, tracer=tracer)

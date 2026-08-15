@@ -47,22 +47,20 @@ async def to_sse(events: AsyncIterator[ReplyEvent]) -> AsyncIterator[str]:
                     ]
                 yield format_frame(tool=tool)
             # Its own frame rather than folded into `done`, so a frontend that
-            # does not know about cost yet ignores an unrecognised key and
+            # does not know about usage yet ignores an unrecognised key and
             # keeps working - nothing about the existing frames changes shape.
             case ReplyUsage(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
-                cost_usd=cost_usd,
+                elapsed_ms=elapsed_ms,
                 model=model,
-                priced=priced,
             ):
                 yield format_frame(
                     usage={
                         "prompt_tokens": prompt_tokens,
                         "completion_tokens": completion_tokens,
-                        "cost_usd": cost_usd,
+                        "elapsed_ms": elapsed_ms,
                         "model": model,
-                        "priced": priced,
                     }
                 )
             case ReplyFailed(detail=detail):

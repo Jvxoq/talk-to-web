@@ -27,7 +27,6 @@ from app.application.chat.models import ChatMessage, Source
 from app.application.chat.ports import RateLimiter, Tracer
 from app.domain.chat.errors import UnsafeUserMessage
 from app.domain.chat.value_objects import UserMessage
-from app.domain.usage.value_objects import NO_COST, CostBook, ReplyCost
 from app.observability.metrics import emit_reply_metrics
 
 
@@ -55,7 +54,6 @@ class GenerateReply:
         limiter: RateLimiter,
         daily_budget: RateLimiter,
         guards: InputGuardPolicy,
-        cost_book: CostBook,
         tracer: Tracer,
     ) -> None:
         self._graph = graph
@@ -63,7 +61,6 @@ class GenerateReply:
         self._limiter = limiter
         self._daily_budget = daily_budget
         self._guards = guards
-        self._cost_book = cost_book
         self._tracer = tracer
         # A backstop below LangGraph's own default, in the same units the graph
         # counts in: one lap is now an agent node, a tool node and a summarize
@@ -154,8 +151,8 @@ class GenerateReply:
         }
 
         # Every model call this reply makes, keyed by the model that made it -
-        # the answering model and the condenser are priced differently, and a
-        # reply that condensed twice really did pay for it.
+        # the answering model and the condenser both spend tokens, and a reply
+        # that condensed twice really did spend them.
         spend: dict[str, list[int]] = {}
         tools_used: list[str] = []
         started = time.perf_counter()
@@ -208,60 +205,53 @@ class GenerateReply:
                     yield ReplyFailed(detail=_friendly_error(str(exc)))
                     return
 
-                cost = self._total_cost(spend)
+                prompt_tokens, completion_tokens = self._total_tokens(spend)
+                elapsed_ms = _elapsed_ms(started)
                 span.set(
                     outcome=outcome,
                     tools_used=tools_used,
-                    prompt_tokens=cost.prompt_tokens,
-                    completion_tokens=cost.completion_tokens,
-                    cost_usd=cost.usd,
-                    priced=cost.priced,
-                    latency_ms=_elapsed_ms(started),
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    latency_ms=elapsed_ms,
                 )
 
                 if spend:
                     # Skipped entirely when no provider reported usage. Sending
-                    # zeros would be a claim about money that nobody made.
+                    # zeros would be a claim nobody made.
                     yield ReplyUsage(
-                        prompt_tokens=cost.prompt_tokens,
-                        completion_tokens=cost.completion_tokens,
-                        cost_usd=round(cost.usd, 6),
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        elapsed_ms=elapsed_ms,
                         model=data.model,
-                        priced=cost.priced,
                     )
 
                 yield ReplyCompleted()
         finally:
             # In a `finally` so a cancelled reply is still counted. A user who
-            # closed the tab halfway through still spent the tokens.
-            cost = self._total_cost(spend)
+            # closed the tab halfway through still spent the tokens and the time.
+            prompt_tokens, completion_tokens = self._total_tokens(spend)
             emit_reply_metrics(
                 outcome=outcome,
                 model=data.model,
                 owner_id=data.owner_id,
                 tools=tools_used,
-                prompt_tokens=cost.prompt_tokens,
-                completion_tokens=cost.completion_tokens,
-                cost_usd=round(cost.usd, 6),
-                priced=cost.priced,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
                 guardrail_action=verdict.action,
                 guardrail_categories=list(verdict.categories()),
                 latency_ms=_elapsed_ms(started),
             )
 
-    def _total_cost(self, spend: dict[str, list[int]]) -> ReplyCost:
-        """Price every model this reply used, and total them.
+    def _total_tokens(self, spend: dict[str, list[int]]) -> tuple[int, int]:
+        """Total the tokens every model call this reply made spent.
 
-        Totalled rather than reported per model because the question a bill
-        answers is "what did this reply cost", and the split across the
-        answering model and the condenser is a detail for the trace. `ReplyCost`
-        carries `priced` through the sum, so one unpriced model makes the whole
-        total honestly a lower bound.
+        Totalled rather than reported per model because the question a client
+        asks is "what did this reply spend", and the split across the
+        answering model and the condenser is a detail for the trace.
         """
-        total = NO_COST
-        for model, (prompt_tokens, completion_tokens) in spend.items():
-            total = total + self._cost_book.price(model, prompt_tokens, completion_tokens)
-        return total
+        prompt_tokens = sum(tokens[0] for tokens in spend.values())
+        completion_tokens = sum(tokens[1] for tokens in spend.values())
+        return prompt_tokens, completion_tokens
 
     async def _new_messages(
         self,

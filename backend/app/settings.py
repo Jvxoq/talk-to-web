@@ -81,19 +81,6 @@ class Settings(BaseSettings):
     # bound exists for.
     guardrail_max_scan_chars: int = 50_000
 
-    # --- Spend accounting ---
-    # (input, output) USD per million tokens, keyed by model name. Prices move
-    # when a provider moves them, so they are configuration rather than code.
-    # A model missing from this map still answers; its cost is reported as
-    # unpriced rather than as zero - see `app.domain.usage.value_objects`.
-    model_prices_usd_per_million: dict[str, tuple[float, float]] = Field(
-        default_factory=lambda: {
-            "openai/gpt-oss-120b": (0.15, 0.60),
-            "openai/gpt-oss-20b": (0.05, 0.20),
-            "llama-3.1-8b-instant": (0.05, 0.08),
-        }
-    )
-
     # --- HTTP ---
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
     # Origins allowed to open the speech-to-text WebSocket. CORS middleware does
@@ -124,6 +111,11 @@ class Settings(BaseSettings):
     database_migration_url: str | None = None
     database_pool_size: int = 10
     database_max_overflow: int = 5
+    # Separate from the pool above: the checkpointer issues short autocommit
+    # statements, not held transactions, so it needs far fewer connections than
+    # the SQLAlchemy pool serving requests.
+    checkpointer_pool_min_size: int = 1
+    checkpointer_pool_max_size: int = 5
 
     # --- LLM (provider-agnostic) ---
     # The provider is a string because the adapter resolves it through
@@ -207,6 +199,17 @@ class Settings(BaseSettings):
     # --- Tavily (web search) ---
     tavily_api_key: SecretStr
     tavily_max_results: int = 5
+
+    # --- fetch_web_pages tool ---
+    # `fetch_web_max_urls_per_call` tightens the tool's own hard ceiling
+    # (`MAX_URLS_PER_CALL` in fetch_web_pages.py) rather than replacing it - that
+    # ceiling stops a hallucinated list of URLs from becoming dozens of outbound
+    # requests, and stays fixed regardless of this setting. This one is the
+    # dial for trading off context size against how many pages one turn can read.
+    fetch_web_max_urls_per_call: int = 10
+    # Per-page character cap when `fetch_all` joins several pages into one blob
+    # for a chat turn (`MAX_PAGE_CHARS` in aiohttp_scraper.py otherwise).
+    fetch_web_max_page_chars: int = 20_000
 
     # --- Gemini (embeddings) ---
     gemini_api_key: SecretStr

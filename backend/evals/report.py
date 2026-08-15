@@ -111,11 +111,9 @@ def _rows(suite: SuiteReport) -> list[tuple[str, str, int]]:
 
     if suite.budgets is not None:
         b = suite.budgets
-        cost = f"{b.mean_cost_usd:.6f}" + (" (lower bound)" if b.unpriced_count else "")
         rows += [
             ("p50_latency_ms", f"{b.p50_latency_ms:.0f}", b.n),
             ("p95_latency_ms", f"{b.p95_latency_ms:.0f}", b.n),
-            ("mean_cost_usd", cost, b.n),
             ("mean_prompt_tokens", f"{b.mean_prompt_tokens:.0f}", b.n),
             ("mean_completion_tokens", f"{b.mean_completion_tokens:.0f}", b.n),
         ]

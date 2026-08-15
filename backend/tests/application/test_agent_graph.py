@@ -35,7 +35,6 @@ from app.application.chat.models import ChatMessage, ModelChunk, TokenUsage, Too
 from app.application.chat.tools.base import AgentTool, ToolRegistry
 from app.application.chat.use_cases.generate_reply import GenerateReply
 from app.domain.usage.errors import RateLimited
-from app.domain.usage.value_objects import CostBook
 from tests.fakes import (
     FakeAgentTool,
     FakeChatModel,
@@ -100,7 +99,6 @@ def build_use_case(
         limiter=limiter or FakeRateLimiter(),
         daily_budget=daily_budget or FakeRateLimiter(),
         guards=InputGuardPolicy(redact_pii=False, block_on_injection=False, max_scan_chars=50_000),
-        cost_book=CostBook({}),
         tracer=tracer_obj,
     )
 

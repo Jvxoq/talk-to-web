@@ -1,22 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import { formatCost, formatTokens, parseUsage } from './usage'
+import { formatDuration, formatTokens, parseUsage } from './usage'
 
 describe('parseUsage', () => {
   it('narrows a well-formed usage frame payload', () => {
     const raw = {
       prompt_tokens: 812,
       completion_tokens: 143,
-      cost_usd: 0.000208,
+      elapsed_ms: 1834,
       model: 'openai/gpt-oss-120b',
-      priced: true,
     }
 
     expect(parseUsage(raw)).toEqual({
       promptTokens: 812,
       completionTokens: 143,
-      costUsd: 0.000208,
+      elapsedMs: 1834,
       model: 'openai/gpt-oss-120b',
-      priced: true,
     })
   })
 
@@ -30,17 +28,15 @@ describe('parseUsage', () => {
     const base = {
       prompt_tokens: 10,
       completion_tokens: 5,
-      cost_usd: 0.0001,
+      elapsed_ms: 250,
       model: 'some/model',
-      priced: true,
     }
 
     expect(parseUsage({ ...base, prompt_tokens: '10' })).toBeUndefined()
-    expect(parseUsage({ ...base, cost_usd: '0.0001' })).toBeUndefined()
+    expect(parseUsage({ ...base, elapsed_ms: '250' })).toBeUndefined()
     expect(parseUsage({ ...base, model: undefined })).toBeUndefined()
-    expect(parseUsage({ ...base, priced: 1 })).toBeUndefined()
-    const { priced: _priced, ...missingPriced } = base
-    expect(parseUsage(missingPriced)).toBeUndefined()
+    const { elapsed_ms: _elapsedMs, ...missingElapsed } = base
+    expect(parseUsage(missingElapsed)).toBeUndefined()
   })
 })
 
@@ -50,48 +46,33 @@ describe('formatTokens', () => {
       formatTokens({
         promptTokens: 812,
         completionTokens: 143,
-        costUsd: 0.000208,
+        elapsedMs: 1834,
         model: 'm',
-        priced: true,
       }),
     ).toBe('955 tokens')
   })
 })
 
-describe('formatCost', () => {
-  it('shows six decimal places for a sub-cent priced reply', () => {
+describe('formatDuration', () => {
+  it('shows whole milliseconds below one second', () => {
     expect(
-      formatCost({
+      formatDuration({
         promptTokens: 1,
         completionTokens: 1,
-        costUsd: 0.000208,
+        elapsedMs: 420,
         model: 'm',
-        priced: true,
       }),
-    ).toBe('$0.000208')
+    ).toBe('420ms')
   })
 
-  it('shows two decimal places once the cost clears a cent', () => {
+  it('shows one decimal place of seconds at or above one second', () => {
     expect(
-      formatCost({
+      formatDuration({
         promptTokens: 1,
         completionTokens: 1,
-        costUsd: 0.42,
+        elapsedMs: 1834,
         model: 'm',
-        priced: true,
       }),
-    ).toBe('$0.42')
-  })
-
-  it('never renders $0.00 for an unpriced reply — priced: false means no price was on file, not that it was free', () => {
-    expect(
-      formatCost({
-        promptTokens: 1,
-        completionTokens: 1,
-        costUsd: 0,
-        model: 'm',
-        priced: false,
-      }),
-    ).toBe('cost unknown')
+    ).toBe('1.8s')
   })
 })

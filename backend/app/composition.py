@@ -14,6 +14,9 @@ from fastapi import FastAPI
 from google import genai
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from loguru import logger
+from psycopg import AsyncConnection
+from psycopg.rows import DictRow, dict_row
+from psycopg_pool import AsyncConnectionPool
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from tavily import AsyncTavilyClient  # type: ignore[import-untyped]
@@ -71,7 +74,6 @@ from app.application.ingestion.use_cases.ingest_url import IngestUrl
 from app.application.ingestion.use_cases.list_documents import ListDocuments
 from app.application.ingestion.use_cases.upload_document import UploadDocument
 from app.application.transcription.use_cases.transcribe_stream import TranscribeStream
-from app.domain.usage.value_objects import CostBook, ModelPrice
 from app.settings import Settings
 
 # `postgresql+psycopg://` and friends. SQLAlchemy spells the driver into the
@@ -203,20 +205,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         else:
             logger.warning("Langfuse credentials rejected; tracing disabled")
 
-    # Prices are configuration because providers move them; the arithmetic and
-    # the "unpriced is not free" rule are the domain's.
-    cost_book = CostBook(
-        {
-            model: ModelPrice(input_usd_per_million=prices[0], output_usd_per_million=prices[1])
-            for model, prices in settings.model_prices_usd_per_million.items()
-        }
-    )
-    for configured in (*settings.llm_models, settings.agent_condenser_model):
-        if not cost_book.knows(configured):
-            logger.warning(
-                f"No price on file for model {configured!r}; its cost reports as unpriced"
-            )
-
     input_guard = InputGuardPolicy(
         redact_pii=settings.guardrail_pii_redaction_enabled,
         block_on_injection=settings.guardrail_block_on_injection,
@@ -259,7 +247,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         limit=settings.retrieval_limit,
         score_threshold=settings.retrieval_score_threshold,
     )
-    web = AiohttpWebContentFetcher(session=http_session)
+    web = AiohttpWebContentFetcher(
+        session=http_session, max_page_chars=settings.fetch_web_max_page_chars
+    )
     searcher = TavilyWebSearcher(client=tavily_client)
     storage = LocalFileStorage(directory=settings.upload_dir)
     plain_text_extractor = PlainTextExtractor()
@@ -331,14 +321,34 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         refresh_ttl_seconds=settings.refresh_token_ttl_seconds,
     )
 
-    # `from_conn_string` is an async context manager, not a constructor: it owns
-    # a psycopg pool that has to stay open for as long as the app serves
-    # requests. An exit stack is what holds it open across the single `yield`
-    # below and still unwinds it in the right order at shutdown.
+    # A pool, not `AsyncPostgresSaver.from_conn_string(...)`: that helper opens
+    # exactly one raw connection, so every checkpoint read/write would serialize
+    # on it and a single dropped connection would take the checkpointer down
+    # until restart. `autocommit`/`prepare_threshold=0`/`dict_row` are the same
+    # connection kwargs `from_conn_string` used — `prepare_threshold=0` matters
+    # because `database_url` is Neon's transaction-mode pooler, which prepared
+    # statements do not survive. An exit stack holds the pool open across the
+    # single `yield` below and unwinds it in the right order at shutdown.
     async with AsyncExitStack() as stack:
-        checkpointer = await stack.enter_async_context(
-            AsyncPostgresSaver.from_conn_string(_plain_dsn(settings.database_url))
+        checkpointer_pool = await stack.enter_async_context(
+            AsyncConnectionPool[AsyncConnection[DictRow]](
+                _plain_dsn(settings.database_url),
+                min_size=settings.checkpointer_pool_min_size,
+                max_size=settings.checkpointer_pool_max_size,
+                kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+                open=False,
+                # Same Neon reality as the SQLAlchemy engine above, and this pool
+                # needs its own defence against it: `check` runs a lightweight
+                # ping on a connection before handing it to a caller, so one
+                # Neon already killed is discovered and replaced here rather
+                # than failing mid-checkpoint-read. `max_lifetime` mirrors
+                # `pool_recycle` - connections are retired before they are old
+                # enough to be reaped, matching the engine's 300 seconds.
+                check=AsyncConnectionPool.check_connection,
+                max_lifetime=300,
+            )
         )
+        checkpointer = AsyncPostgresSaver(conn=checkpointer_pool)
         # Deliberately NOT gated on `environment == "local"`, unlike the
         # `create_all` above. These tables belong to LangGraph, not to us: they
         # are not in our Alembic history, and `setup()` is the only supported way
@@ -360,7 +370,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             tools=ToolRegistry(
                 [
                     RetrieveDocuments(knowledge),
-                    FetchWebPages(web),
+                    FetchWebPages(web, max_urls=settings.fetch_web_max_urls_per_call),
                     SearchWeb(searcher, max_results=settings.tavily_max_results),
                 ],
                 guard=tool_output_guard,
@@ -386,7 +396,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 limiter=chat_limiter,
                 daily_budget=daily_budget_limiter,
                 guards=input_guard,
-                cost_book=cost_book,
                 tracer=tracer,
             ),
             start_conversation=StartConversation(uow_factory),
@@ -403,9 +412,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ),
             ingest_url=IngestUrl(
                 fetcher=web,
-                storage=storage,
                 limiter=upload_limiter,
-                max_bytes=settings.max_upload_bytes,
                 uow_factory=uow_factory,
                 daily_budget=daily_budget_limiter,
             ),

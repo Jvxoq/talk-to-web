@@ -57,8 +57,7 @@ class Judge:
         metric a `None`, never the eval run that asked for it."""
         if not answer.strip():
             # Nothing to grade. A `None` here reads correctly downstream: "not
-            # judged", not "judged as zero" - the same distinction `ReplyCost`
-            # draws between unpriced and free.
+            # judged", not "judged as zero".
             return None
 
         messages = [
