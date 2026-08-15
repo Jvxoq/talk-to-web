@@ -1,26 +1,27 @@
-"""Fetch a URL's full text and put it wherever `UploadDocument` puts a file.
+"""Fetch a URL's full text and record it as a document, no file involved.
 
-Same destination as an uploaded document, reached from a different starting
-point: instead of trusting a client-sent stream, this trusts a client-sent
-URL and does the fetching itself.
+Reached from a different starting point than `UploadDocument` - instead of
+trusting a client-sent stream, this trusts a client-sent URL and does the
+fetching itself - but unlike an upload there is never a client-supplied blob
+that has to land somewhere before it can be read back. The fetcher already
+hands back the full page as a string, so that string goes straight to
+`IndexDocument`; nothing is written to disk or object storage on this path.
 """
 
 import hashlib
-from collections.abc import AsyncIterator
 
 from loguru import logger
 
 from app.application.common.uow import UnitOfWorkFactory
 from app.application.ingestion.dto import IngestUrlInput, UploadDocumentResult
-from app.application.ingestion.ports import FileStorage, RateLimiter, UrlContentFetcher
+from app.application.ingestion.ports import RateLimiter, UrlContentFetcher
 from app.domain.chat.value_objects import FetchableUrl
 from app.domain.ingestion.entities import UploadedDocument
 from app.domain.ingestion.value_objects import DocumentName
 
-# The fetched text is saved with this suffix so `CompositeTextExtractor` (built
-# alongside this use case) routes it to the plain-text extractor at index time,
-# the same way a hand-uploaded .txt file would be - no coupling to that
-# extractor's code, just a shared filename convention.
+# The document name still carries this suffix so it displays and sorts like
+# the text file it represents, even though nothing with this name is ever
+# written to storage.
 _SUFFIX = ".txt"
 
 # Long enough that two different pages on the same host essentially never
@@ -30,28 +31,28 @@ _HASH_CHARS = 10
 
 class IngestUrl:
     """
-    Take a URL from an untrusted client to a safe stored reference.
+    Take a URL from an untrusted client to an indexable document, in memory.
 
     Mirrors `UploadDocument`'s shape: rate-limit first, then validate, then
-    fetch/store. The validation here is "is this URL safe to open a connection
-    to" rather than "does this file start with the bytes it claims to" - the
+    fetch. The validation here is "is this URL safe to open a connection to"
+    rather than "does this file start with the bytes it claims to" - the
     equivalent check for something the server itself goes and fetches, not
     something a client handed over already-formed.
+
+    `reference` on the resulting record is the source URL itself rather than
+    a storage path - there is no file behind it for `DeleteDocument` to clean
+    up, only the vectors and the row.
     """
 
     def __init__(
         self,
         fetcher: UrlContentFetcher,
-        storage: FileStorage,
         limiter: RateLimiter,
-        max_bytes: int,
         uow_factory: UnitOfWorkFactory,
         daily_budget: RateLimiter,
     ) -> None:
         self._fetcher = fetcher
-        self._storage = storage
         self._limiter = limiter
-        self._max_bytes = max_bytes
         self._uow_factory = uow_factory
         self._daily_budget = daily_budget
 
@@ -74,20 +75,24 @@ class IngestUrl:
         text = await self._fetcher.fetch(fetchable.value)
 
         name = _synthetic_name(fetchable.host, fetchable.value)
-        stream = _byte_stream(text)
-        reference = await self._storage.save(name, stream, self._max_bytes, data.owner_id)
-        logger.debug("Stored {} as {}", fetchable.value, reference)
+        logger.debug("Fetched {} as {}", fetchable.value, name.value)
 
         # Recorded the same way `UploadDocument` records a file: the moment the
-        # text is safely on disk, it belongs in the document manager whether or
-        # not indexing behind it ever succeeds.
-        record = UploadedDocument(name=name.value, reference=reference, owner_id=data.owner_id)
+        # fetch succeeds, it belongs in the document manager whether or not
+        # indexing behind it ever succeeds. `reference` is the source URL - the
+        # only thing identifying this document once the text above is gone.
+        record = UploadedDocument(
+            name=name.value, reference=fetchable.value, owner_id=data.owner_id
+        )
         async with self._uow_factory() as uow:
             stored = await uow.documents.add(record)
             await uow.commit()
 
         return UploadDocumentResult(
-            reference=stored.reference, name=stored.name, document_id=_require_id(stored)
+            reference=stored.reference,
+            name=stored.name,
+            document_id=_require_id(stored),
+            text=text,
         )
 
 
@@ -102,8 +107,3 @@ def _synthetic_name(host: str, url: str) -> DocumentName:
     """Derive a safe `.txt` filename from a URL, so it never collides across hosts."""
     digest = hashlib.sha256(url.encode()).hexdigest()[:_HASH_CHARS]
     return DocumentName.sanitize(f"{host}-{digest}{_SUFFIX}")
-
-
-async def _byte_stream(text: str) -> AsyncIterator[bytes]:
-    """Wrap already-fetched text as the `AsyncIterator[bytes]` `FileStorage.save` expects."""
-    yield text.encode("utf-8")

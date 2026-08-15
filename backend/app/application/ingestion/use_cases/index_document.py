@@ -48,12 +48,18 @@ class IndexDocument:
         self._uow_factory = uow_factory
 
     async def __call__(
-        self, reference: str, name: str, document_id: int, owner_id: int
+        self, reference: str, name: str, document_id: int, owner_id: int, text: str | None = None
     ) -> IndexDocumentResult:
+        """
+        `text`, when given, is already-fetched content (currently only
+        `IngestUrl`'s page text) and is indexed as-is - `reference` is then
+        just the record's identity, never read from. Left `None`, `reference`
+        is a `TextExtractor`-readable location, as it is for an uploaded file.
+        """
         logger.debug("Indexing {} from {} for owner {}", name, reference, owner_id)
 
-        text = await self._extractor.extract(reference)
-        document = Document(name=DocumentName(name), content=text)
+        content = text if text is not None else await self._extractor.extract(reference)
+        document = Document(name=DocumentName(name), content=content)
         if not document.is_indexable():
             raise DocumentNotIndexable(name)
 

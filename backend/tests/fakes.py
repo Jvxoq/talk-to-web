@@ -489,8 +489,10 @@ class FakeUrlContentFetcher:
 class FakeTextExtractor:
     def __init__(self, text: str = "") -> None:
         self.text = text
+        self.calls: list[str] = []
 
     async def extract(self, reference: str) -> str:
+        self.calls.append(reference)
         return self.text
 
 

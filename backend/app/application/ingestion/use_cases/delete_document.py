@@ -34,7 +34,11 @@ class DeleteDocument:
                 raise DocumentNotFound(document_id)
 
             await self._index.delete_document(document_id, owner_id)
-            await self._storage.delete(document.reference)
+            # A URL-ingested document's `reference` is its source URL, not a
+            # storage path - `IngestUrl` never wrote a file, so there is
+            # nothing here for `FileStorage` to remove.
+            if not document.reference.startswith(("http://", "https://")):
+                await self._storage.delete(document.reference)
 
             await uow.documents.delete(document_id, owner_id)
             await uow.commit()

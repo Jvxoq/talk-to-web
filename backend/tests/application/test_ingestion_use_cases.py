@@ -306,6 +306,33 @@ class TestIndexDocument:
 
         assert len(embedder.embedded) == result.chunks_indexed > 20
 
+    async def test_inline_text_is_indexed_without_calling_the_extractor(self) -> None:
+        """The `IngestUrl` path: the page text arrives with the call, so there is
+        nothing at `reference` for the extractor to read - and it must not try."""
+        extractor = FakeTextExtractor("should never be read")
+        index = FakeVectorIndex()
+        use_case = IndexDocument(
+            extractor=extractor,
+            embedder=FakeEmbedder(),
+            index=index,
+            chunk_size=100,
+            chunk_overlap=20,
+            embedding_dimensions=3,
+            uow_factory=UnitOfWorkSpy(),
+        )
+
+        result = await use_case(
+            "https://example.com/a",
+            "example.com-abc123.txt",
+            1,
+            OWNER,
+            text="the fetched page text",
+        )
+
+        assert extractor.calls == []
+        assert result.chunks_indexed == len(index.chunks) > 0
+        assert all(chunk.source == "example.com-abc123.txt" for chunk in index.chunks)
+
     async def test_ensures_the_collection_without_clearing_it(self) -> None:
         index = FakeVectorIndex()
         await self.build("hello world", index)("uploads/a.pdf", "a.pdf", 1, OWNER)
@@ -378,6 +405,23 @@ class TestDeleteDocument:
         assert index.deleted_documents == [(1, OWNER)]
         assert storage.deleted == ["uploads/a.pdf"]
         assert factory.issued[0].committed
+
+    async def test_a_url_ingested_document_never_touches_storage(self) -> None:
+        """`IngestUrl` never wrote a file - its `reference` is the source URL -
+        so deleting it must not ask `FileStorage` to remove anything."""
+        factory = UnitOfWorkSpy()
+        factory.documents.rows[1] = UploadedDocument(
+            name="example.com-abc123.txt",
+            reference="https://example.com/article",
+            owner_id=OWNER,
+            id=1,
+        )
+        storage = FakeFileStorage()
+
+        await DeleteDocument(factory, index=FakeVectorIndex(), storage=storage)(1, OWNER)
+
+        assert factory.documents.rows == {}
+        assert storage.deleted == []
 
     async def test_missing_document_is_reported_not_swallowed(self) -> None:
         delete = DeleteDocument(UnitOfWorkSpy(), index=FakeVectorIndex(), storage=FakeFileStorage())

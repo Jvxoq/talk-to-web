@@ -68,10 +68,16 @@ async def upload_url(
 ) -> FileUploadResponse:
     result = await ingest_url(IngestUrlInput(url=body.url, owner_id=user.user_id))
 
-    # Same fire-and-forget as the file route: the fetched page was saved as a
-    # synthetic .txt, so the existing indexer needs no change to pick it up.
+    # Same fire-and-forget as the file route, but the page text travels with
+    # the task instead of being read back from storage: `IngestUrl` never
+    # wrote it anywhere for `index_document` to read from.
     background.add_task(
-        index_document, result.reference, result.name, result.document_id, user.user_id
+        index_document,
+        result.reference,
+        result.name,
+        result.document_id,
+        user.user_id,
+        text=result.text,
     )
 
     return FileUploadResponse(
