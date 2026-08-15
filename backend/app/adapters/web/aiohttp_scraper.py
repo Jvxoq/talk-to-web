@@ -54,8 +54,11 @@ class AiohttpWebContentFetcher:
     is the single most common aiohttp performance mistake.
     """
 
-    def __init__(self, session: aiohttp.ClientSession) -> None:
+    def __init__(
+        self, session: aiohttp.ClientSession, max_page_chars: int = MAX_PAGE_CHARS
+    ) -> None:
         self._session = session
+        self._max_page_chars = max_page_chars
 
     async def fetch_all(self, urls: Sequence[str]) -> str:
         """Fetch every URL concurrently and join whatever came back.
@@ -81,7 +84,7 @@ class AiohttpWebContentFetcher:
                 logger.warning(f"Could not fetch {url}: {result}")
                 continue
             if result:
-                texts.append(_truncated(result, url))
+                texts.append(self._truncated(result, url))
 
         return " ".join(texts)
 
@@ -220,10 +223,9 @@ class AiohttpWebContentFetcher:
         """Close the shared HTTP session."""
         await self._session.close()
 
-
-def _truncated(text: str, url: str) -> str:
-    """Cap one page's contribution to a `fetch_all` blob at `MAX_PAGE_CHARS`."""
-    if len(text) > MAX_PAGE_CHARS:
-        logger.debug(f"Truncating {url} from {len(text)} to {MAX_PAGE_CHARS} chars")
-        return text[:MAX_PAGE_CHARS]
-    return text
+    def _truncated(self, text: str, url: str) -> str:
+        """Cap one page's contribution to a `fetch_all` blob at `self._max_page_chars`."""
+        if len(text) > self._max_page_chars:
+            logger.debug(f"Truncating {url} from {len(text)} to {self._max_page_chars} chars")
+            return text[: self._max_page_chars]
+        return text

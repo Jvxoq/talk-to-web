@@ -161,6 +161,21 @@ class TestFetchWebPages:
         assert set(spec.parameters["properties"]) == {"urls"}
         assert spec.parameters["properties"]["urls"]["type"] == "array"
 
+    async def test_a_configured_max_urls_trims_the_list_below_the_schema_ceiling(self) -> None:
+        """`max_urls` is a tighter, tunable bound under `MAX_URLS_PER_CALL` - the
+        model can still ask for up to the schema's limit, but only the first
+        `max_urls` of them are actually fetched."""
+        fetcher = FakeWebContentFetcher(content="TEXT")
+        tool = FetchWebPages(fetcher, max_urls=2)
+
+        outcome = await tool.run(
+            {"urls": ["https://example.com/a", "https://example.com/b", "https://example.com/c"]},
+            CONTEXT,
+        )
+
+        assert outcome.ok
+        assert fetcher.calls == [("https://example.com/a", "https://example.com/b")]
+
 
 class TestSearchWeb:
     async def test_returns_what_the_searcher_found_using_the_configured_limit(self) -> None:

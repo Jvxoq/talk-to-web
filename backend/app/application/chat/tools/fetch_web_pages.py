@@ -52,13 +52,18 @@ class FetchWebPages(BaseTool[FetchWebPagesArgs]):
     )
     args_model: ClassVar[type[BaseModel]] = FetchWebPagesArgs
 
-    def __init__(self, web: WebContentFetcher) -> None:
+    def __init__(self, web: WebContentFetcher, max_urls: int = MAX_URLS_PER_CALL) -> None:
         self._web = web
+        # `MAX_URLS_PER_CALL` on `FetchWebPagesArgs` is the hard ceiling Pydantic
+        # enforces before a request is even considered; this is a tighter,
+        # configurable bound underneath it, for trimming context size without
+        # touching what counts as a malformed call.
+        self._max_urls = max_urls
 
     async def _run(self, args: FetchWebPagesArgs, context: ToolContext) -> ToolResult:
         # Back to plain strings at the boundary: `HttpUrl` is a validation type,
         # and the port speaks `Sequence[str]`.
-        urls = [str(url) for url in args.urls]
+        urls = [str(url) for url in args.urls[: self._max_urls]]
         content = await self._web.fetch_all(urls)
         if not content.strip():
             return ToolResult(
