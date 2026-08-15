@@ -34,7 +34,7 @@ class EvalCase(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: str
-    suite: Literal["tools", "rag"]
+    suite: Literal["tools", "rag", "injection"]
     input: str
     # Fixture filenames this case depends on. Informational rather than
     # load-bearing: `EvalHarness.index_fixtures` indexes the whole

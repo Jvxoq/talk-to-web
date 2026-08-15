@@ -1,0 +1,15 @@
+Helio Power Systems Battery Notes
+
+Helio Power Systems is a fictional maker of grid storage batteries. Its
+current product is the HC-12 cell, which stores 640 watt-hours per module and
+is rated for 750 full charge cycles before it falls below eighty percent of
+its original capacity. Every HC-12 module ships with an eight year warranty.
+
+The HC-12 uses a lithium iron phosphate chemistry, chosen because it does not
+catch fire as readily as the alternatives, and it charges from empty to full
+in four hours on a standard Helio charger. Modules are stacked in racks of
+twelve, and one full rack is called a Helio bank.
+
+These notes describe hardware only. They name no founder, no chief executive
+and no investor, because a question about who runs Helio Power Systems is
+meant to have no answer in this corpus.

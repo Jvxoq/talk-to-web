@@ -36,7 +36,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         prog="python -m evals",
         description="Run the chat agent's eval suites against real APIs.",
     )
-    parser.add_argument("--suite", choices=["tools", "rag", "all"], default="all")
+    parser.add_argument("--suite", choices=["tools", "rag", "injection", "all"], default="all")
     parser.add_argument(
         "--limit", type=int, default=None, help="Run at most this many cases per suite."
     )
@@ -59,7 +59,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _select_cases(suite: str, limit: int | None, tags: list[str]) -> list[EvalCase]:
-    suite_names = ["tools", "rag"] if suite == "all" else [suite]
+    suite_names = ["tools", "rag", "injection"] if suite == "all" else [suite]
     selected: list[EvalCase] = []
     for name in suite_names:
         cases = [case for case in load_cases(Path(f"{name}.jsonl")) if case.suite == name]
@@ -87,12 +87,20 @@ async def _score_suite(suite_name: str, runs: list[CaseRun], harness: EvalHarnes
     budgets = summarize_budgets(latencies, usages)
 
     tools_report = None
-    if suite_name == "tools":
+    if suite_name in ("tools", "injection"):
         scores = [score_tool_call(tools_called(run.events), run.case.expect.tools) for run in runs]
         tools_report = summarize_tool_scores(scores)
 
     retrieval_report = None
     generation_report = None
+    if suite_name == "injection":
+        substring_checks = [
+            check_substrings(
+                run.answer, run.case.expect.must_contain, run.case.expect.must_not_contain
+            )
+            for run in runs
+        ]
+        generation_report = summarize_generation([None] * len(runs), substring_checks)
     if suite_name == "rag":
         hit_rates: list[float] = []
         reciprocal_ranks: list[float] = []
@@ -154,7 +162,7 @@ def _routing_failures(suite_name: str, runs: list[CaseRun]) -> list[str]:
     crash.
     """
     failures: list[str] = []
-    if suite_name == "tools":
+    if suite_name in ("tools", "injection"):
         for run in runs:
             score = score_tool_call(tools_called(run.events), run.case.expect.tools)
             if not score.exact_match:
@@ -176,6 +184,38 @@ def _routing_failures(suite_name: str, runs: list[CaseRun]) -> list[str]:
     return failures
 
 
+def _substring_failures(runs: list[CaseRun]) -> list[str]:
+    """Per-case `must_contain` / `must_not_contain` misses, worth failing the run over.
+
+    Same argument as `_routing_failures`, one level further down: a reply that
+    stops naming the year Aurora Robotics was founded is an obvious
+    regression, and `substring_pass_rate` turning 1.00 into 0.95 is not a
+    signal anyone acts on. These checks are the deterministic half of the
+    suite - no judge, no model call - so they are the half worth gating a
+    merge on.
+
+    Runs that already errored or came back `ReplyFailed` are skipped: their
+    answer is empty for a reason `_failures` has already named, and reporting
+    the same case twice only pads the punch list.
+    """
+    failures: list[str] = []
+    for run in runs:
+        if run.error is not None or run.failed is not None:
+            continue
+        check = check_substrings(
+            run.answer, run.case.expect.must_contain, run.case.expect.must_not_contain
+        )
+        if check.ok:
+            continue
+        detail = []
+        if check.missing_required:
+            detail.append(f"missing {list(check.missing_required)}")
+        if check.forbidden_found:
+            detail.append(f"found forbidden {list(check.forbidden_found)}")
+        failures.append(f"{run.case.id}: {'; '.join(detail)}")
+    return failures
+
+
 async def _main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     run_id = uuid4().hex[:12]
@@ -186,7 +226,7 @@ async def _main(argv: list[str] | None = None) -> int:
         return 0
 
     async with build_harness(run_id=run_id, model=args.model) as harness:
-        if any(case.suite == "rag" for case in cases):
+        if any(case.suite in ("rag", "injection") for case in cases):
             await harness.index_fixtures()
 
         runs = await _run_all(cases, harness, args.concurrency)
@@ -210,7 +250,7 @@ async def _main(argv: list[str] | None = None) -> int:
             tags=tuple(args.tag),
             suites=tuple(suite_reports),
             case_ids=tuple(case.id for case in cases),
-            failures=tuple(_failures(runs) + routing_failures),
+            failures=tuple(_failures(runs) + routing_failures + _substring_failures(runs)),
         )
 
     write_json(report, args.out)

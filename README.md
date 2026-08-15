@@ -311,6 +311,17 @@ uv run python -m evals --suite tools --limit 10 --concurrency 4 --out evals/resu
 uv run python -m evals --suite rag --limit 10 --concurrency 4 --out evals/results/latest.json
 ```
 
+A subset runs on every pull request that touches a prompt, a tool, a guardrail
+or the datasets themselves — `.github/workflows/evals.yml`, against a Qdrant
+service container and the real model. It selects `--tag ci`, which is every
+case that is deterministic and needs nothing but the fixtures; the two cases
+that reach the live internet stay out of it, because they fail for the
+internet's reasons rather than this repository's. The run exits non-zero when a
+case crashes, calls the wrong tool, misses its expected source, or drops a
+`must_contain` needle. The judge's scores are reported but never gate a merge —
+a 0-1 score from a model is too noisy to block on, while "the reply stopped
+saying 2019" is not.
+
 Sample results from a full run (exact match, overuse, latency, cost per reply):
 
 | Suite | Metric | Value | Notes |
