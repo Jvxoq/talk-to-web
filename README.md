@@ -162,7 +162,7 @@ than fail, and it is what switches logging to JSON.
 
 ### 3. Frontend on Vercel
 
-Edit `frontend/vercel.json` and replace `api.example.com` in all four
+Edit `frontend/vercel.json` and replace `api.example.com` in all five
 rewrites with your backend domain. Then point Vercel at the `frontend/`
 directory and set one environment variable:
 
@@ -355,6 +355,8 @@ the suite exists for.
 - In-memory rate limiting and the LangGraph agent's Postgres checkpointer
   both assume a single backend process; horizontal scaling needs a shared
   rate-limit store first.
+- **No email verification** — anyone can register with any address they
+  like. The global budget cap bounds the damage a throwaway account can do.
 
 ## Key decisions
 
