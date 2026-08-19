@@ -58,6 +58,18 @@
 		}
 	}
 
+	# Baseline hardening on every response. HSTS is the one with teeth: a year
+	# of "https only" pinned in every visiting browser, so it must not go live
+	# until the certificate is confirmed working - a broken cert plus HSTS
+	# locks browsers out for the max-age. `-Server` drops the version banner.
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
 	log {
 		output stdout
 		format json
