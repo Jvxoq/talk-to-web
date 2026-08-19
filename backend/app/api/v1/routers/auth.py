@@ -5,7 +5,7 @@ session across a JSON body and a Set-Cookie header, and the reading of that
 cookie back. Both are delivery decisions - the use cases return one
 `SessionTokens` and have no idea either mechanism exists.
 
-Every route is a POST, including sign-out. `app.main` allows GET, POST and
+Every route is a POST, including sign-out. `app.factory` allows GET, POST and
 OPTIONS across origins, so a `DELETE /auth/session` would be blocked by CORS
 before it ever reached this module.
 """
