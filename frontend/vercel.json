@@ -4,14 +4,26 @@
   "outputDirectory": "dist",
   "framework": "vite",
   "rewrites": [
-    { "source": "/auth/:path*", "destination": "https://api.example.com/auth/:path*" },
-    { "source": "/generate/:path*", "destination": "https://api.example.com/generate/:path*" },
-    { "source": "/upload/:path*", "destination": "https://api.example.com/upload/:path*" },
+    { "source": "/auth/:path*", "destination": "https://talk-to-the-web.duckdns.org/auth/:path*" },
+    { "source": "/generate/:path*", "destination": "https://talk-to-the-web.duckdns.org/generate/:path*" },
+    { "source": "/upload/:path*", "destination": "https://talk-to-the-web.duckdns.org/upload/:path*" },
     {
       "source": "/conversations/:path*",
-      "destination": "https://api.example.com/conversations/:path*"
+      "destination": "https://talk-to-the-web.duckdns.org/conversations/:path*"
     },
-    { "source": "/models/:path*", "destination": "https://api.example.com/models/:path*" },
+    { "source": "/models/:path*", "destination": "https://talk-to-the-web.duckdns.org/models/:path*" },
     { "source": "/(.*)", "destination": "/index.html" }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "X-Frame-Options", "value": "DENY" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
+        { "key": "Permissions-Policy", "value": "camera=(), geolocation=()" },
+        { "key": "Content-Security-Policy", "value": "frame-ancestors 'none'" }
+      ]
+    }
   ]
 }
