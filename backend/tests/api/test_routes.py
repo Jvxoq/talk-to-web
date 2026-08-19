@@ -47,7 +47,7 @@ from app.domain.identity.errors import InvalidToken
 from app.domain.ingestion.entities import UploadedDocument
 from app.domain.ingestion.errors import DocumentNotFound, DocumentTooLarge, UnsupportedDocumentType
 from app.domain.usage.errors import RateLimited
-from app.main import create_app
+from app.factory import create_app
 from app.settings import Settings
 from tests.fakes import FakeReadinessProbe
 

@@ -76,7 +76,7 @@ async def create_message(
     return MessageOut.from_domain(message)
 
 
-# POST rather than DELETE because `app.main` only allows GET, POST and OPTIONS
+# POST rather than DELETE because `app.factory` only allows GET, POST and OPTIONS
 # across origins. (It was originally POST so `navigator.sendBeacon` could fire it
 # as the tab unloaded - that went away with accounts: beacons cannot carry an
 # Authorization header, and a conversation someone owns should outlive the tab.)

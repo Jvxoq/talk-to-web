@@ -160,6 +160,7 @@ name = "Layers point inward"
 type = "layers"
 layers = [
     "app.main",
+    "app.factory",
     "app.composition",
     "app.api",
     "app.adapters",
