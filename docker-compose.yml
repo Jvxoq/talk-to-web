@@ -51,7 +51,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile.dev
     # Shared with `backend` below so the image is built once, not twice.
-    image: talk-to-the-web-backend:dev
+    image: talk-to-web-backend:dev
     command: ["uv", "run", "alembic", "upgrade", "head"]
     env_file:
       - ./backend/.env
@@ -66,7 +66,7 @@ services:
     restart: "no"
 
   backend:
-    image: talk-to-the-web-backend:dev
+    image: talk-to-web-backend:dev
     env_file:
       - ./backend/.env
     environment:
@@ -111,7 +111,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.dev
-    image: talk-to-the-web-backend:dev
+    image: talk-to-web-backend:dev
     command: ["uv", "run", "python", "-m", "app.cleanup_expired_refresh_tokens"]
     env_file:
       - ./backend/.env

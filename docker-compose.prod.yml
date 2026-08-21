@@ -21,7 +21,7 @@ services:
     build:
       context: .
       dockerfile: Caddy.Dockerfile
-    image: talk-to-the-web-caddy:latest
+    image: talk-to-web-caddy:latest
     restart: unless-stopped
     ports:
       - "80:80"
@@ -53,7 +53,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     # Named so `backend` below can reuse the image instead of building it twice.
-    image: talk-to-the-web-backend:latest
+    image: talk-to-web-backend:latest
     command: ["alembic", "upgrade", "head"]
     env_file:
       - ./backend/.env.production
@@ -65,7 +65,7 @@ services:
     restart: "no"
 
   backend:
-    image: talk-to-the-web-backend:latest
+    image: talk-to-web-backend:latest
     restart: unless-stopped
     # Overrides the image's `fastapi run` (see `backend/Dockerfile`) with plain
     # uvicorn, because `fastapi run` has no `--limit-concurrency`: one worker,
@@ -143,7 +143,7 @@ services:
   #     run --rm cleanup-refresh-tokens
   cleanup-refresh-tokens:
     profiles: ["jobs"]
-    image: talk-to-the-web-backend:latest
+    image: talk-to-web-backend:latest
     command: ["python", "-m", "app.cleanup_expired_refresh_tokens"]
     env_file:
       - ./backend/.env.production
