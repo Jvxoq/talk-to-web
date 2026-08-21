@@ -449,5 +449,5 @@ class TestFetchAll:
 
         await fetcher.fetch_all([f"{base}/"])
 
-        assert seen and seen[0].startswith("TalkToTheWeb/")
+        assert seen and seen[0].startswith("TalkToWeb/")
         assert "aiohttp" in seen[0]

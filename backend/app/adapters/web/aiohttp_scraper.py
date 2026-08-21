@@ -36,7 +36,7 @@ _READABLE_CONTENT_TYPES = ("text/", "application/xhtml+xml", "application/xml")
 # to make contact, so that is what we send.
 REQUEST_HEADERS = {
     "User-Agent": (
-        "TalkToTheWeb/1.0 (+https://github.com/talk-to-the-web; "
+        "TalkToWeb/1.0 (+https://github.com/Jvxoq/talk-to-web; "
         "link-summarisation bot) python-aiohttp"
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
