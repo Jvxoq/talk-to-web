@@ -1,7 +1,7 @@
 # Frontend
 
 React 19 + Vite + TypeScript client for Talk to the Web. See the root
-`README.md` for the whole-picture view (product, deployment); this file is
+`ARCHITECTURE.md` for the whole-picture view (product, deployment); this file is
 frontend internals.
 
 ## Commands

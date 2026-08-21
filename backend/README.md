@@ -2,7 +2,7 @@
 
 FastAPI (Python 3.13, `uv`) service for Talk to the Web — RAG chat over
 uploaded documents and web pages, with auth and live speech-to-text. See the
-root `README.md` for the whole-picture view (product, deployment); this file
+root `ARCHITECTURE.md` for the whole-picture view (product, deployment); this file
 is backend internals.
 
 ## Commands
