@@ -1,31 +1,26 @@
 # Points the `parity` profile at safe stand-ins for the managed services
-# instead of real production: a Neon dev branch for Postgres, and a throwaway
-# local Qdrant container - not Qdrant Cloud, so a parity run can never read or
-# write real production vectors. Combine with `docker-compose.prod.yml`:
+# instead of real production: a Neon dev branch for Postgres, and a separate
+# dev collection on the same Qdrant Cloud cluster for vectors. Combine with
+# `docker-compose.prod.yml`:
 #
 #   cp backend/.env.parity.example backend/.env.parity   # then fill it in
 #   docker compose -f docker-compose.prod.yml -f docker-compose.parity.yml \
 #     --profile parity up --build
 #
 # `env_file` lists append across `-f` files rather than being replaced, so
-# `backend/.env.parity` only needs to carry Postgres, which is why the
-# Postgres override below is `env_file` but the Qdrant override is
-# `environment` instead: a top-level `environment:` entry always wins over
-# whatever `env_file` set for the same key, which is what actually keeps
-# QDRANT_URL/QDRANT_API_KEY from `.env.production` off this run - listing
-# QDRANT_COLLECTION in `.env.parity` would not have been enough on its own.
+# `backend/.env.parity` only needs to carry what differs from
+# `backend/.env.production` — Postgres and Qdrant. Everything else (JWT_SECRET,
+# provider keys, ENVIRONMENT) still comes from `.env.production` unchanged.
+#
+# This file adds no `qdrant` service and no `environment:` override — a
+# top-level `environment:` entry always wins over `env_file` for the same key,
+# which is exactly what would silently force Qdrant back onto a local
+# container regardless of what `backend/.env.parity` says. Every value here
+# flows straight from that one file instead, including QDRANT_URL, so a real
+# Qdrant Cloud cluster is reachable — just a dev collection on it, never the
+# production one.
 
 services:
-  qdrant:
-    profiles: ["parity"]
-    image: qdrant/qdrant:latest
-    healthcheck:
-      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/localhost/6333' || exit 1"]
-      interval: 5s
-      timeout: 3s
-      start_period: 10s
-      retries: 10
-
   migrate:
     env_file:
       - ./backend/.env.parity
@@ -33,13 +28,3 @@ services:
   backend:
     env_file:
       - ./backend/.env.parity
-    environment:
-      QDRANT_URL: http://qdrant:6333
-      # No value: passes through the host shell's QDRANT_API_KEY if it has one
-      # (it won't), otherwise leaves the var unset in the container - clearing
-      # the real key `.env.production` set, rather than sending Qdrant Cloud's
-      # key to a local instance as an empty string.
-      QDRANT_API_KEY:
-    depends_on:
-      qdrant:
-        condition: service_healthy

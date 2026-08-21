@@ -137,10 +137,16 @@ git clone <repo> && cd talk-to-the-web
 cp .env.example .env                                # API_DOMAIN=api.your-domain
 cp backend/.env.production.example backend/.env.production   # then fill it in
 
+./scripts/check-env.sh                                # fails if a placeholder is still in there
 docker compose -f docker-compose.prod.yml up -d --build
 curl https://api.<your-domain>/health                # {"status":"ok"}
 curl https://api.<your-domain>/ready                 # {"status":"ready","checks":{…}}
 ```
+
+`scripts/check-env.sh` only checks that the checked-in placeholder strings were
+changed, not that what replaced them is correct — it exists to catch exactly
+the failure mode of copying the example and forgetting a line, not to
+validate credentials.
 
 The two are not the same question. `/health` is liveness and is deliberately
 static — a liveness probe that touches the database turns a two-second blip
@@ -194,8 +200,8 @@ for the run, since that is the origin the parity frontend is served from.
 
 By default `migrate`/`backend` read `backend/.env.production`, same as the
 real deploy — which means an unmodified parity run hits the real Neon `main`
-branch and the real Qdrant Cloud cluster. To exercise the managed services
-without touching production data, add `docker-compose.parity.yml`:
+branch and the real Qdrant Cloud cluster/collection. To exercise the managed
+services without touching production data, add `docker-compose.parity.yml`:
 
 ```bash
 cp backend/.env.parity.example backend/.env.parity   # then fill it in
@@ -203,22 +209,26 @@ docker compose -f docker-compose.prod.yml -f docker-compose.parity.yml \
   --profile parity up --build
 ```
 
-Postgres and Qdrant are handled differently, because only one of them has a
-safe "same service, different copy" option:
+Postgres and Qdrant both get a safe "same service, different copy" swap,
+carried entirely by `backend/.env.parity` — `docker-compose.parity.yml` adds
+no service of its own and no `environment:` override, just a later `env_file`
+entry that wins for any key it sets:
 
-- **Postgres** stays Neon. `backend/.env.parity` sets
-  `DATABASE_URL`/`DATABASE_MIGRATION_URL` to a branch created off `main` (a
-  full copy-on-write clone, so schema and data look real without ever writing
-  back to production). `env_file` lists append across `-f` files rather than
-  being replaced, so this file only needs to carry what differs —
-  `JWT_SECRET`, provider keys, `CORS_ORIGINS`, etc. still come from
-  `.env.production` unchanged.
-- **Qdrant** is not Qdrant Cloud at all. It has no branch equivalent, so
-  `docker-compose.parity.yml` runs its own throwaway local Qdrant container
-  (same as plain local dev) and points `backend`/`migrate` at it via a
-  top-level `environment:` override, which wins over whatever `env_file` set
-  — that's what actually keeps the real `QDRANT_URL`/`QDRANT_API_KEY` off a
-  parity run, not anything in `.env.parity`.
+- **Postgres** points at a branch created off `main` (Neon MCP's
+  `create_branch`, or the console) — a full copy-on-write clone, so schema
+  and data look real without ever writing back to production.
+- **Qdrant** points at the *same* Cloud cluster and API key as production,
+  but a separate collection (`knowledge_base_dev` rather than
+  `knowledge_base`). Qdrant has no branch equivalent, so a different
+  collection on the same cluster is what stands in for one — the app creates
+  it on first ingest, nothing to pre-provision.
+- `env_file` lists append across `-f` files rather than being replaced, so
+  `backend/.env.parity` only needs to carry what differs — `JWT_SECRET`,
+  provider keys, `ENVIRONMENT`, etc. still come from `.env.production`
+  unchanged. `CORS_ORIGINS`/`ALLOWED_WEBSOCKET_ORIGINS` are the one exception
+  worth calling out: `.env.production` names the real Vercel domain, which
+  this box never serves during a parity run (the parity frontend is nginx on
+  `:8080` instead), so `.env.parity` overrides both to `http://localhost:8080`.
 
 ## Operational concerns
 
