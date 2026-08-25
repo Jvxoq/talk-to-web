@@ -28,14 +28,20 @@ def make_summarize_node(
     condenser: Condenser,
     history_token_budget: int,
     recent_token_budget: int,
+    max_request_tokens: int,
     tracer: Tracer,
 ) -> Node:
     """Build the node that shortens the thread when it outgrows its budget."""
 
+    # The tighter of the two: the history budget is tuned for conversation
+    # quality, the request ceiling for what the provider will accept. Either
+    # one crossing is a reason to summarize.
+    trigger_budget = min(history_token_budget, max_request_tokens)
+
     async def summarize(state: AgentState) -> dict[str, Any]:
         tokens_before = counter.count(state.messages)
         async with tracer.span("summarize", kind="span") as span:
-            if tokens_before <= history_token_budget:
+            if tokens_before <= trigger_budget:
                 # Under budget: no state change, no model call. This is the hot
                 # path for most replies, so it must cost nothing - not even a
                 # generation span, which is why the condenser is never reached
@@ -48,6 +54,15 @@ def make_summarize_node(
             )
             rest = state.messages[1:] if system is not None else state.messages
             head, tail = _split(rest, counter, recent_token_budget)
+
+            # `_split` refuses to cut between a tool-call turn and its replies,
+            # so a lap with several concurrent tool calls can hand back a tail
+            # that alone busts the request ceiling - the one budget that is not
+            # optional. Shrink that tail through the same condenser tool
+            # results already go through, oldest tool result first, so the
+            # most recent one - what the model actually needs to answer this
+            # turn - survives intact whenever a partial shrink is enough.
+            tail = await _shrink_tail(tail, counter, condenser, max_request_tokens)
 
             summary_text = await condenser.summarize(head)
 
@@ -105,3 +120,34 @@ def _split(
 def _is_safe_boundary(message: ChatMessage) -> bool:
     """A message the tail may start on without orphaning a tool reply."""
     return message.role == "user" or (message.role == "assistant" and not message.tool_calls)
+
+
+async def _shrink_tail(
+    tail: list[ChatMessage],
+    counter: TokenCounter,
+    condenser: Condenser,
+    max_request_tokens: int,
+) -> list[ChatMessage]:
+    """Condense tool replies in `tail` until it fits the request ceiling.
+
+    `_split` guarantees the tail never orphans a tool reply, not that it fits
+    any budget - an assistant turn that fired several tool calls can still hand
+    back a tail alone bigger than `max_request_tokens`. Oldest tool reply
+    first, because the newest is what the model needs to answer the turn it is
+    in; a summary of last week's search is a worse trade than one of this
+    turn's third concurrent lookup.
+    """
+    if counter.count(tail) <= max_request_tokens:
+        return tail
+
+    shrunk = list(tail)
+    tool_indexes = [index for index, message in enumerate(shrunk) if message.role == "tool"][:-1]
+    for index in tool_indexes:
+        if counter.count(shrunk) <= max_request_tokens:
+            break
+        message = shrunk[index]
+        condensed = await condenser.condense(message.content, focus="the current question")
+        fallback = message.content[: condenser.max_chars]
+        shrunk[index] = message.model_copy(update={"content": condensed or fallback})
+
+    return shrunk
