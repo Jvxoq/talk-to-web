@@ -497,7 +497,7 @@ class TestConstruction:
 
     def test_it_builds_one_model_per_configured_name(self) -> None:
         model = LangChainChatModel(
-            provider="groq",
+            provider="together",
             models=[MODEL, "llama-3.1-8b-instant"],
             api_key="not-a-real-key",
             max_tokens=1024,
@@ -509,7 +509,7 @@ class TestConstruction:
         # Otherwise every request would fail with "unknown model" and the real
         # fault - an empty setting - would never be named.
         with pytest.raises(ValueError, match="At least one model"):
-            LangChainChatModel(provider="groq", models=[], api_key="k", max_tokens=1024)
+            LangChainChatModel(provider="together", models=[], api_key="k", max_tokens=1024)
 
     def test_an_unresolvable_provider_fails_at_startup(self) -> None:
         # At startup rather than per request: a misconfigured provider should
@@ -522,6 +522,8 @@ class TestConstruction:
     async def test_closing_it_is_safe(self) -> None:
         # `init_chat_model` clients own no long-lived socket, but the lifespan
         # calls this in its `finally` regardless.
-        model = LangChainChatModel(provider="groq", models=[MODEL], api_key="k", max_tokens=1024)
+        model = LangChainChatModel(
+            provider="together", models=[MODEL], api_key="k", max_tokens=1024
+        )
 
         await model.aclose()

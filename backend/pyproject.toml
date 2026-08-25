@@ -13,10 +13,8 @@ dependencies = [
     "deepgram-sdk>=7.5.0",
     "fastapi[standard]>=0.138.2",
     "google-genai>=2.10.0",
-    # No direct `groq` pin: nothing imports the vendor SDK any more, and
-    # langchain-groq requires groq<1.0.0, which a direct pin would contradict.
     "langchain>=1.0.0",
-    "langchain-groq>=1.0.0",
+    "langchain-together>=0.3.0",
     "langfuse>=3.0,<4.0",
     "langgraph>=1.0.0",
     "langgraph-checkpoint-postgres>=3.0.0",
@@ -198,7 +196,7 @@ forbidden_modules = [
     # it here is what stops a convenient import from quietly erasing that line.
     "langchain",
     "langchain_core",
-    "langchain_groq",
+    "langchain_together",
     "tavily",
     # Cryptography is infrastructure like any other. The use cases hash and sign
     # through `PasswordHasher` / `AccessTokenCodec`, so a token format or a KDF

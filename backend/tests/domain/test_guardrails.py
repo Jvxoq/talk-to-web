@@ -7,6 +7,8 @@ backtracking onto a single-worker box with no regex timeout available.
 
 import time
 
+import pytest
+
 from app.domain.chat.guardrails import (
     GuardCategory,
     detect_injection,
@@ -96,26 +98,24 @@ class TestCardRedaction:
 
 
 class TestSecretRedaction:
-    def test_redacts_a_groq_key(self) -> None:
-        secret = "gsk_" + "a" * 40
+    @pytest.mark.parametrize(
+        "secret",
+        [
+            # Together AI - the provider this app calls directly, so its key
+            # shape is the one most likely to be pasted into this box.
+            "tgp_v1_" + "a" * 40,
+            # Groq - a former direct provider, still pasted from old configs.
+            "gsk_" + "a" * 40,
+            "sk-" + "b" * 40,
+            "ghp_" + "c" * 36,
+            "github_pat_" + "d" * 40,
+            "AKIA" + "Q" * 16,
+        ],
+    )
+    def test_redacts_a_provider_key(self, secret: str) -> None:
         text, findings = redact_pii(f"here is my key {secret} use it", max_scan_chars=_UNBOUNDED)
         assert secret not in text
         assert any(f.category is GuardCategory.PII_SECRET for f in findings)
-
-    def test_redacts_an_openai_shaped_key(self) -> None:
-        secret = "sk-" + "b" * 40
-        text, _ = redact_pii(f"key={secret}", max_scan_chars=_UNBOUNDED)
-        assert secret not in text
-
-    def test_redacts_a_github_pat(self) -> None:
-        secret = "ghp_" + "c" * 36
-        text, _ = redact_pii(secret, max_scan_chars=_UNBOUNDED)
-        assert secret not in text
-
-    def test_redacts_an_aws_access_key(self) -> None:
-        secret = "AKIA" + "Q" * 16
-        text, _ = redact_pii(secret, max_scan_chars=_UNBOUNDED)
-        assert secret not in text
 
     def test_never_leaks_a_partial_secret(self) -> None:
         secret = "gsk_" + "a" * 40

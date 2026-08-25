@@ -123,8 +123,11 @@ _CARD_CANDIDATE_RE = re.compile(r"\b(?:\d[ \-]?){13,19}\b")
 _SECRET_PATTERNS: tuple[tuple[GuardCategory, re.Pattern[str]], ...] = (
     # OpenAI-shaped keys, still seen pasted from other tooling.
     (GuardCategory.PII_SECRET, re.compile(r"\bsk-[A-Za-z0-9]{20,}\b")),
-    # Groq API keys - the provider this app calls directly.
+    # Groq API keys - a former direct provider, still seen pasted from other
+    # tooling or old configs.
     (GuardCategory.PII_SECRET, re.compile(r"\bgsk_[A-Za-z0-9]{20,}\b")),
+    # Together AI API keys - the provider this app calls directly.
+    (GuardCategory.PII_SECRET, re.compile(r"\btgp_v1_[A-Za-z0-9_\-]{20,}\b")),
     # GitHub personal access tokens, classic and fine-grained.
     (GuardCategory.PII_SECRET, re.compile(r"\bghp_[A-Za-z0-9]{20,}\b")),
     (GuardCategory.PII_SECRET, re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b")),
