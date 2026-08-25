@@ -213,6 +213,18 @@ export function useChat(model: Model, conversationId: number, preloaded?: Conver
             updateToolActivity(event.activity)
             continue
           }
+          if (event.type === 'summarizing') {
+            // One slot per turn, overwritten: a reply can condense more than
+            // once (once on entry, once after a tool lap), and the user needs
+            // to see what is happening now, not a growing list of what did.
+            setMessages((prev) => {
+              const next = [...prev]
+              const last = next[next.length - 1]
+              next[next.length - 1] = { ...last, summarizing: event.summarizing }
+              return next
+            })
+            continue
+          }
           if (event.type === 'usage') {
             setMessages((prev) => {
               const next = [...prev]

@@ -14,6 +14,7 @@ from loguru import logger
 
 from app.application.chat.agent.condenser import Condenser
 from app.application.chat.agent.nodes import Node
+from app.application.chat.agent.progress import emit_summarizing
 from app.application.chat.agent.state import RESET, AgentState
 from app.application.chat.models import ChatMessage
 from app.application.chat.ports import TokenCounter, Tracer
@@ -49,6 +50,12 @@ def make_summarize_node(
                 span.set(tokens_before=tokens_before, tokens_after=tokens_before, summarized=False)
                 return {}
 
+            # Announced before the condenser runs, not after, for the same
+            # reason a tool call is: this is the point where the user's stream
+            # goes quiet for a whole model call, and the notice is only useful
+            # while the wait is still happening.
+            emit_summarizing(status="start", tokens_before=tokens_before)
+
             system = (
                 state.messages[0] if state.messages and state.messages[0].role == "system" else None
             )
@@ -77,6 +84,11 @@ def make_summarize_node(
 
             tokens_after = counter.count(new_messages[1:])
             span.set(tokens_before=tokens_before, tokens_after=tokens_after, summarized=True)
+            # Reported on both outcomes below. A condenser that failed still
+            # shortened the thread, and the wait the user sat through was real
+            # either way - leaving the notice hanging on "start" would be the
+            # one visible sign of a failure they do not need to know about.
+            emit_summarizing(status="done", tokens_before=tokens_before, tokens_after=tokens_after)
 
             if summary_text is None:
                 # The condenser failed. Dropping the head outright still bounds

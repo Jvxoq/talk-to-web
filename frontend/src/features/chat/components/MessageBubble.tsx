@@ -5,6 +5,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { springs } from '../../../lib/motion'
 import { normalizeStreamingMarkdown } from '../markdown'
+import { summarizingText } from '../summarizing'
 import type { Message, Source, ToolActivity } from '../types'
 import { formatDuration, formatTokens } from '../usage'
 import { TypingDots } from './TypingDots'
@@ -73,6 +74,8 @@ export const MessageBubble = memo(function MessageBubble({
     ? normalizeStreamingMarkdown(message.content)
     : message.content
   const sources = message.role === 'assistant' ? collectSources(message.tools) : []
+  const summarizing = message.role === 'assistant' ? message.summarizing : undefined
+  const hasChips = summarizing !== undefined || (message.tools?.length ?? 0) > 0
 
   return (
     <motion.div
@@ -86,13 +89,27 @@ export const MessageBubble = memo(function MessageBubble({
       transition={springs.card}
     >
       <span className="message-role">{isUser ? 'You' : 'Assistant'}</span>
-      {message.tools && message.tools.length > 0 && (
+      {hasChips && (
         // Polite, and separate from the transcript's own (deliberately
         // unannounced) log region — tool chips change a handful of times per
         // turn, not once per token, so announcing them doesn't spam.
         <div className="tool-chips" aria-live="polite">
           <AnimatePresence initial={false}>
-            {message.tools.map((tool) => (
+            {/* First in the row, because it happens before any tool call this
+                turn makes and reads as the reason the reply has not started. */}
+            {summarizing && (
+              <motion.span
+                key="summarizing"
+                className={`tool-chip is-${summarizing.status === 'start' ? 'start' : 'ok'}`}
+                initial={{ opacity: 0, y: reduce ? 0 : 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: reduce ? 0 : -6 }}
+                transition={springs.card}
+              >
+                {summarizingText(summarizing)}
+              </motion.span>
+            )}
+            {(message.tools ?? []).map((tool) => (
               <motion.span
                 key={tool.name}
                 className={`tool-chip is-${tool.status}`}

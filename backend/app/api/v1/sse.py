@@ -13,6 +13,7 @@ from app.application.chat.dto import (
     ReplyDelta,
     ReplyEvent,
     ReplyFailed,
+    ReplySummarizing,
     ReplyToolFinished,
     ReplyToolStarted,
     ReplyUsage,
@@ -46,6 +47,21 @@ async def to_sse(events: AsyncIterator[ReplyEvent]) -> AsyncIterator[str]:
                         {"label": source.label, "url": source.url} for source in sources
                     ]
                 yield format_frame(tool=tool)
+            # Its own key, like tool activity and for the same reason: this is
+            # status about the reply, not part of what the model said, and a
+            # client that does not know the key yet simply ignores it.
+            case ReplySummarizing(
+                status=status, tokens_before=tokens_before, tokens_after=tokens_after
+            ):
+                summarizing: dict[str, object] = {
+                    "status": status,
+                    "tokens_before": tokens_before,
+                }
+                # Omitted rather than sent as null on the start frame: it is
+                # not known yet, and the client reads an absent key that way.
+                if tokens_after is not None:
+                    summarizing["tokens_after"] = tokens_after
+                yield format_frame(summarizing=summarizing)
             # Its own frame rather than folded into `done`, so a frontend that
             # does not know about usage yet ignores an unrecognised key and
             # keeps working - nothing about the existing frames changes shape.

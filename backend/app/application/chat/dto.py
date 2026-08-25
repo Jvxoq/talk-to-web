@@ -1,5 +1,7 @@
 """Inputs and outputs owned by the chat use cases — not the wire, not the database."""
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict
 
 from app.application.chat.models import Source
@@ -47,6 +49,25 @@ class ReplyToolFinished(BaseModel):
     sources: tuple[Source, ...] = ()
 
 
+class ReplySummarizing(BaseModel):
+    """The agent is shortening a thread that outgrew its token budget.
+
+    Its own event rather than a tool event, because it is not something the
+    model asked for: the graph does it on the user's behalf, between turns. The
+    client is told so the pause has a reason on screen - a summarization is a
+    whole model call during which no text arrives.
+
+    `status` is `"start"` or `"done"`. `tokens_after` is only known once the
+    shortened history exists, so it is `None` on the start event.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    status: Literal["start", "done"]
+    tokens_before: int
+    tokens_after: int | None = None
+
+
 class ReplyFailed(BaseModel):
     """Generation broke after the stream had already opened."""
 
@@ -81,7 +102,13 @@ class ReplyCompleted(BaseModel):
 
 
 ReplyEvent = (
-    ReplyDelta | ReplyToolStarted | ReplyToolFinished | ReplyUsage | ReplyFailed | ReplyCompleted
+    ReplyDelta
+    | ReplyToolStarted
+    | ReplyToolFinished
+    | ReplySummarizing
+    | ReplyUsage
+    | ReplyFailed
+    | ReplyCompleted
 )
 
 
