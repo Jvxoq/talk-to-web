@@ -21,11 +21,20 @@ export function AuthGate({ children }: { children: ReactNode }) {
         className="auth-restoring"
         initial={{ opacity: 0 }}
         // Held back deliberately: the refresh usually answers in well under
-        // this, and a spinner that appears and vanishes reads as a glitch.
+        // this, and an indicator that appears and vanishes reads as a glitch.
         animate={{ opacity: 1, transition: { delay: 0.4, duration: timing.standard } }}
         aria-live="polite"
+        aria-busy
       >
-        <span>Restoring your session…</span>
+        {/* Three ink blocks marching in step. No text: the shape says "wait"
+            without naming the mechanism, and the stepped keyframes keep it a
+            hard cut rather than a fade. */}
+        <span className="auth-restoring__blocks" aria-hidden="true">
+          <i />
+          <i />
+          <i />
+        </span>
+        <span className="sr-only">Loading</span>
       </motion.div>
     )
   }
