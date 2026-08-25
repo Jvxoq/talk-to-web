@@ -78,11 +78,13 @@ in `frontend/README.md`. This file stays at the whole-picture level.
 | Feature | Why it exists | Data flow |
 |---|---|---|
 | Chat with an LLM agent | Core product loop | Frontend → `POST /generate/text` (SSE) → `GenerateReply` use case → LangGraph agent → tool calls as needed → streamed `ReplyEvent`s |
-| Retrieve uploaded documents | Answer questions about a file the user uploaded | Agent tool `retrieve_documents` → Qdrant similarity search → chunks back into the prompt |
+| Retrieve uploaded documents | Answer questions about a file the user uploaded | Agent tool `retrieve_documents` → Qdrant similarity search, filtered on owner **and** conversation → chunks back into the prompt |
 | Fetch a web page | Answer questions about a URL the user pastes | Agent tool `fetch_web_pages` → `aiohttp` scraper → page text into the prompt |
 | Search the web | Answer questions needing current information | Agent tool `search_web` → Tavily API → results into the prompt |
-| Upload PDF/DOCX/text | Bring outside content into the knowledge base | `POST /upload` → extract text → chunk → embed (Gemini) → store in Qdrant, metadata in Postgres, plus a short digest of the file in `documents.summary` |
-| Document digest on every turn | The agent has to know what this account uploaded before it can choose a tool | `GenerateReply` reads the owner's documents once per request → appends `[DOCUMENTS AVAILABLE]` (newest few digests, fenced as untrusted content) or `[NO DOCUMENTS]` to the user turn |
+| Upload PDF/DOCX/text | Bring outside content into the knowledge base | `POST /upload` (names its conversation) → replace whatever that thread already held → extract text → chunk → embed (Gemini) → store in Qdrant, metadata in Postgres, plus a short digest of the file in `documents.summary` |
+| One attachment per conversation | A file the user closed, or replaced, must stop shaping answers | Close button → `POST /documents/{id}/delete`; a second upload removes the first; deleting a thread removes its documents — vectors, stored file and row every time |
+| Conversation cap | Each thread carries its own uploads and history, so an account holds few | `MAX_CONVERSATIONS_PER_USER` (2) → `StartConversation` counts in the insert's transaction → 409 past it, never eviction |
+| Document digest on every turn | The agent has to know what this thread holds before it can choose a tool | `GenerateReply` reads this conversation's documents once per request → appends `[DOCUMENTS AVAILABLE]` (newest few digests, fenced as untrusted content) or `[NO DOCUMENTS]` to the user turn |
 | Documents-before-web routing | A question about the user's own files must not be answered off the web first | `is_document_scoped` (domain, stdlib regex) decides once per request → `ToolRegistry.invoke` refuses `search_web` until `retrieve_documents` has run, and refuses `retrieve_documents` outright on an account with nothing indexed |
 | Live voice input | Hands-free question entry | Browser mic → WebSocket `/ws/transcribe/` → Deepgram streaming → partial/final transcripts back to the client |
 | Auth (email/password) | Conversations and documents are per-user | Access token (15 min, stateless) + refresh token (14 days, httpOnly cookie, rotated, revocable) |
