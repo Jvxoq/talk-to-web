@@ -1,7 +1,7 @@
 # Backend
 
 FastAPI (Python 3.13, `uv`) service for Talk to the Web — RAG chat over
-uploaded documents and web pages, with auth and live speech-to-text. See the
+uploaded documents, with auth and live speech-to-text. See the
 root `ARCHITECTURE.md` for the whole-picture view (product, deployment); this file
 is backend internals.
 
@@ -97,8 +97,7 @@ and needs real Postgres/Qdrant — see Commands above.
 | `GET /conversations/{id}` | `GetConversation` | Loads one conversation with its messages |
 | `POST /conversations/{id}/messages` | `RecordExchange` | Persists a user/assistant message pair |
 | `POST /conversations/{id}/delete` | `DeleteConversation` | Deletes a conversation (POST, not DELETE — CORS only allows GET/POST/OPTIONS; see frontend README) |
-| `POST /upload/file/` | `UploadDocument` → `IndexDocument` | Extracts text (PDF/DOCX/plain text), chunks, embeds (Gemini), stores in Qdrant + Postgres |
-| `POST /upload/url/` | `IngestUrl` → `IndexDocument` | Scrapes a URL, same chunk/embed/store pipeline |
+| `POST /upload/file/` | `UploadDocument` → `IndexDocument` | Extracts text (PDF/DOCX/plain text), chunks, embeds (Gemini), stores in Qdrant + Postgres, and writes a short digest to `documents.summary` |
 | `GET /documents/` | `ListDocuments` | Lists the user's indexed documents |
 | `POST /documents/{id}/delete` | `DeleteDocument` | Removes a document's chunks from Qdrant and its row from Postgres |
 | `POST /auth/register` | `RegisterUser` | Creates an account (Argon2-hashed password) |
@@ -115,11 +114,23 @@ and needs real Postgres/Qdrant — see Commands above.
 
 - **Cost drivers.** Every agent lap (main model + tool calls), condenser
   call, embedding call, Tavily search, and Deepgram stream is metered usage.
-  `agent_max_tool_iterations` (default 5) bounds a looping agent.
-  `agent_history_token_budget` / `agent_recent_token_budget` /
-  `agent_tool_output_token_budget` bound what gets resent on every lap of a
-  long conversation — the agent replays the whole thread each round trip, so
-  an uncompressed history is the main way this gets expensive.
+  Indexing an upload adds one more condenser call, for the document digest.
+  `agent_max_tool_iterations` (default 8) bounds a looping agent, and its last
+  lap is given no tools, so hitting the ceiling produces a text answer rather
+  than a cut-off reply. `agent_history_token_budget` /
+  `agent_recent_token_budget` / `agent_tool_output_token_budget` bound what
+  gets resent on every lap of a long conversation — the agent replays the
+  whole thread each round trip, so an uncompressed history is the main way
+  this gets expensive. All three were tripled deliberately: the old numbers
+  were tuned for a free tier's rate limit, compressed a thread after two
+  exchanges, and handed every retrieval to the condenser before the model had
+  read it.
+- **`agent_max_request_tokens` is the ceiling that matters.** The three
+  budgets above shape what stays in view for answer quality; this one maps to
+  what the provider actually rejects, and it is checked on every lap. The tool
+  schemas are measured once at startup by `build_agent_graph` and subtracted
+  from it, so the setting holds the provider's number rather than a
+  pre-shrunk guess.
 - **Rate limiting.** Auth endpoints are limited in-memory
   (`auth_rate_limit_attempts` per `auth_rate_limit_window_seconds`) — correct
   only for a single backend process; a multi-instance deployment needs a
@@ -159,9 +170,48 @@ and needs real Postgres/Qdrant — see Commands above.
   fixing before there's production data to migrate.
 - No metrics/OpenTelemetry yet — deliberately deferred, since they need
   somewhere to send data (infrastructure decision, not a code change).
+- **The default chat model routes tools poorly.**
+  `deepseek-ai/DeepSeek-V4-Flash-0731` measured 0.36 exact-match on
+  `--suite tools` (n=11), mostly by reaching for `search_web` on
+  document-scoped questions. Kept as the default by explicit choice; the
+  routing policy is what makes that survivable. Re-run `evals --suite tools`
+  before adding any model to `llm_models`.
+- **`agent_max_request_tokens` has not been confirmed against a real 400.**
+  The previous value was Groq's measured 8,000-token limit. The current one is
+  a provisional read of Together's larger window — tighten it if a 400 appears.
+- **The condenser can fail silently.** It is allowed to, on purpose, but the
+  cost is not silent: a thread over the history budget that cannot be
+  summarized falls through to dropping older messages, so the conversation
+  loses its past. `Condenser failed on ...` in the logs is the line that says
+  so, and a retired model id is how it happened before.
 
 ## Key decisions
 
+- **Tool routing is enforced in `ToolRegistry.invoke`, not in a prompt.** A
+  `ToolRoutingPolicy` — tool names supplied by `composition.py`, never known
+  to the registry — holds `search_web` back until `retrieve_documents` has run
+  on a turn the user framed as being about their own files, and refuses
+  `retrieve_documents` outright on an account with nothing indexed. It lives
+  at the same choke point as the untrusted-content fence for the same reason:
+  a rule enforced in one node, or one tool, is a rule the next caller forgets.
+  An empty retrieval opens the search immediately, so the model still chooses
+  *whether* to go to the web.
+- **`ToolContext` is written by us, never by the model.** `owner_id`,
+  `document_scoped`, `has_documents` and `prior_tools` all ride the run config
+  or the history, not the tool arguments. `document_scoped` is decided once
+  per request by `GenerateReply` rather than re-derived by the tool node,
+  because the summarize node can replace the history a re-derivation would
+  read — and that failure direction is the silent one, "search allowed".
+  `has_documents` defaults to `True`, so an unknown answer costs one wasted
+  call instead of telling a user with a full shelf that they have none.
+- **The agent is told what the user uploaded.** `IndexDocument` writes a short
+  digest per document (the `Condenser` again, satisfying ingestion's own
+  `DocumentSummarizer` port structurally), and `GenerateReply` appends the
+  newest few to the **user turn** — the system prompt is written once per
+  thread, documents arrive between turns. The digest is fenced with the same
+  `ToolOutputGuard` tool results get, because it is written from an uploaded
+  file and is replayed every turn. An account with none is told so outright,
+  in an unfenced bracketed line: silence read as "unknown, try anyway".
 - **`Protocol` ports, not ABCs.** Adapters satisfy `application/*/ports.py`
   structurally; `mypy --strict` over `tests/fakes.py` is what proves a fake
   still matches its port, without an inheritance chain forcing the
@@ -187,8 +237,8 @@ and needs real Postgres/Qdrant — see Commands above.
   `/ws/transcribe/` checks `Origin` against `websocket_origins` itself and
   closes with 1008 before `accept()`; a missing `Origin` is refused too.
 - **Provider-agnostic LLM config.** `llm_provider` is a plain string
-  resolved through LangChain's `init_chat_model` (`groq`, `openai`,
-  `anthropic`, `google_genai`, `ollama`, ...). Model choice matters more
+  resolved through LangChain's `init_chat_model` (`together`, `groq`,
+  `openai`, `anthropic`, `google_genai`, `ollama`, ...). Model choice matters more
   than it looks: `llm_models` only lists models measured to reliably emit
   well-formed tool calls against this app's tool schemas — several
   candidates were dropped for refusing tools outright or emitting malformed

@@ -1,10 +1,10 @@
 # Talk to the Web
 
-RAG chat app: paste a URL or upload a PDF/DOCX/text file, then chat about it
-with an LLM agent that can retrieve your documents, fetch a web page, or
-search the web. FastAPI (Python 3.13, `uv`) backend, React 19/Vite frontend,
-Postgres, Qdrant, Groq (LLM), Gemini (embeddings), Tavily (web search),
-Deepgram (live speech-to-text).
+RAG chat app: upload a PDF/DOCX/text file, then chat about it with an LLM
+agent that can retrieve your documents, fetch a web page, or search the web.
+FastAPI (Python 3.13, `uv`) backend, React 19/Vite frontend, Postgres, Qdrant,
+Together (LLM), Gemini (embeddings), Tavily (web search), Deepgram (live
+speech-to-text).
 
 The backend is an onion-architecture reference implementation
 (domain → application → adapters/api), mechanically enforced by

@@ -1,9 +1,9 @@
 # Talk to the Web
 
-A full-stack RAG chat app: paste a URL or upload a PDF/DOCX/text file, then chat
-about its content with an LLM agent that can retrieve your documents, fetch a
-web page, or search the web. FastAPI (Python 3.13, `uv`) backend, React 19/Vite
-frontend, Postgres, Qdrant, Groq (LLM), Gemini (embeddings), Tavily (web
+A full-stack RAG chat app: upload a PDF/DOCX/text file, then chat about its
+content with an LLM agent that can retrieve your documents, fetch a web page,
+or search the web. FastAPI (Python 3.13, `uv`) backend, React 19/Vite
+frontend, Postgres, Qdrant, Together (LLM), Gemini (embeddings), Tavily (web
 search), Deepgram (live speech-to-text).
 
 The repo also doubles as a reference implementation of onion architecture —
@@ -56,7 +56,7 @@ in `frontend/README.md`. This file stays at the whole-picture level.
                                                  │           │
                                      Postgres (state)   Qdrant (vectors)
                                                              │
-                                                  Groq (LLM) · Gemini (embeddings)
+                                              Together (LLM) · Gemini (embeddings)
                                          Tavily (web search) · Deepgram (speech-to-text)
 ```
 
@@ -81,8 +81,9 @@ in `frontend/README.md`. This file stays at the whole-picture level.
 | Retrieve uploaded documents | Answer questions about a file the user uploaded | Agent tool `retrieve_documents` → Qdrant similarity search → chunks back into the prompt |
 | Fetch a web page | Answer questions about a URL the user pastes | Agent tool `fetch_web_pages` → `aiohttp` scraper → page text into the prompt |
 | Search the web | Answer questions needing current information | Agent tool `search_web` → Tavily API → results into the prompt |
-| Upload PDF/DOCX/text | Bring outside content into the knowledge base | `POST /upload` → extract text → chunk → embed (Gemini) → store in Qdrant, metadata in Postgres |
-| Ingest a URL | Same, but source is a web page instead of a file | `POST /ingest-url` → scrape → same extract/chunk/embed pipeline |
+| Upload PDF/DOCX/text | Bring outside content into the knowledge base | `POST /upload` → extract text → chunk → embed (Gemini) → store in Qdrant, metadata in Postgres, plus a short digest of the file in `documents.summary` |
+| Document digest on every turn | The agent has to know what this account uploaded before it can choose a tool | `GenerateReply` reads the owner's documents once per request → appends `[DOCUMENTS AVAILABLE]` (newest few digests, fenced as untrusted content) or `[NO DOCUMENTS]` to the user turn |
+| Documents-before-web routing | A question about the user's own files must not be answered off the web first | `is_document_scoped` (domain, stdlib regex) decides once per request → `ToolRegistry.invoke` refuses `search_web` until `retrieve_documents` has run, and refuses `retrieve_documents` outright on an account with nothing indexed |
 | Live voice input | Hands-free question entry | Browser mic → WebSocket `/ws/transcribe/` → Deepgram streaming → partial/final transcripts back to the client |
 | Auth (email/password) | Conversations and documents are per-user | Access token (15 min, stateless) + refresh token (14 days, httpOnly cookie, rotated, revocable) |
 | Conversation history | Resume a chat later | Persisted in Postgres, loaded on conversation open |
@@ -96,7 +97,7 @@ Four pieces, three of them managed:
  Vercel (static)                     EC2
  ┌────────────────┐         ┌──────────────────────┐        Neon Postgres
  │ built frontend │         │ caddy  (TLS, :443)   │───────▶ Qdrant Cloud
- │  vercel.json   │──HTTPS─▶│   └─ backend :8000   │        Groq/Gemini/
+ │  vercel.json   │──HTTPS─▶│   └─ backend :8000   │        Together/Gemini/
  │   rewrites     │         │ migrate (runs once)  │        Deepgram/Tavily
  └────────┬───────┘         └──────────────────────┘
           └──── WebSocket, direct to api.<domain> ────┘
@@ -244,7 +245,14 @@ entry that wins for any key it sets:
   API usage. `agent_max_tool_iterations` bounds a looping agent; the
   condenser's own token budgets (`agent_history_token_budget`,
   `agent_tool_output_token_budget`) bound how much gets resent on every lap
-  of a long conversation.
+  of a long conversation. Those budgets were tripled to buy answer quality,
+  so a long conversation now costs more per lap than it used to — the old
+  numbers were tuned for a free tier's rate limit and compressed the thread
+  so early that the model forgot what was said. Separately,
+  `agent_max_request_tokens` is the ceiling that maps to what the provider
+  actually rejects; it is checked on every lap, not only when the thread
+  crosses the history budget. Indexing an upload now also costs one condenser
+  call, for the document digest.
 - **Scaling bottleneck: uploads on local disk.** Files land on the
   backend instance's filesystem. Fine for one instance; broken the moment
   there's more than one, or the instance is replaced. Move to S3 before
@@ -255,7 +263,7 @@ entry that wins for any key it sets:
   deployment needs a shared store (Redis) instead. On top of the per-account
   chat/upload limits sits one deployment-wide ceiling
   (`global_daily_call_budget`, default 200/day) shared by chat replies,
-  uploads, URL ingestion and transcription alike — registration has no
+  uploads and transcription alike — registration has no
   CAPTCHA, so the per-account limits alone only cap one account's spend, not
   the total across as many as someone is willing to create. `Caddyfile` adds a
   second, edge-level layer in front of that: `caddy-ratelimit` (built into the
@@ -339,7 +347,12 @@ case crashes, calls the wrong tool, misses its expected source, or drops a
 a 0-1 score from a model is too noisy to block on, while "the reply stopped
 saying 2019" is not.
 
-Sample results from a full run (exact match, overuse, latency, cost per reply):
+Sample results from a full run (exact match, overuse, latency, cost per reply).
+These were measured on Groq, before the switch to Together, so treat them as
+the shape of the report rather than current numbers. The Together default
+(`deepseek-ai/DeepSeek-V4-Flash-0731`) measured 0.36 exact-match on
+`--suite tools` (n=11) and is kept anyway as a known, accepted gap — it is the
+gap the routing gate below exists to hold:
 
 | Suite | Metric | Value | Notes |
 |-------|--------|-------|-------|
@@ -355,6 +368,31 @@ Sample results from a full run (exact match, overuse, latency, cost per reply):
 The `rag` suite caught a real miss: asked "who founded Aurora Robotics", the
 agent chose `search_web` instead of `retrieve_documents`. That is exactly what
 the suite exists for.
+
+The prompt was tightened in response, and then backed by something that does
+not depend on the model reading it: when the question is phrased as being about
+the user's own files, `ToolRegistry.invoke` refuses a `search_web` call until
+`retrieve_documents` has run on that turn, and hands the model a sentence
+telling it so. An empty retrieval opens the search immediately, so the agent
+still decides *whether* to go to the web — only the order is fixed. Cases
+`tools-009` through `tools-011` measure it, and the tool-selection metric that
+moves is `over-calling rate`.
+
+That gate is one half of a pair. The other half is the **document digest**: on
+every turn `GenerateReply` tells the model, in a bracketed
+`[DOCUMENTS AVAILABLE]` / `[NO DOCUMENTS]` tag the system prompt names, what
+this account has actually uploaded. The digest informs the choice, the gate
+makes it binding. `[NO DOCUMENTS]` matters as much as the other branch:
+silence read as "unknown, try anyway", so an account with an empty collection
+paid for an embedding request and a Qdrant round trip on every turn.
+
+The eval driver itself was hardened at the same time, because a run that
+misreports is worse than no run. A case that errored (a rate limit, a dropped
+connection) is now dropped from every rate instead of being scored as "called
+nothing, said nothing"; fixtures are indexed for *every* suite, since an
+unindexed corpus makes `retrieve_documents` come back empty, which is exactly
+the state that releases `search_web` — the suite proving the gate works was
+measuring a gate with nothing behind it.
 
 ## Known limits
 
@@ -374,6 +412,14 @@ the suite exists for.
   rate-limit store first.
 - **No email verification** — anyone can register with any address they
   like. The global budget cap bounds the damage a throwaway account can do.
+- **Documents have no UI any more.** `GET /documents/` and
+  `POST /documents/{id}/delete` are still served, but the panel that called
+  them is gone, so a user can upload a file and never list or remove it.
+  Uploading is now the whole document surface in the app.
+- **`agent_max_request_tokens` is provisional.** The old value was Groq's real
+  8,000-token limit, confirmed against a 400 in production. The current one is
+  a guess at Together's much larger window and has not been confirmed the same
+  way. Tighten it if a 400 shows up.
 
 ## Key decisions
 
@@ -392,5 +438,16 @@ the suite exists for.
   local dev — so there is one source of truth for the schema and no drift
   between how a laptop and production got their tables.
 - **Provider-agnostic LLM config.** `llm_provider` is a plain string resolved
-  through LangChain's `init_chat_model`, so swapping Groq for another
-  provider is an env change, not a code change.
+  through LangChain's `init_chat_model`, so swapping one provider for another
+  is an env change, not a code change. The move from Groq to Together was
+  exactly that: two variables, no code touched.
+- **Tool routing is enforced, not prompted.** The system prompt asks the model
+  to try `retrieve_documents` before `search_web` on a question about the
+  user's own files; `ToolRegistry.invoke` makes it binding. A rule that only
+  lives in a prompt is a rule the next model ignores, and the measured
+  exact-match rate says that happens.
+- **The last agent lap gets no tools bound.** Hitting
+  `agent_max_tool_iterations` used to end the reply on whatever the model
+  streamed alongside its rejected tool call, which was usually nothing.
+  Withholding the tools forces a text-only answer instead, so the ceiling is a
+  latency and cost knob rather than a cliff a user's reply falls off.
