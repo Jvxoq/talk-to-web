@@ -6,9 +6,11 @@ can read, because the response body is already streaming by the time a tool
 runs - and every tool reports the sources behind a successful answer.
 """
 
+import pytest
+
 from app.application.chat.guardrails.tool_output import ToolOutputGuard
 from app.application.chat.models import Passage, Source, ToolCall
-from app.application.chat.tools.base import ToolContext, ToolRegistry
+from app.application.chat.tools.base import ToolContext, ToolRegistry, ToolRoutingPolicy
 from app.application.chat.tools.fetch_web_pages import FetchWebPages
 from app.application.chat.tools.retrieve_documents import RetrieveDocuments
 from app.application.chat.tools.search_web import SearchWeb
@@ -333,3 +335,157 @@ class TestToolRegistryFencing:
         guard_param = signature.parameters["guard"]
         assert guard_param.kind is inspect.Parameter.KEYWORD_ONLY
         assert guard_param.default is inspect.Parameter.empty
+
+
+class TestToolRegistryRouting:
+    """Docs before the web, on a question about the user's own files.
+
+    The gate lives in `invoke` rather than in `SearchWeb`, so these prove the
+    search never happens at all - not that it happened and was discarded.
+    """
+
+    POLICY = ToolRoutingPolicy(document_tool="retrieve_documents", web_search_tool="search_web")
+
+    def _registry(self, searcher: FakeWebSearcher) -> ToolRegistry:
+        return ToolRegistry(
+            [
+                RetrieveDocuments(FakeKnowledgeRetriever()),
+                SearchWeb(searcher, max_results=3),
+            ],
+            guard=_guard(),
+            routing=self.POLICY,
+        )
+
+    async def test_a_document_question_cannot_reach_the_web_before_retrieval(self) -> None:
+        searcher = FakeWebSearcher(results="RESULTS")
+        registry = self._registry(searcher)
+
+        outcome = await registry.invoke(
+            ToolCall(id="1", name="search_web", arguments={"query": "aurora robotics"}),
+            ToolContext(owner_id=42, document_scoped=True),
+        )
+
+        assert not outcome.ok
+        assert "retrieve_documents" in outcome.content
+        # The point of gating in `invoke`: no search was paid for.
+        assert searcher.queries == []
+        # Our own sentence, not external content - so it is not fenced.
+        assert "<untrusted_content" not in outcome.content
+
+    async def test_an_empty_retrieval_still_opens_the_search(self) -> None:
+        # `prior_tools` records that the tool ran, not that it found anything -
+        # a retrieval that came back empty is exactly when a search is right.
+        searcher = FakeWebSearcher(results="RESULTS")
+        registry = self._registry(searcher)
+
+        outcome = await registry.invoke(
+            ToolCall(id="1", name="search_web", arguments={"query": "aurora robotics"}),
+            ToolContext(
+                owner_id=42, document_scoped=True, prior_tools=frozenset({"retrieve_documents"})
+            ),
+        )
+
+        assert outcome.ok
+        assert searcher.queries == [("aurora robotics", 3)]
+
+    async def test_a_question_about_the_world_searches_immediately(self) -> None:
+        searcher = FakeWebSearcher(results="RESULTS")
+        registry = self._registry(searcher)
+
+        outcome = await registry.invoke(
+            ToolCall(id="1", name="search_web", arguments={"query": "todays headlines"}),
+            ToolContext(owner_id=42, document_scoped=False),
+        )
+
+        assert outcome.ok
+        assert searcher.queries == [("todays headlines", 3)]
+
+    async def test_the_document_tool_itself_is_never_held_back(self) -> None:
+        registry = self._registry(FakeWebSearcher())
+
+        outcome = await registry.invoke(
+            ToolCall(id="1", name="retrieve_documents", arguments={"query": "my pdf"}),
+            ToolContext(owner_id=42, document_scoped=True),
+        )
+
+        assert outcome.ok
+
+    async def test_the_document_tool_is_refused_on_an_account_with_no_uploads(self) -> None:
+        # Not a hold-back but a refusal: there is no later lap on which this
+        # call becomes worth making. The prompt's "coming back empty costs only
+        # one extra call" stops being true when every call is a guaranteed
+        # miss, and the miss is not free - it is an embedding request and a
+        # vector-store round trip.
+        retriever = FakeKnowledgeRetriever()
+        registry = ToolRegistry(
+            [RetrieveDocuments(retriever), SearchWeb(FakeWebSearcher(), max_results=3)],
+            guard=_guard(),
+            routing=self.POLICY,
+        )
+
+        outcome = await registry.invoke(
+            ToolCall(id="1", name="retrieve_documents", arguments={"query": "aurora"}),
+            ToolContext(owner_id=42, has_documents=False),
+        )
+
+        assert not outcome.ok
+        assert retriever.owners == [], "the index must not be touched"
+        # Told what to do instead, or the model simply asks again.
+        assert "search_web" in outcome.content
+        assert "<untrusted_content" not in outcome.content
+
+    async def test_an_empty_account_does_not_hold_the_search_back(self) -> None:
+        # Both rules at once, which is where a deadlock would live: the
+        # question is phrased as being about their files, and there are no
+        # files. Holding the search until a retrieval that is refused above has
+        # run would leave the model nothing it is allowed to do.
+        searcher = FakeWebSearcher(results="RESULTS")
+        registry = self._registry(searcher)
+
+        outcome = await registry.invoke(
+            ToolCall(id="1", name="search_web", arguments={"query": "aurora robotics"}),
+            ToolContext(owner_id=42, document_scoped=True, has_documents=False),
+        )
+
+        assert outcome.ok
+        assert searcher.queries == [("aurora robotics", 3)]
+
+    async def test_an_unknown_shelf_is_treated_as_a_full_one(self) -> None:
+        # The default, and the direction it defaults in. `GenerateReply` says
+        # `False` only about a read that succeeded and came back empty; a read
+        # that failed leaves this alone, and the tool stays open.
+        retriever = FakeKnowledgeRetriever(passages=[Passage(text="p", source="a.pdf")])
+        registry = ToolRegistry(
+            [RetrieveDocuments(retriever), SearchWeb(FakeWebSearcher(), max_results=3)],
+            guard=_guard(),
+            routing=self.POLICY,
+        )
+
+        outcome = await registry.invoke(
+            ToolCall(id="1", name="retrieve_documents", arguments={"query": "aurora"}),
+            ToolContext(owner_id=42),
+        )
+
+        assert outcome.ok
+
+    async def test_a_registry_without_a_policy_orders_nothing(self) -> None:
+        searcher = FakeWebSearcher(results="RESULTS")
+        registry = ToolRegistry([SearchWeb(searcher, max_results=3)], guard=_guard())
+
+        outcome = await registry.invoke(
+            ToolCall(id="1", name="search_web", arguments={"query": "anything"}),
+            ToolContext(owner_id=42, document_scoped=True),
+        )
+
+        assert outcome.ok
+        assert searcher.queries == [("anything", 3)]
+
+    def test_a_policy_naming_a_tool_that_was_never_registered_is_refused(self) -> None:
+        # A rule that can never fire is worse than no rule: it reads as
+        # enforcement and is not.
+        with pytest.raises(ValueError, match="retrieve_documents"):
+            ToolRegistry(
+                [SearchWeb(FakeWebSearcher(), max_results=3)],
+                guard=_guard(),
+                routing=self.POLICY,
+            )

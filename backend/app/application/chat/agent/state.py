@@ -5,6 +5,7 @@ values each node returned, so a frozen model would fail the moment a reducer
 tried to write the merged result back.
 """
 
+from collections.abc import Sequence
 from typing import Annotated
 
 from pydantic import BaseModel
@@ -49,3 +50,29 @@ class AgentState(BaseModel):
     # thread that kept counting would hit the ceiling and refuse to use tools
     # ever again.
     iterations: int = 0
+
+
+def tools_run_this_turn(messages: Sequence[ChatMessage]) -> frozenset[str]:
+    """Every tool whose result is already in the history, since the last question.
+
+    Asked for is not the same as run, and the difference is the whole point: the
+    tool node launches every call in one lap concurrently, so a tool requested
+    alongside another has produced nothing the model can read yet. A name counts
+    here only once a tool turn answering its call has landed - which is exactly
+    when a later tool could be said to have "already tried" it.
+
+    Scoped to the turn, not the thread: a search run three questions ago says
+    nothing about whether this question has been looked up yet, and a thread
+    that accumulated tool names forever would let the first lap of every later
+    reply skip straight past a retrieval.
+    """
+    names_by_id: dict[str, str] = {}
+    answered: set[str] = set()
+    for message in reversed(messages):
+        if message.role == "user":
+            break
+        for call in message.tool_calls:
+            names_by_id[call.id] = call.name
+        if message.role == "tool" and message.tool_call_id is not None:
+            answered.add(message.tool_call_id)
+    return frozenset(names_by_id[call_id] for call_id in answered if call_id in names_by_id)

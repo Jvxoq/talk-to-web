@@ -15,7 +15,7 @@ from langgraph.config import get_config, get_stream_writer
 from loguru import logger
 
 from app.application.chat.agent.condenser import Condenser
-from app.application.chat.agent.state import AgentState
+from app.application.chat.agent.state import AgentState, tools_run_this_turn
 from app.application.chat.agent.usage import emit_usage
 from app.application.chat.models import ChatMessage, ToolCall
 from app.application.chat.ports import ChatModel, TokenCounter, Tracer
@@ -57,7 +57,9 @@ def _summarise(call: ToolCall) -> str:
     return f"{call.name}({rendered})"
 
 
-def make_agent_node(model: ChatModel, tools: ToolRegistry, tracer: Tracer) -> Node:
+def make_agent_node(
+    model: ChatModel, tools: ToolRegistry, max_iterations: int, tracer: Tracer
+) -> Node:
     """Build the node that asks the model what to do next."""
     # The tool specs cannot change between requests - the registry is built at
     # startup - so they are computed once rather than per turn.
@@ -67,6 +69,17 @@ def make_agent_node(model: ChatModel, tools: ToolRegistry, tracer: Tracer) -> No
         configurable: dict[str, Any] = dict(get_config().get("configurable") or {})
         model_name = str(configurable["model"])
         temperature = float(configurable.get("temperature", 0.0))
+
+        # The last lap gets no tools bound, on purpose: a model that is still
+        # asking for tools when the ceiling is one call away is looping, and
+        # `route_after_agent` would otherwise discard that request and end the
+        # reply on whatever the model streamed alongside it - usually nothing,
+        # since a model asking for a tool rarely also writes a text answer in
+        # the same turn. Taking tools away here forces a text-only completion
+        # instead, so the reply ends with a real answer built from everything
+        # gathered so far rather than a silent cutoff.
+        final_lap = state.iterations >= max_iterations - 1
+        turn_specs = () if final_lap else specs
 
         # The custom stream, not the return value, is what reaches the user
         # while the model is still talking. Returning the finished text would
@@ -86,7 +99,7 @@ def make_agent_node(model: ChatModel, tools: ToolRegistry, tracer: Tracer) -> No
                     model=model_name,
                     temperature=temperature,
                     messages=state.messages,
-                    tools=specs,
+                    tools=turn_specs,
                 ):
                     if chunk.text:
                         if ttft_ms is None:
@@ -125,11 +138,48 @@ def make_tool_node(
     async def tool_node(state: AgentState) -> dict[str, Any]:
         writer = get_stream_writer()
         configurable: dict[str, Any] = dict(get_config().get("configurable") or {})
-        # Subscripted, not `.get(...)`: a run config without an owner is a
-        # miswiring, and defaulting it would mean quietly searching somebody's
-        # documents - or everybody's - rather than failing where it broke.
-        context = ToolContext(owner_id=int(configurable["owner_id"]))
-        calls = state.messages[-1].tool_calls if state.messages else ()
+        # Both subscripted, not `.get(...)`: a run config missing either is a
+        # miswiring, and defaulting one would fail quietly in the worst
+        # direction. A default owner means searching somebody's documents - or
+        # everybody's - instead of failing where it broke; a default
+        # `document_scoped` means the routing gate never fires and a private
+        # question goes to the web, with no error and no log line to say so.
+        #
+        # `document_scoped` arrives from the run config rather than being
+        # recomputed here from `state.messages`, because the history is not a
+        # dependable record of what was asked: the summarize node can replace
+        # it, and a run that compressed the current user turn away would leave
+        # this node matching on an older question. The question is settled
+        # once, in `GenerateReply`, from the request itself.
+        #
+        # `prior_tools` genuinely does have to be recomputed every lap - it
+        # grows as the turn does, and a value fixed at the start would hold the
+        # first lap's answer for the whole reply. It is safe to read from the
+        # history for the same reason the other one is not: the summarize node
+        # keeps a suffix, so dropping the current user turn drops every earlier
+        # turn with it and the scan still sees this turn only.
+        #
+        # Note what this means for two tools requested in the *same* lap: they
+        # run concurrently, so neither has answered yet and a search asked for
+        # alongside a retrieval is held back. That is the intent - the point of
+        # the rule is that the retrieval's answer exists before a search is
+        # worth paying for - not an oversight to "fix" by counting requests
+        # instead of results.
+        messages = state.messages
+        context = ToolContext(
+            owner_id=int(configurable["owner_id"]),
+            document_scoped=bool(configurable["document_scoped"]),
+            # `.get`, unlike the two above, and for the reason they are not:
+            # the argument for subscripting is that a missing value would
+            # default in the worst direction, and this one's default is simply
+            # the behaviour that existed before it did - every document lookup
+            # allowed. A missing flag here costs a wasted call, not a leak, and
+            # that is not worth raising into a response the user is already
+            # watching stream.
+            has_documents=bool(configurable.get("has_documents", True)),
+            prior_tools=tools_run_this_turn(messages),
+        )
+        calls = messages[-1].tool_calls if messages else ()
         if not calls:
             # Routing should make this unreachable; returning nothing is still
             # cheaper than raising into an open stream if it ever happens.

@@ -18,16 +18,43 @@ from app.application.chat.models import Source, ToolCall
 
 
 class ToolContext(BaseModel):
-    """Who this turn belongs to.
+    """Who this turn belongs to, and what has already happened on it.
 
     Separate from the arguments on purpose: arguments are written by the model,
-    and this is not negotiable by it. A model that could name the owner it
-    wanted to search would be a model that could read anyone's documents.
+    and none of this is negotiable by it. A model that could name the owner it
+    wanted to search would be a model that could read anyone's documents; a
+    model that could declare its own question "not about the uploaded files"
+    would be a model that could talk its way out of the routing policy below.
+
+    Every field is written by the tool node - see `agent.nodes.make_tool_node`.
+    `owner_id`, `document_scoped` and `has_documents` come off the run config,
+    decided once per request by `GenerateReply`; `prior_tools` is read out of
+    the history, because it is the one of the four that changes between laps.
     """
 
     model_config = ConfigDict(frozen=True)
 
     owner_id: int
+    # Whether the user's question on this turn is about files they supplied.
+    # Decided from the request text, not from the checkpointed history: a
+    # summarized thread can lose the turn it is about, and a gate that reads
+    # its own input out of a lossy record fails open.
+    document_scoped: bool = False
+    # Whether this owner has anything to retrieve at all. Read from the
+    # database once per request, alongside the names the digest is built from,
+    # so it costs no extra query.
+    #
+    # Defaults to `True`, and the default is the honest answer to "we do not
+    # know": every gate below is an optimisation, and the cost of guessing
+    # wrong in the permissive direction is one wasted call, while guessing
+    # wrong in the strict direction is a user with documents being told they
+    # have none. `GenerateReply` sets this to `False` only when a read that
+    # actually succeeded came back empty - never when the read itself failed.
+    has_documents: bool = True
+    # Every tool that has already run and answered since the user's last
+    # message - requested is not enough, for the reason `tools_run_this_turn`
+    # gives.
+    prior_tools: frozenset[str] = frozenset()
 
 
 class ToolSpec(BaseModel):
@@ -81,6 +108,78 @@ class ToolOutcome(BaseModel):
     content: str
     ok: bool = True
     sources: tuple[Source, ...] = ()
+
+
+class ToolRoutingPolicy(BaseModel):
+    """Docs before the web, on a question that is about the user's own files.
+
+    A policy object rather than a branch in `ToolRegistry.invoke`, because the
+    registry is deliberately ignorant of which concrete tools exist - it is the
+    one place a capability can be added without editing it. The tool *names*
+    therefore arrive from the composition root, next to where those tools are
+    listed, and the registry only knows that some ordering may apply.
+
+    This constrains the model without taking the choice away: a redirect is
+    only possible while the document tool has not run on this turn, and a
+    retrieval that came back empty still opens the search.
+
+    Two rules live here, and they are the same rule read from both ends. On an
+    account that has uploads, the document tool goes first. On an account that
+    has none, the document tool is not worth a network round trip at all - and
+    the web must *not* be held back waiting for it, because a hold-back that
+    waits on a call which can never run is a deadlock the model can only escape
+    by exhausting its lap budget.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    # The private, cheap lookup that must be tried first.
+    document_tool: str
+    # The tool that is held back until it has been.
+    web_search_tool: str
+
+    def redirect(self, call: ToolCall, context: ToolContext) -> ToolOutcome | None:
+        """The refusal to answer this call with, or `None` to let it run."""
+        if call.name == self.document_tool:
+            if context.has_documents:
+                return None
+            # The prompt tells the model to try this lookup whenever a question
+            # names an entity it does not know, on the reasoning that coming
+            # back empty costs only one call. That reasoning holds right up
+            # until the account has nothing indexed, at which point every such
+            # call is a guaranteed miss - and not a free one: it is an
+            # embedding request and a vector-store round trip before the empty
+            # answer comes back. Answered here instead, from a fact the model
+            # cannot argue with.
+            return ToolOutcome(
+                content=(
+                    "This user has not uploaded any documents, so "
+                    f"{self.document_tool} has nothing to search. Answer from what you "
+                    f"already know, or use {self.web_search_tool} if the question needs "
+                    "current or public information."
+                ),
+                ok=False,
+            )
+
+        if call.name != self.web_search_tool:
+            return None
+        if not context.document_scoped or self.document_tool in context.prior_tools:
+            return None
+        if not context.has_documents:
+            # Reachable: `is_document_scoped` matches phrasing ("what does my
+            # PDF say"), so a user with an empty library can ask a
+            # document-scoped question. Holding the search back here would
+            # bounce the model between a retrieval that is refused above and a
+            # search that is refused here until the lap budget runs out.
+            return None
+        return ToolOutcome(
+            content=(
+                f"This question is about the user's uploaded documents. Call "
+                f"{self.document_tool} first; use {self.web_search_tool} only if that "
+                "comes back with nothing relevant."
+            ),
+            ok=False,
+        )
 
 
 @runtime_checkable
@@ -153,7 +252,13 @@ class ToolRegistry:
     added.
     """
 
-    def __init__(self, tools: Sequence[AgentTool], *, guard: ToolOutputGuard) -> None:
+    def __init__(
+        self,
+        tools: Sequence[AgentTool],
+        *,
+        guard: ToolOutputGuard,
+        routing: ToolRoutingPolicy | None = None,
+    ) -> None:
         # `guard` is required, not `ToolOutputGuard | None = None`. This
         # module's own tools argue that "an optional parameter is an
         # invitation to forget it" (see `BaseTool._run`'s docstring) - the same
@@ -162,10 +267,23 @@ class ToolRegistry:
         # caller forgets to pass one. Forcing every call site to supply a
         # guard means the choice to fence tool output is made once, at the
         # composition root, and cannot be quietly skipped anywhere else.
+        #
+        # `routing` is the one collaborator here that genuinely defaults to
+        # nothing, and it is not the same kind of thing as `guard`: a fence
+        # that is off is a vulnerability, while an ordering rule that is off is
+        # a registry whose tools have no order - which is exactly the case for
+        # a deployment (or a test) that has no document tool to put first.
         self._tools = {tool.spec.name: tool for tool in tools}
         if len(self._tools) != len(tools):
             raise ValueError("Two tools share a name; the model could not tell them apart.")
         self._guard = guard
+        if routing is not None:
+            missing = {routing.document_tool, routing.web_search_tool} - set(self._tools)
+            if missing:
+                # A policy naming a tool that was never registered would silently
+                # never fire, which is the worst way for a routing rule to fail.
+                raise ValueError(f"Routing policy names unregistered tools: {sorted(missing)}")
+        self._routing = routing
 
     def specs(self) -> list[ToolSpec]:
         return [tool.spec for tool in self._tools.values()]
@@ -183,7 +301,9 @@ class ToolRegistry:
         This is also the single choke point every tool result passes through
         on its way back to the model, which is why the fence is applied here
         and nowhere else - a future caller cannot add a new tool, or a new way
-        to invoke one, that bypasses it.
+        to invoke one, that bypasses it. The routing policy is applied here for
+        the same reason: an ordering rule enforced in one node, or in one tool,
+        is an ordering rule the next caller forgets.
         """
         tool = self._tools.get(call.name)
         if tool is None:
@@ -203,6 +323,19 @@ class ToolRegistry:
                 content=f"No tool named {call.name!r}. Available tools: {available}.",
                 ok=False,
             )
+
+        if self._routing is not None and (redirect := self._routing.redirect(call, context)):
+            # Not fenced, and not an error the user ever sees: this is our own
+            # sentence, telling the model to spend its next lap on the cheap
+            # private lookup it skipped. The tool is never run, so nothing
+            # crossed a trust boundary here.
+            # Deliberately not spelling out which rule fired: the registry does
+            # not know what the policy's rules are, and a log line that
+            # restated one would be the first thing to go stale when a rule is
+            # added. The refusal text itself says why, and it is right there in
+            # the trace next to this line.
+            logger.info("Tool routing refused {}", call.name)
+            return redirect
 
         try:
             outcome = await tool.run(call.arguments, context)

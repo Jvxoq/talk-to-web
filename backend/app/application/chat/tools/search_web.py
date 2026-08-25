@@ -42,7 +42,10 @@ class SearchWeb(BaseTool[SearchWebArgs]):
         "fetch_web_pages. Do not use it when the user already gave you the link. "
         "If the question names a specific person, company, product or topic you "
         "don't recognize, try retrieve_documents first - it may be in a file the "
-        "user uploaded - and only reach for this once that comes back empty."
+        "user uploaded - and only reach for this once that comes back empty. Do "
+        "not use this at all for a question about the user's own uploaded "
+        "documents until retrieve_documents has run and returned nothing "
+        "relevant; a call that skips it will be refused."
     )
     args_model: ClassVar[type[BaseModel]] = SearchWebArgs
 

@@ -23,10 +23,14 @@ from app.application.chat.dto import (
     ReplyUsage,
 )
 from app.application.chat.guardrails.policy import GuardVerdict, InputGuardPolicy
+from app.application.chat.guardrails.tool_output import ToolOutputGuard
 from app.application.chat.models import ChatMessage, Source
 from app.application.chat.ports import RateLimiter, Tracer
+from app.application.common.uow import UnitOfWorkFactory
 from app.domain.chat.errors import UnsafeUserMessage
+from app.domain.chat.tool_routing import is_document_scoped
 from app.domain.chat.value_objects import UserMessage
+from app.domain.ingestion.entities import UploadedDocument
 from app.observability.metrics import emit_reply_metrics
 
 
@@ -55,6 +59,10 @@ class GenerateReply:
         daily_budget: RateLimiter,
         guards: InputGuardPolicy,
         tracer: Tracer,
+        uow_factory: UnitOfWorkFactory,
+        tool_output_guard: ToolOutputGuard,
+        max_digest_documents: int,
+        max_digest_summary_chars: int,
     ) -> None:
         self._graph = graph
         self._system_prompt = system_prompt
@@ -62,6 +70,14 @@ class GenerateReply:
         self._daily_budget = daily_budget
         self._guards = guards
         self._tracer = tracer
+        self._uow_factory = uow_factory
+        # The same fence every tool result gets. A document digest is written
+        # from an uploaded file, so it is external content by the same
+        # definition, and letting it reach the model unfenced would be a hole
+        # straight past the defence `ToolRegistry.invoke` exists to provide.
+        self._tool_output_guard = tool_output_guard
+        self._max_digest_documents = max_digest_documents
+        self._max_digest_summary_chars = max_digest_summary_chars
         # A backstop below LangGraph's own default, in the same units the graph
         # counts in: one lap is now an agent node, a tool node and a summarize
         # node, and the +3 covers the final answering turn. The router is what
@@ -118,11 +134,55 @@ class GenerateReply:
                 ", ".join(verdict.categories()),
             )
 
-        return self._stream(data, verdict)
+        # Read once, before the stream opens, and used for three things: the
+        # digest the model is shown, the names the routing gate matches on, and
+        # whether the document tool is worth offering at all. One query, not
+        # three, and outside `_stream` so a database hiccup here is still an
+        # HTTP error rather than a truncated reply.
+        return self._stream(data, verdict, await self._owned_documents(data.owner_id))
+
+    def _digest_documents(self, documents: list[UploadedDocument]) -> list[UploadedDocument]:
+        """The newest few - all that fit in front of the model each turn."""
+        return documents[: self._max_digest_documents]
+
+    async def _owned_documents(self, owner_id: int) -> list[UploadedDocument] | None:
+        """This owner's uploads, newest first, or `None` if they cannot be read.
+
+        Swallowed on failure for the same reason the tools are: knowing what a
+        user uploaded makes a better answer, and not knowing must never cost
+        them the answer itself.
+
+        `None` rather than `[]` on failure, and the distinction is the whole
+        point of the return type. An empty list used to mean both "this account
+        has uploaded nothing" and "the database did not answer", which was
+        harmless while the only consumer was a digest that would simply go
+        unwritten. It stopped being harmless the moment an empty list started
+        *closing a gate*: collapsed together, one slow query would tell a user
+        with a shelf of documents that they have none, and refuse the retrieval
+        that would have found them. Callers that only want to read the list can
+        still treat the two the same; the gate must not.
+        """
+        try:
+            async with self._uow_factory() as uow:
+                return await uow.documents.list_by_owner(owner_id)
+        except Exception as exc:
+            logger.warning(f"Could not read documents for owner {owner_id}: {exc}")
+            return None
 
     async def _stream(
-        self, data: GenerateReplyInput, verdict: GuardVerdict
+        self,
+        data: GenerateReplyInput,
+        verdict: GuardVerdict,
+        known: list[UploadedDocument] | None,
     ) -> AsyncIterator[ReplyEvent]:
+        # `None` means the read failed, not that the shelf is empty - see
+        # `_owned_documents`. Everything that only reads the list treats the two
+        # alike; the one thing that closes a gate does not.
+        documents = known or []
+        # False only when a read that actually succeeded came back empty. An
+        # unknown answer leaves the document tool open, which is what the
+        # deployment did before this gate existed.
+        has_documents = known is None or bool(known)
         # Typed `Any` on purpose. The concrete type is langchain_core's
         # `RunnableConfig`, and importing it to say so would put LangChain in the
         # application layer - which the import contract forbids, and for good
@@ -146,6 +206,38 @@ class GenerateReply:
                 # Read back by the tool node, which passes it to the tools that
                 # search the user's own documents.
                 "owner_id": data.owner_id,
+                # Whether this turn is about files the user supplied - the
+                # input to the tool routing policy.
+                #
+                # Decided here, once, rather than read back out of the
+                # checkpointed history by the tool node. The question does not
+                # change between laps, so nothing is gained by recomputing it,
+                # and the history is not a safe place to look it up: the
+                # summarization node may replace it wholesale, and a run that
+                # compressed the current user turn away would leave the node
+                # matching on an older question - or on nothing - and the gate
+                # simply would not fire. That failure direction is "search
+                # allowed", which is the quiet one: no error, no log line, just
+                # a private question answered off the web. Sent alongside
+                # `owner_id` because it is the same kind of value - written by
+                # us from the request, never by the model.
+                #
+                # `verdict.text`, not `data.user_input`: the guardrail may have
+                # rewritten the message, and the routing decision must be made
+                # on the text the model is actually going to read.
+                # Every owned document is offered here, not just the few the
+                # digest has room for. The cap on the digest is a token budget,
+                # and names cost no tokens - holding a search back because the
+                # user named their seventh-newest file is exactly as right as
+                # doing it for their first.
+                "document_scoped": is_document_scoped(
+                    verdict.text, document_names=[document.name for document in documents]
+                ),
+                # Whether the document tool has anything to search. Decided
+                # here for the same reason `document_scoped` is - it is a fact
+                # about the request, read once, and the tool node has no unit
+                # of work to look it up with even if it wanted to.
+                "has_documents": has_documents,
             },
             "recursion_limit": self._recursion_limit,
         }
@@ -170,7 +262,13 @@ class GenerateReply:
             ) as span:
                 try:
                     state = AgentState(
-                        messages=await self._new_messages(data, verdict.text, config),
+                        messages=await self._new_messages(
+                            data,
+                            verdict.text,
+                            config,
+                            self._digest_documents(documents),
+                            known_empty=not has_documents,
+                        ),
                         # Reset per request. The count is a ceiling on this reply's tool
                         # laps; carried over from the checkpoint it would only ever climb.
                         iterations=0,
@@ -258,6 +356,9 @@ class GenerateReply:
         data: GenerateReplyInput,
         user_text: str,
         config: Any,
+        documents: list[UploadedDocument],
+        *,
+        known_empty: bool,
     ) -> list[ChatMessage]:
         """Only what this turn adds - the checkpointer already holds the rest.
 
@@ -274,8 +375,103 @@ class GenerateReply:
             # message would stack a fresh copy of it in the history.
             messages.append(ChatMessage(role="system", content=self._system_prompt))
 
-        messages.append(ChatMessage(role="user", content=_user_content(message)))
+        messages.append(
+            ChatMessage(
+                role="user",
+                content=_user_content(message, self._documents_note(documents, known_empty)),
+            )
+        )
         return messages
+
+    def _documents_note(self, documents: list[UploadedDocument], known_empty: bool) -> str:
+        """What to tell the model about this user's shelf, or "" to say nothing.
+
+        The pair to the routing gate in `ToolRoutingPolicy`, and neither half
+        does the job alone. This one informs the choice: a model that can read
+        the list decides for itself whether a retrieval is worth a lap. The
+        gate makes it binding, for the turns where it decides wrongly anyway.
+
+        Both branches open with a bracketed tag - `[DOCUMENTS AVAILABLE]` or
+        `[NO DOCUMENTS]` - that the system prompt tells the model by name to
+        look for and treat as decisive. A model guessing from a plain sentence
+        buried in the turn can miss it; a named marker it was told to expect is
+        something to check for, not infer. The two-tier design (a fact the
+        model is told to notice, backed by a gate that does not ask its
+        opinion) is deliberate: the notice is what changes a lucky heuristic
+        into a checked one, and the gate is what still holds when the model
+        does not check it.
+
+        The empty case earns its tokens for the same reason. Silence is not
+        the same message as "there is nothing here" - the system prompt's
+        fallback rule (for the rare turn with no notice at all, see below) is
+        to try a retrieval whenever a question names an entity it does not
+        know, so an absent digest would read as "unknown, try anyway" and get
+        tried regardless. Saying so outright is what stops that call being
+        made at all, leaving the gate to catch only what the model tries
+        despite being told.
+        """
+        digest = self._digest(documents)
+        if digest:
+            return (
+                "[DOCUMENTS AVAILABLE] The user has uploaded the documents listed "
+                "below. This is a standing fact about this account, not a hint - "
+                "check it against every question before answering or calling "
+                "search_web. If the topic, entity or time period of the question "
+                "matches one of these documents, call retrieve_documents first; "
+                "only skip it when the question is unambiguously unrelated to all "
+                "of them (small talk, math, a question about a public site the "
+                "user just linked).\n" + digest
+            )
+        if known_empty:
+            # Unfenced, and bracketed like the URL note: this is our own
+            # sentence about a count from our own database, not a line written
+            # from the contents of anybody's file. Nothing crossed a trust
+            # boundary to get here, and fencing it would tell the model to
+            # distrust the one fact on this turn it has no reason to.
+            return (
+                "[NO DOCUMENTS] The user has uploaded no documents. retrieve_documents "
+                "has nothing to search - answer from what you already know, or use "
+                "search_web."
+            )
+        return ""
+
+    def _digest(self, documents: list[UploadedDocument]) -> str:
+        """What the user has uploaded, as one fenced block, or "" if nothing.
+
+        This is the piece that stops the agent guessing. Without it the model
+        knows only that a `retrieve_documents` tool exists, never whether this
+        person has anything in it worth searching - so a question about their
+        own file competes on equal footing with a web search. Naming the files
+        and what each is about turns that guess into a reading of the list.
+
+        Fenced with the same guard as tool output, and for the same reason: a
+        summary is written from an uploaded document, which is external content
+        whoever wrote the document controls. Unfenced, a PDF could issue
+        instructions here on every single turn.
+
+        Rides on the user turn rather than the system prompt, exactly like the
+        URL note below. The system prompt is written once per thread, and this
+        changes as the user uploads - a thread that began before an upload would
+        never learn the file existed.
+        """
+        if not documents:
+            return ""
+
+        lines: list[str] = []
+        for document in documents:
+            summary = " ".join(document.summary.split())
+            if len(summary) > self._max_digest_summary_chars:
+                summary = summary[: self._max_digest_summary_chars].rstrip() + "..."
+            # A document still being indexed has no summary yet. It is listed
+            # anyway - the name alone is enough for the model to know there is
+            # something to search, and omitting it would make a file the user
+            # just uploaded appear not to exist.
+            lines.append(f"- {document.name}: {summary}" if summary else f"- {document.name}")
+
+        fenced, _ = self._tool_output_guard.wrap(
+            tool="uploaded_documents", content="\n".join(lines)
+        )
+        return fenced
 
     async def _is_new_thread(self, config: Any) -> bool:
         if self._graph.checkpointer is None:
@@ -300,19 +496,29 @@ def _thread_id(owner_id: int, conversation_id: int | None) -> str:
     return f"{owner_id}:{conversation_id}"
 
 
-def _user_content(message: UserMessage) -> str:
-    """The user's text, with the links they mentioned called out."""
-    urls = message.urls()
-    if not urls:
-        return message.text
+def _user_content(message: UserMessage, documents_note: str = "") -> str:
+    """The user's text, with their links and their uploaded files called out.
+
+    The note is composed by `GenerateReply._documents_note`, not here: whether
+    the user has documents, and how to say so, is a decision that needs the
+    guard and the digest budget. This function only decides where it goes.
+    """
+    parts = [message.text]
+
+    if documents_note:
+        parts.append(documents_note)
 
     # Models routinely answer from memory about a URL they were handed instead
     # of reading it. Naming the addresses back at them, on the turn that carries
     # them, is what makes `fetch_web_pages` get picked. It rides on the user
     # turn rather than the system prompt because the system prompt is written
     # once per thread, and these links belong to this message only.
-    listed = ", ".join(urls)
-    return f"{message.text}\n\n[The user linked: {listed}. Read them with fetch_web_pages.]"
+    urls = message.urls()
+    if urls:
+        listed = ", ".join(urls)
+        parts.append(f"[The user linked: {listed}. Read them with fetch_web_pages.]")
+
+    return "\n\n".join(parts)
 
 
 def _elapsed_ms(started: float) -> int:
@@ -378,9 +584,10 @@ def _to_event(payload: object) -> ReplyEvent | None:
 def _friendly_error(detail: str) -> str:
     """Turn a provider rate-limit failure into a sentence a person can read.
 
-    The raw detail is Groq's JSON, which is noise in front of a user. A rate
-    limit is transient - the right message is "try again in a moment", not a
-    dump of the provider's error body. Anything else passes through unchanged.
+    The raw detail is the provider's JSON, which is noise in front of a user.
+    A rate limit is transient - the right message is "try again in a moment",
+    not a dump of the provider's error body. Anything else passes through
+    unchanged.
     """
     lowered = detail.lower()
     if "rate_limit_exceeded" in lowered or "413" in detail or "429" in detail:
