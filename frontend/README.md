@@ -55,8 +55,8 @@ src/
 | Feature | Where | Notes |
 |---|---|---|
 | Chat (streamed replies) | `features/chat` (`useChat`, `api.ts`) | Consumes the backend's SSE stream from `POST /generate/text/` |
-| Conversation list / switch / delete | `features/chat` (`useConversations`, `Sidebar`) | Delete is a `POST`, not a `DELETE` — see below |
-| Document upload / list / delete | `features/chat` (`useDocuments`, `useFileUpload`, `DocumentManager`) | Drives `/upload/*` and `/documents/*` |
+| Conversation list / switch / delete | `features/chat` (`useConversations`, `Sidebar`) | Delete is a `POST`, not a `DELETE` — see below. The bootstrap also preloads the pinned conversation's transcript, see below |
+| Document upload | `features/chat` (`useFileUpload`, `Composer`) | `POST /upload/file/` only. The document manager panel, the URL-ingest field, and their `/documents/*` calls are gone — see Known limits |
 | Model picker | `features/chat` (`useModels`) | Backed by `GET /models/` |
 | Live voice input | `features/chat` (`useVoiceInput`) | Connects a WebSocket directly to the backend (see below), streams mic audio, renders partial/final transcripts |
 | Auth (register/login/session) | `features/auth` (`AuthProvider`, `AuthGate`, `AuthForm`, `useAuth`) | Access token in memory only; see Key decisions |
@@ -72,6 +72,16 @@ src/
   refresh token, so two concurrent refreshes look like token reuse and
   revoke every session the user has. Any new authenticated call must go
   through this helper, not a bare `fetch`.
+- **The conversation bootstrap runs two requests in parallel.** The pinned
+  conversation id is read synchronously from `localStorage`, so
+  `useConversations` fires `listConversations()` and `getConversation(pinned)`
+  together and hands the transcript to `useChat` as `preloaded`. Doing them in
+  sequence was the whole of the "it takes a while before the chat shows up"
+  delay on load. A stale pin makes the second request wasted work, which is
+  much cheaper than two serial round trips on every visit; it resolves to null
+  rather than failing the pair. The preload is consumed once per conversation
+  id, so switching away and back re-fetches instead of showing a stale
+  snapshot.
 - **Route parity between `nginx.conf` and `vercel.json`.** Both list the
   same API path prefixes for the reverse proxy / rewrites. Adding a backend
   route to one and not the other is how a call quietly starts returning
@@ -91,6 +101,9 @@ src/
 - No component tests yet — the Vitest setup runs in the `node` environment
   only; adding one means adding jsdom and the `environment: 'jsdom'` block
   first.
+- **No document management UI.** A user can upload a file but cannot list or
+  delete one from the app. The backend still serves `GET /documents/` and
+  `POST /documents/{id}/delete`; nothing in `src/` calls them any more.
 - The voice input path depends on a direct, cross-origin WebSocket in
   production; if `VITE_WS_URL` and the backend's `ALLOWED_WEBSOCKET_ORIGINS`
   drift out of sync, voice input fails silently at the handshake rather than
