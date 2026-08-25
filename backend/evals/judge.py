@@ -1,4 +1,4 @@
-"""An LLM judge scoring groundedness and answer relevance.
+"""An LLM judge scoring groundedness, relevance and correctness.
 
 Lives here, in `evals/`, rather than in `app/`, so production carries no code
 it never calls: nothing in the request path samples a live reply and asks a
@@ -13,6 +13,15 @@ on purpose, not by convention: never raises, returns `None` on any failure
 with `tools=()` so a judge can never become a second agent, and answers
 through the cheap `agent_condenser_model` rather than the model under test -
 grading is not the thing being measured.
+
+Three scores, not two, and the third is what fixed the second. Groundedness
+and correctness are different questions, and the old shape asked one model
+call to answer both against a single blob called "context" - which the caller
+filled with the gold answer when it had one. Grading groundedness against the
+gold answer means an invented fact that happens to match scores a perfect 1.0,
+which is exactly the failure the metric exists to catch. Here `context` is the
+source text the answer was supposed to be drawn from, `reference` is the
+correct answer, and neither is allowed to stand in for the other.
 """
 
 import json
@@ -27,13 +36,19 @@ from app.application.chat.ports import ChatModel, Tracer
 _JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 
 _SYSTEM_PROMPT = (
-    "You are a strict evaluator grading one chat reply. Score two things on a "
-    "0.0-1.0 scale:\n"
-    "- groundedness: does the answer only state things supported by the "
-    "provided context, without inventing facts?\n"
+    "You are a strict evaluator grading one chat reply. Score each of these on "
+    "a 0.0-1.0 scale:\n"
+    "- groundedness: is every factual claim in the answer supported by the "
+    "SOURCE TEXT below? Judge this against the source text ONLY. An answer "
+    "that is true but not present in the source text is not grounded. An "
+    "answer that correctly says the source text does not cover the question "
+    "is fully grounded.\n"
     "- relevance: does the answer actually address the user's question?\n"
+    "- correctness: does the answer agree with the REFERENCE ANSWER? Omit "
+    "this score entirely if no reference answer is given.\n"
     "Respond with ONLY a JSON object, no prose, no markdown fence, in exactly "
-    'this shape: {"groundedness": 0.0, "relevance": 0.0, "reason": "..."}'
+    'this shape: {"groundedness": 0.0, "relevance": 0.0, "correctness": 0.0, '
+    '"reason": "..."}'
 )
 
 
@@ -41,18 +56,25 @@ _SYSTEM_PROMPT = (
 class JudgeScore:
     groundedness: float
     relevance: float
+    # `None` when the case supplied no reference answer, or when the judge
+    # declined to score it. Distinct from 0.0, which means "contradicts the
+    # reference" - averaging those together would punish every case that
+    # simply has no gold answer.
+    correctness: float | None
     reason: str
 
 
 class Judge:
-    """Scores one answer against its question and context, or gives up quietly."""
+    """Scores one answer against its question, its sources and its gold answer."""
 
     def __init__(self, *, model: ChatModel, model_name: str, tracer: Tracer) -> None:
         self._model = model
         self._model_name = model_name
         self._tracer = tracer
 
-    async def score(self, *, question: str, answer: str, context: str) -> JudgeScore | None:
+    async def score(
+        self, *, question: str, answer: str, context: str, reference: str | None = None
+    ) -> JudgeScore | None:
         """Judge one answer. Never raises - a broken judge call costs one
         metric a `None`, never the eval run that asked for it."""
         if not answer.strip():
@@ -66,7 +88,8 @@ class Judge:
                 role="user",
                 content=(
                     f"Question: {question}\n\n"
-                    f"Context the assistant had available:\n{context or '(none)'}\n\n"
+                    f"SOURCE TEXT the answer had to be drawn from:\n{context or '(none)'}\n\n"
+                    f"REFERENCE ANSWER:\n{reference or '(none given - omit correctness)'}\n\n"
                     f"Assistant's answer:\n{answer}"
                 ),
             ),
@@ -88,7 +111,7 @@ class Judge:
                         parts.append(chunk.text)
 
                 raw = "".join(parts).strip()
-                score = _parse(raw)
+                score = _parse(raw, has_reference=reference is not None)
                 if score is None:
                     logger.warning(f"Judge produced unparseable output: {raw[:200]!r}")
                     span.record_error(ValueError("unparseable judge output"))
@@ -102,7 +125,7 @@ class Judge:
                 return None
 
 
-def _parse(raw: str) -> JudgeScore | None:
+def _parse(raw: str, *, has_reference: bool) -> JudgeScore | None:
     """Pull a `JudgeScore` out of text that may be wrapped in prose or a
     markdown fence - models routinely do both even when told not to."""
     candidate = raw.strip()
@@ -125,9 +148,24 @@ def _parse(raw: str) -> JudgeScore | None:
         return JudgeScore(
             groundedness=_clamp(float(payload["groundedness"])),
             relevance=_clamp(float(payload["relevance"])),
+            # Dropped unless the case actually gave a reference to compare
+            # against. A model told to omit the field routinely emits it
+            # anyway, and a score of "how well does this match nothing" would
+            # go straight into the suite mean.
+            correctness=_optional_correctness(payload) if has_reference else None,
             reason=str(payload.get("reason", "")),
         )
     except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _optional_correctness(payload: dict[str, object]) -> float | None:
+    value = payload.get("correctness")
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return _clamp(float(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
         return None
 
 

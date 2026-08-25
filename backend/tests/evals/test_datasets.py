@@ -99,3 +99,40 @@ def test_ci_tagged_cases_exist(name: str) -> None:
     nothing, which is the same failure mode the integration job guards
     against with its skip check."""
     assert any(_CI_TAG in case.tags for case in _load(name))
+
+
+def test_the_empty_account_is_exercised() -> None:
+    """`ToolRoutingPolicy` reads an empty account in the opposite direction to
+    a full one: it refuses `retrieve_documents` and stops holding `search_web`
+    back. A dataset with no `owner: "empty"` case tests one arm of a two-armed
+    gate, and the untested arm is every account's first session."""
+    cases = [case for name in _DATASETS for case in _load(name)]
+    assert [case.id for case in cases if case.owner == "empty"]
+
+
+def test_an_ordering_rule_is_exercised() -> None:
+    """The one rule the routing gate exists for is an ordering rule -
+    retrieval answers before a web search is paid for. Membership alone cannot
+    state it: a run that searched first and retrieved afterwards has exactly
+    the same `tools` set as a run that got it right."""
+    cases = [case for name in _DATASETS for case in _load(name)]
+    assert [case.id for case in cases if case.expect.tool_order]
+
+
+@pytest.mark.parametrize("name", _DATASETS)
+def test_forbidden_canaries_exist_in_a_fixture(name: str) -> None:
+    """A canary that is nowhere in the corpus cannot leak, so a case forbidding
+    it passes without the agent having resisted anything. Only `CANARY-`
+    strings are checked: the other `must_not_contain` entries are ordinary
+    facts from a *different* fixture, and those are meant to be absent from
+    the one the case reads."""
+    corpus = "\n".join(
+        path.read_text(encoding="utf-8") for path in _FIXTURES_DIR.iterdir() if path.is_file()
+    )
+    unplanted = [
+        f"{case.id}: {needle}"
+        for case in _load(name)
+        for needle in case.expect.must_not_contain
+        if needle.startswith("CANARY-") and needle not in corpus
+    ]
+    assert not unplanted

@@ -3,6 +3,14 @@
 The markdown table is the actual deliverable: it is what gets pasted into a
 PR description or the README, and a metric with nowhere legible to land is a
 metric nobody looks at again.
+
+Two lists come out of a run, not one, and keeping them apart is the point of
+this module's shape. A `regression` is the model doing the wrong thing - a
+missed tool, a leaked canary, a document it failed to find. An `error` is the
+run itself falling over - a rate limit, a dropped connection, a provider
+outage. The old report concatenated both into `failures`, so a red run said
+nothing about whether to fix a prompt or just run it again, and a flaky
+afternoon looked exactly like a quality regression.
 """
 
 import json
@@ -32,10 +40,27 @@ class RunReport:
     tags: tuple[str, ...]
     suites: tuple[SuiteReport, ...]
     case_ids: tuple[str, ...]
-    # "<case id>: <reason>" for every case that errored or came back
-    # `ReplyFailed` - the human-readable punch list a markdown table alone
-    # cannot give.
-    failures: tuple[str, ...]
+    # How many replies the run actually generated: one per case per `--repeat`.
+    # Reported next to the case count because every rate above is a mean over
+    # samples, and a rate over 60 samples of 20 cases says something a rate
+    # over 20 says less well.
+    samples: int
+    # "<case id>: <what the model got wrong>" - the human-readable punch list a
+    # markdown table alone cannot give. A case is here only when it got it
+    # wrong in *every* sample.
+    regressions: tuple[str, ...]
+    # "<case id>: failed n/m samples" - the case is not stable, so no verdict
+    # drawn from one sample of it is either. Kept out of `regressions` on
+    # purpose: a red build people re-run until it passes is how a real
+    # regression gets waved through.
+    flaky: tuple[str, ...] = ()
+    # "<case id>: <why the run broke>" - infrastructure, not quality. A sample
+    # here was never graded, so it appears in none of the rates above.
+    errors: tuple[str, ...] = ()
+
+    @property
+    def graded(self) -> int:
+        return self.samples - len(self.errors)
 
 
 def write_json(report: RunReport, out: Path) -> None:
@@ -58,6 +83,7 @@ def render_markdown(report: RunReport) -> str:
         f"- **model**: `{report.model}`",
         f"- **tags**: {', '.join(report.tags) if report.tags else '(none)'}",
         f"- **cases**: {len(report.case_ids)}",
+        f"- **samples**: {report.samples} ({report.graded} graded)",
         "",
     ]
     for suite in report.suites:
@@ -68,16 +94,20 @@ def render_markdown(report: RunReport) -> str:
         lines.extend(f"| {name} | {value} | {n} |" for name, value, n in _rows(suite))
         lines.append("")
 
-    if report.failures:
-        lines.append("## Failures")
-        lines.append("")
-        lines.extend(f"- {failure}" for failure in report.failures)
-        lines.append("")
-    else:
-        lines.append("No failures.")
-        lines.append("")
-
+    lines.extend(_punch_list("Regressions", report.regressions, "No regressions."))
+    # Only when there are any. A single-sample run can never produce one, and a
+    # standing "No flaky cases." line there would read as proof of stability
+    # the run never looked for.
+    if report.flaky:
+        lines.extend(_punch_list("Flaky (unstable across samples)", report.flaky, ""))
+    lines.extend(_punch_list("Errors (not graded)", report.errors, "No errors."))
     return "\n".join(lines)
+
+
+def _punch_list(heading: str, entries: tuple[str, ...], empty: str) -> list[str]:
+    if not entries:
+        return [empty, ""]
+    return [f"## {heading}", "", *(f"- {entry}" for entry in entries), ""]
 
 
 def _rows(suite: SuiteReport) -> list[tuple[str, str, int]]:
@@ -90,22 +120,24 @@ def _rows(suite: SuiteReport) -> list[tuple[str, str, int]]:
             ("mean_precision", f"{t.mean_precision:.2f}", t.n),
             ("mean_recall", f"{t.mean_recall:.2f}", t.n),
             ("over_calling_rate", f"{t.over_calling_rate:.2f}", t.n),
+            ("under_calling_rate", f"{t.under_calling_rate:.2f}", t.n),
+            ("order_pass_rate", f"{t.order_pass_rate:.2f}", t.n),
+            ("refusal_rate", f"{t.refusal_rate:.2f}", t.n),
         ]
 
     if suite.retrieval is not None:
         r = suite.retrieval
         rows += [
-            ("hit_rate@k", f"{r.hit_rate_at_k:.2f}", r.n),
-            ("mrr@k", f"{r.mrr_at_k:.2f}", r.n),
+            ("hit_rate@k", _optional(r.hit_rate_at_k), r.scored),
+            ("mrr@k", _optional(r.mrr_at_k), r.scored),
         ]
 
     if suite.generation is not None:
         g = suite.generation
-        groundedness = f"{g.mean_groundedness:.2f}" if g.mean_groundedness is not None else "n/a"
-        relevance = f"{g.mean_relevance:.2f}" if g.mean_relevance is not None else "n/a"
         rows += [
-            ("mean_groundedness", groundedness, g.judged),
-            ("mean_relevance", relevance, g.judged),
+            ("mean_groundedness", _optional(g.mean_groundedness), g.judged),
+            ("mean_relevance", _optional(g.mean_relevance), g.judged),
+            ("mean_correctness", _optional(g.mean_correctness), g.judged),
             ("substring_pass_rate", f"{g.substring_pass_rate:.2f}", g.n),
         ]
 
@@ -119,3 +151,13 @@ def _rows(suite: SuiteReport) -> list[tuple[str, str, int]]:
         ]
 
     return rows
+
+
+def _optional(value: float | None) -> str:
+    """ "n/a", not 0.00, when nothing contributed to a mean.
+
+    The two look alike in a table and mean opposite things: 0.00 is a metric
+    the run measured and failed, "n/a" is a metric nothing in the run was
+    asking for.
+    """
+    return f"{value:.2f}" if value is not None else "n/a"
