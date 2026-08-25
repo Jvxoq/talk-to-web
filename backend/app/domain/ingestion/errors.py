@@ -27,3 +27,17 @@ class DocumentNotFound(IngestionError):
     def __init__(self, document_id: int) -> None:
         self.document_id = document_id
         super().__init__(f"Document {document_id} not found")
+
+
+class UnknownConversation(IngestionError):
+    """The thread an upload named is not one this account owns.
+
+    Checked rather than trusted. A document filed under a stranger's thread is
+    already unreadable - every search matches owner and conversation together -
+    but writing it at all lets one account put rows and vectors into another's
+    space, and the storage bill follows the wrong person.
+    """
+
+    def __init__(self, conversation_id: int) -> None:
+        self.conversation_id = conversation_id
+        super().__init__(f"Conversation {conversation_id} not found")

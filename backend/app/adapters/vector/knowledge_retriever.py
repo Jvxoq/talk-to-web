@@ -33,20 +33,29 @@ class EmbeddedKnowledgeRetriever:
         self._limit = limit
         self._score_threshold = score_threshold
 
-    async def retrieve(self, query: str, owner_id: int) -> list[Passage]:
-        """Embed the query and return this owner's passages closest to it.
+    async def retrieve(
+        self, query: str, owner_id: int, conversation_id: int | None
+    ) -> list[Passage]:
+        """Embed the query and return this thread's passages closest to it.
+
+        No conversation means no attached documents, so the embedding call is
+        skipped entirely - it would be paid for and then filtered to nothing.
 
         Translates the ingestion context's `Chunk` into chat's own `Passage`
         here, at the seam - the one place allowed to know both shapes - so
         that a source name earned by a vector search reaches the tool above it
         as chat's own vocabulary, not ingestion's.
         """
+        if conversation_id is None:
+            return []
+
         vector = await self._embedder.embed(query)
         chunks = await self._index.search(
             vector=vector,
             limit=self._limit,
             score_threshold=self._score_threshold,
             owner_id=owner_id,
+            conversation_id=conversation_id,
         )
         logger.debug(f"Retrieved {len(chunks)} passages for a {len(query)} char query")
         return [Passage(text=chunk.text, source=chunk.source) for chunk in chunks]

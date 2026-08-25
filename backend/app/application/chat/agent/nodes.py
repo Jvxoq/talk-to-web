@@ -47,6 +47,16 @@ class Node(Protocol):
 _SUMMARY_CHARS = 120
 
 
+def _optional_int(value: Any) -> int | None:
+    """Read a config value that is allowed to be absent.
+
+    A turn with no conversation is a real shape - a client that never opened
+    one - so a missing thread id is `None` rather than an error. It is not a
+    permissive default: no thread owns no documents, so this fails closed.
+    """
+    return None if value is None else int(value)
+
+
 def _summarise(call: ToolCall) -> str:
     """A one-line, human-readable version of what the tool was asked for."""
     if not call.arguments:
@@ -168,6 +178,10 @@ def make_tool_node(
         messages = state.messages
         context = ToolContext(
             owner_id=int(configurable["owner_id"]),
+            # Rides the config next to `owner_id`, and for the same reason:
+            # which thread is asking is a fact about the request, never
+            # something the model may name.
+            conversation_id=_optional_int(configurable.get("conversation_id")),
             document_scoped=bool(configurable["document_scoped"]),
             # `.get`, unlike the two above, and for the reason they are not:
             # the argument for subscripting is that a missing value would

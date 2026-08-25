@@ -3,7 +3,7 @@
 from datetime import datetime
 
 from loguru import logger
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -47,6 +47,15 @@ class SqlAlchemyConversationRepository:
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def count_by_owner(self, owner_id: int) -> int:
+        """How many conversations this account holds, for the per-account cap."""
+        statement = (
+            select(func.count())
+            .select_from(ConversationModel)
+            .where(ConversationModel.owner_id == owner_id)
+        )
+        return int((await self._session.execute(statement)).scalar_one())
 
     async def get(self, conversation_id: int, owner_id: int) -> Conversation | None:
         """Load this owner's conversation with its messages, or `None`.
@@ -144,6 +153,26 @@ class SqlAlchemyDocumentRepository:
         statement = (
             select(DocumentModel)
             .where(DocumentModel.owner_id == owner_id)
+            .order_by(DocumentModel.created_at.desc())
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [document_to_domain(row) for row in rows]
+
+    async def list_by_conversation(
+        self, owner_id: int, conversation_id: int
+    ) -> list[UploadedDocument]:
+        """This owner's documents attached to one thread, newest first.
+
+        Both columns are matched, not just `conversation_id`: a thread id is a
+        number a client sends, and the owner check is what keeps it from naming
+        someone else's conversation.
+        """
+        statement = (
+            select(DocumentModel)
+            .where(
+                DocumentModel.owner_id == owner_id,
+                DocumentModel.conversation_id == conversation_id,
+            )
             .order_by(DocumentModel.created_at.desc())
         )
         rows = (await self._session.execute(statement)).scalars().all()

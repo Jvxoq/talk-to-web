@@ -1,16 +1,19 @@
 import { ApiError, requireStringFields } from '../../lib/http'
 import { authorizedFetch } from '../../lib/session'
+import { parseSummarizing } from './summarizing'
 import { parseUsage } from './usage'
-import type { Model, ToolActivity, UploadedFile, Usage } from './types'
+import type { Model, Summarizing, ToolActivity, UploadedFile, Usage } from './types'
 
 const API_URL = import.meta.env.VITE_API_URL ?? '/generate/text/'
 const UPLOAD_URL = import.meta.env.VITE_UPLOAD_URL ?? '/upload/file/'
+const DOCUMENTS_URL = import.meta.env.VITE_DOCUMENTS_URL ?? '/documents/'
 const MODELS_URL = import.meta.env.VITE_MODELS_URL ?? '/models/'
 
 /** One parsed frame off the SSE stream. */
 export type StreamEvent =
   | { type: 'delta'; text: string }
   | { type: 'tool'; activity: ToolActivity }
+  | { type: 'summarizing'; summarizing: Summarizing }
   | { type: 'usage'; usage: Usage }
   | { type: 'error'; message: string }
 
@@ -26,6 +29,8 @@ interface StreamRequest {
 interface StreamFrame {
   delta?: string
   tool?: ToolActivity
+  /** Raw and unnarrowed here — `parseSummarizing` does the boundary check below. */
+  summarizing?: unknown
   /** Raw and unnarrowed here — `parseUsage` does the boundary check below. */
   usage?: unknown
   done?: boolean
@@ -132,6 +137,10 @@ export async function* streamChat({
         if (parsed.tool !== undefined) {
           yield { type: 'tool', activity: parsed.tool }
         }
+        if (parsed.summarizing !== undefined) {
+          const summarizing = parseSummarizing(parsed.summarizing)
+          if (summarizing) yield { type: 'summarizing', summarizing }
+        }
         if (parsed.usage !== undefined) {
           // A frame this build doesn't yet know the shape of is dropped, the
           // same way an unparsable frame is dropped above — not a reason to
@@ -150,10 +159,14 @@ export async function* streamChat({
 
 export async function uploadPdf(
   file: File,
+  conversationId: number,
   signal?: AbortSignal,
 ): Promise<UploadedFile> {
   const formData = new FormData()
   formData.append('file', file)
+  // The thread the file is attached to. A document belongs to one conversation
+  // and is only searchable from that one, so there is no upload without it.
+  formData.append('conversation_id', String(conversationId))
 
   const response = await authorizedFetch(UPLOAD_URL, {
     method: 'POST',
@@ -166,8 +179,29 @@ export async function uploadPdf(
     throw new ApiError(response.status, failure.detail, failure.retryAfterSeconds)
   }
 
-  const parsed = requireStringFields(await response.json(), ['file_path'], 'Upload')
-  return { name: file.name, path: parsed.file_path }
+  const body: unknown = await response.json()
+  const parsed = requireStringFields(body, ['file_path'], 'Upload')
+  const id = (body as Record<string, unknown>).document_id
+  if (typeof id !== 'number') {
+    throw new ApiError(0, 'Upload: missing "document_id"')
+  }
+  return { name: file.name, path: parsed.file_path, id }
+}
+
+/**
+ * Detaches a document: its passages, its stored file and its row all go.
+ *
+ * A POST rather than a DELETE for the same reason conversation deletion is one:
+ * this app's CORS policy allows GET, POST and OPTIONS across origins, nothing
+ * else. A 404 means it is already gone, which is the outcome the caller wanted.
+ */
+export async function deleteDocument(documentId: number): Promise<void> {
+  const base = DOCUMENTS_URL.endsWith('/') ? DOCUMENTS_URL : `${DOCUMENTS_URL}/`
+  const response = await authorizedFetch(`${base}${documentId}/delete`, { method: 'POST' })
+
+  if (!response.ok && response.status !== 404) {
+    throw new ApiError(response.status, `Could not remove document ${documentId}`)
+  }
 }
 
 export interface ModelsResponse {

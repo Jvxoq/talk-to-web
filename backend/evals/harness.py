@@ -28,9 +28,10 @@ whatever is indexed is what the reply is told exists.
 
 import asyncio
 import time
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from itertools import count
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlsplit
@@ -70,7 +71,7 @@ from app.application.chat.tools.retrieve_documents import RetrieveDocuments
 from app.application.chat.tools.search_web import SearchWeb
 from app.application.chat.use_cases.generate_reply import GenerateReply
 from app.domain.ingestion.entities import Document, UploadedDocument
-from app.domain.ingestion.value_objects import DocumentName
+from app.domain.ingestion.value_objects import Chunk, DocumentName
 from app.settings import Settings
 from evals.cases import EvalCase, Owner
 from evals.judge import Judge
@@ -117,6 +118,20 @@ fenced list of `name: summary` lines - is identical either way, and that shape
 is what the routing decision reads."""
 
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+EVAL_CONVERSATION_ID = 1
+"""The one thread every eval fixture is filed under.
+
+Production scopes a search to the thread the file was attached to. An eval run
+has one shelf and many cases, so the harness pins that scope rather than
+dropping it - see `_PinnedConversationIndex`."""
+
+_case_threads = count(start=1000)
+"""Thread ids handed out one per case, so no case remembers another's turns.
+
+Deliberately not `EVAL_CONVERSATION_ID`: memory and the document shelf are two
+different scopes here, and collapsing them would let case order change an
+answer."""
 
 
 def owner_id_for(owner: Owner) -> int:
@@ -202,13 +217,68 @@ class _Shelf:
 
 
 class _ShelfDocumentRepository:
-    """The half of `DocumentRepository` a reply actually reads: the list."""
+    """The half of `DocumentRepository` a reply actually reads: the list.
+
+    Both lists answer from the same shelf, and the conversation is ignored on
+    purpose. In production a document belongs to one thread; here the shelf is
+    the whole point of the run and every case must see it, while each case
+    still gets a thread of its own so no case remembers another's turns.
+    """
 
     def __init__(self, shelf: _Shelf) -> None:
         self._shelf = shelf
 
     async def list_by_owner(self, owner_id: int) -> list[UploadedDocument]:
         return self._shelf.get(owner_id)
+
+    async def list_by_conversation(
+        self, owner_id: int, conversation_id: int
+    ) -> list[UploadedDocument]:
+        return self._shelf.get(owner_id)
+
+
+class _PinnedConversationIndex:
+    """A `VectorIndex` that files and reads every passage under one thread.
+
+    The eval store holds one shelf per owner, and every case must be able to
+    reach it - but each case runs in a thread of its own so nothing it says is
+    remembered by the next. Those two facts pull against the production rule
+    that a search only sees the thread it was asked in, so the rule is pinned
+    here rather than bent: the wrapper supplies the conversation on both sides,
+    and the real filter still runs underneath.
+    """
+
+    def __init__(self, index: QdrantVectorIndex, conversation_id: int) -> None:
+        self._index = index
+        self._conversation_id = conversation_id
+
+    async def ensure(self, dimensions: int) -> None:
+        await self._index.ensure(dimensions)
+
+    async def upsert(
+        self,
+        chunks: Sequence[Chunk],
+        vectors: Sequence[list[float]],
+        owner_id: int,
+        document_id: int,
+        conversation_id: int | None = None,
+    ) -> None:
+        await self._index.upsert(chunks, vectors, owner_id, document_id, self._conversation_id)
+
+    async def search(
+        self,
+        vector: list[float],
+        limit: int,
+        score_threshold: float,
+        owner_id: int,
+        conversation_id: int | None = None,
+    ) -> list[Chunk]:
+        return await self._index.search(
+            vector, limit, score_threshold, owner_id, self._conversation_id
+        )
+
+    async def delete_document(self, document_id: int, owner_id: int) -> None:
+        await self._index.delete_document(document_id, owner_id)
 
 
 class _ShelfUnitOfWork:
@@ -285,7 +355,9 @@ class EvalHarness:
             if not chunks:
                 continue
             vectors = [await self.embedder.embed(chunk.text) for chunk in chunks]
-            await self.vector_index.upsert(chunks, vectors, EVAL_OWNER_ID, document_id)
+            await self.vector_index.upsert(
+                chunks, vectors, EVAL_OWNER_ID, document_id, EVAL_CONVERSATION_ID
+            )
             total_chunks += len(chunks)
             shelf.append(
                 UploadedDocument(
@@ -338,8 +410,10 @@ class EvalHarness:
                     temperature=temperature,
                     # Every case is its own thread: cross-case state would make
                     # one case's answer depend on run order, which is exactly
-                    # what an eval must not do.
-                    conversation_id=None,
+                    # what an eval must not do. A number rather than `None`,
+                    # because a turn with no thread owns no documents and the
+                    # rag suite would then have nothing to retrieve.
+                    conversation_id=next(_case_threads),
                 )
             )
             async for event in events:
@@ -485,7 +559,8 @@ async def build_harness(
     )
     knowledge = EmbeddedKnowledgeRetriever(
         embedder=embedder,
-        index=vector_index,
+        # Pinned, so a case's own thread id never decides which shelf it reads.
+        index=_PinnedConversationIndex(vector_index, EVAL_CONVERSATION_ID),
         limit=settings.retrieval_limit,
         score_threshold=settings.retrieval_score_threshold,
     )

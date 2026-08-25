@@ -3,7 +3,7 @@
 from collections.abc import AsyncIterator
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, File, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, File, Form, UploadFile, status
 from starlette.responses import Response
 
 from app.api.dependencies import (
@@ -30,6 +30,9 @@ async def _chunks(file: UploadFile, size: int) -> AsyncIterator[bytes]:
 @router.post("/upload/file/")
 async def upload_file(
     file: Annotated[UploadFile, File()],
+    # Part of the multipart body rather than the path, because the file and the
+    # thread it is attached to arrive together and neither is meaningful alone.
+    conversation_id: Annotated[int, Form()],
     upload_document: UploadDocumentDep,
     index_document: IndexDocumentDep,
     background: BackgroundTasks,
@@ -41,6 +44,7 @@ async def upload_file(
             content_type=file.content_type,
             stream=_chunks(file, _CHUNK_BYTES),
             owner_id=user.user_id,
+            conversation_id=conversation_id,
         )
     )
 
@@ -48,12 +52,18 @@ async def upload_file(
     # visibility. That is acceptable while a failed index only costs the user a
     # re-upload; the day indexing has to be guaranteed it belongs on a real queue.
     background.add_task(
-        index_document, result.reference, result.name, result.document_id, user.user_id
+        index_document,
+        result.reference,
+        result.name,
+        result.document_id,
+        user.user_id,
+        conversation_id,
     )
 
     return FileUploadResponse(
         message="File uploaded successfully",
         file_path=result.reference,
+        document_id=result.document_id,
     )
 
 

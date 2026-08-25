@@ -6,7 +6,7 @@ inherits from a Protocol — structural typing is the whole point of the seam.
 """
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -46,6 +46,9 @@ class FakeConversationRepository:
         if row is None or row.owner_id != owner_id:
             return None
         return row
+
+    async def count_by_owner(self, owner_id: int) -> int:
+        return sum(1 for row in self.rows.values() if row.owner_id == owner_id)
 
     async def list_by_owner(self, owner_id: int) -> list[Conversation]:
         matches = [row for row in self.rows.values() if row.owner_id == owner_id]
@@ -219,9 +222,21 @@ class FakeDocumentRepository:
         return row
 
     async def list_by_owner(self, owner_id: int) -> list[UploadedDocument]:
-        matches = [row for row in self.rows.values() if row.owner_id == owner_id]
+        return self._newest_first(row for row in self.rows.values() if row.owner_id == owner_id)
+
+    async def list_by_conversation(
+        self, owner_id: int, conversation_id: int
+    ) -> list[UploadedDocument]:
+        return self._newest_first(
+            row
+            for row in self.rows.values()
+            if row.owner_id == owner_id and row.conversation_id == conversation_id
+        )
+
+    @staticmethod
+    def _newest_first(rows: Iterable[UploadedDocument]) -> list[UploadedDocument]:
         return sorted(
-            matches, key=lambda d: d.created_at or datetime.min.replace(tzinfo=UTC), reverse=True
+            rows, key=lambda d: d.created_at or datetime.min.replace(tzinfo=UTC), reverse=True
         )
 
     async def add(self, document: UploadedDocument) -> UploadedDocument:
@@ -241,6 +256,25 @@ class FakeDocumentRepository:
         row = self.rows.get(document_id)
         if row is not None and row.owner_id == owner_id:
             del self.rows[document_id]
+
+
+class FakeDocumentRemover:
+    """Satisfies `DocumentRemover` by recording what it was asked to remove.
+
+    A fake rather than the real `DeleteDocument`, because the callers under
+    test here own a different question: did they ask for the right document to
+    go, and did they carry on when it would not. What "gone" means is
+    `DeleteDocument`'s own test.
+    """
+
+    def __init__(self, fail_with: Exception | None = None) -> None:
+        self.removed: list[tuple[int, int]] = []
+        self.fail_with = fail_with
+
+    async def __call__(self, document_id: int, owner_id: int) -> None:
+        self.removed.append((document_id, owner_id))
+        if self.fail_with is not None:
+            raise self.fail_with
 
 
 class FakeDocumentSummarizer:
@@ -460,9 +494,15 @@ class FakeKnowledgeRetriever:
         # Recorded so a test can assert *whose* documents were searched, which is
         # the whole isolation guarantee.
         self.owners: list[int] = []
+        # And which thread's - the other half of the same guarantee, now that a
+        # document belongs to one conversation rather than to the account.
+        self.conversations: list[int | None] = []
 
-    async def retrieve(self, query: str, owner_id: int) -> list[Passage]:
+    async def retrieve(
+        self, query: str, owner_id: int, conversation_id: int | None
+    ) -> list[Passage]:
         self.owners.append(owner_id)
+        self.conversations.append(conversation_id)
         if self.fail_with is not None:
             raise self.fail_with
         return list(self.passages)
@@ -528,6 +568,9 @@ class FakeVectorIndex:
         self.deleted_documents: list[tuple[int, int]] = []
         self.by_owner: dict[int, list[Chunk]] = {}
         self._by_document: dict[tuple[int, int], list[Chunk]] = {}
+        # Keyed by (owner, conversation), so a test can prove one thread cannot
+        # read a file the same person attached to another.
+        self.by_conversation: dict[tuple[int, int | None], list[Chunk]] = {}
 
     @property
     def chunks(self) -> list[Chunk]:
@@ -549,23 +592,45 @@ class FakeVectorIndex:
         else:
             self.by_owner.pop(owner_id, None)
 
+        for key, chunks in list(self.by_conversation.items()):
+            if key[0] != owner_id:
+                continue
+            left = [chunk for chunk in chunks if chunk not in removed]
+            if left:
+                self.by_conversation[key] = left
+            else:
+                self.by_conversation.pop(key)
+
     async def upsert(
         self,
         chunks: Sequence[Chunk],
         vectors: Sequence[list[float]],
         owner_id: int,
         document_id: int,
+        conversation_id: int | None = None,
     ) -> None:
         assert len(chunks) == len(vectors), "one vector per chunk"
         self.by_owner.setdefault(owner_id, []).extend(chunks)
         self._by_document.setdefault((owner_id, document_id), []).extend(chunks)
+        self.by_conversation.setdefault((owner_id, conversation_id), []).extend(chunks)
 
     async def search(
-        self, vector: list[float], limit: int, score_threshold: float, owner_id: int
+        self,
+        vector: list[float],
+        limit: int,
+        score_threshold: float,
+        owner_id: int,
+        conversation_id: int | None = None,
     ) -> list[Chunk]:
-        # `hits` is the scripted answer, but only for an owner who has something
-        # indexed - an owner with nothing uploaded must come back empty.
-        if not self.by_owner.get(owner_id):
+        # `hits` is the scripted answer, but only where something is actually
+        # indexed - a thread with nothing attached must come back empty, the
+        # same way an owner with nothing uploaded does.
+        indexed = (
+            self.by_conversation.get((owner_id, conversation_id))
+            if conversation_id is not None
+            else self.by_owner.get(owner_id)
+        )
+        if not indexed:
             return []
         return [Chunk(text=hit, source="fake") for hit in self.hits[:limit]]
 

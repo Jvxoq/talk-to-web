@@ -3,13 +3,14 @@
 import asyncio
 import time
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from loguru import logger
 
 from app.application.chat.agent.graph import AgentGraph
 from app.application.chat.agent.nodes import DELTA, TOOL_END, TOOL_START
+from app.application.chat.agent.progress import SUMMARIZE
 from app.application.chat.agent.state import AgentState
 from app.application.chat.agent.usage import USAGE
 from app.application.chat.dto import (
@@ -18,6 +19,7 @@ from app.application.chat.dto import (
     ReplyDelta,
     ReplyEvent,
     ReplyFailed,
+    ReplySummarizing,
     ReplyToolFinished,
     ReplyToolStarted,
     ReplyUsage,
@@ -139,14 +141,25 @@ class GenerateReply:
         # whether the document tool is worth offering at all. One query, not
         # three, and outside `_stream` so a database hiccup here is still an
         # HTTP error rather than a truncated reply.
-        return self._stream(data, verdict, await self._owned_documents(data.owner_id))
+        return self._stream(
+            data,
+            verdict,
+            await self._owned_documents(data.owner_id, data.conversation_id),
+        )
 
     def _digest_documents(self, documents: list[UploadedDocument]) -> list[UploadedDocument]:
         """The newest few - all that fit in front of the model each turn."""
         return documents[: self._max_digest_documents]
 
-    async def _owned_documents(self, owner_id: int) -> list[UploadedDocument] | None:
-        """This owner's uploads, newest first, or `None` if they cannot be read.
+    async def _owned_documents(
+        self, owner_id: int, conversation_id: int | None
+    ) -> list[UploadedDocument] | None:
+        """This thread's uploads, newest first, or `None` if they cannot be read.
+
+        Scoped to the conversation, not to the account. The digest is what tells
+        the model which files exist, and listing files attached to a different
+        chat would invite it to retrieve passages this thread cannot reach -
+        the gate would open on a document the search then filters away.
 
         Swallowed on failure for the same reason the tools are: knowing what a
         user uploaded makes a better answer, and not knowing must never cost
@@ -162,11 +175,20 @@ class GenerateReply:
         that would have found them. Callers that only want to read the list can
         still treat the two the same; the gate must not.
         """
+        # A turn with no conversation owns no documents, and that is a fact
+        # rather than a failed read: `[]`, not `None`, so the gate closes and
+        # no retrieval is attempted.
+        if conversation_id is None:
+            return []
+
         try:
             async with self._uow_factory() as uow:
-                return await uow.documents.list_by_owner(owner_id)
+                return await uow.documents.list_by_conversation(owner_id, conversation_id)
         except Exception as exc:
-            logger.warning(f"Could not read documents for owner {owner_id}: {exc}")
+            logger.warning(
+                f"Could not read documents for owner {owner_id} "
+                f"in conversation {conversation_id}: {exc}"
+            )
             return None
 
     async def _stream(
@@ -206,6 +228,11 @@ class GenerateReply:
                 # Read back by the tool node, which passes it to the tools that
                 # search the user's own documents.
                 "owner_id": data.owner_id,
+                # The thread whose documents a retrieval may read. Passed for
+                # the same reason as `owner_id` and next to it: both narrow the
+                # search to what this request is allowed to see, and neither is
+                # anything the model may name.
+                "conversation_id": data.conversation_id,
                 # Whether this turn is about files the user supplied - the
                 # input to the tool routing policy.
                 #
@@ -576,6 +603,32 @@ def _to_event(payload: object) -> ReplyEvent | None:
         return ReplyToolFinished(
             name=str(payload.get("name", "")), ok=bool(payload.get("ok")), sources=sources
         )
+
+    if kind == SUMMARIZE:
+        raw_status = str(payload.get("status", ""))
+        status: Literal["start", "done"]
+        if raw_status == "start":
+            status = "start"
+        elif raw_status == "done":
+            status = "done"
+        else:
+            logger.debug(f"Ignoring summarization payload with no usable status: {payload!r}")
+            return None
+        after = payload.get("tokens_after")
+        try:
+            return ReplySummarizing(
+                status=status,
+                tokens_before=int(payload.get("tokens_before", 0)),
+                # `None` stays `None`: it means "not known yet", and turning it
+                # into 0 would tell the client the thread was shortened to nothing.
+                tokens_after=None if after is None else int(after),
+            )
+        except (TypeError, ValueError):
+            # Tolerant for the same reason `_record_usage` is: this runs on the
+            # reply path, and a progress notice that cannot be parsed is worth
+            # losing. The reply is not.
+            logger.debug(f"Ignoring malformed summarization payload: {payload!r}")
+            return None
 
     logger.debug(f"Ignoring unknown agent stream payload: {payload!r}")
     return None

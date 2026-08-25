@@ -27,6 +27,11 @@ class ConversationRepository(Protocol):
 
     async def get(self, conversation_id: int, owner_id: int) -> Conversation | None: ...
 
+    async def count_by_owner(self, owner_id: int) -> int:
+        """How many conversations this owner holds. Counted in the query, not
+        by measuring a list - the cap must not pay for loading every row."""
+        ...
+
     async def list_by_owner(self, owner_id: int) -> list[Conversation]:
         """This owner's conversations, most recently updated first, with no messages loaded.
 
@@ -106,9 +111,33 @@ class KnowledgeRetriever(Protocol):
     It does say who is asking. "The user's documents" is only meaningful if the
     search is confined to them, and that confinement belongs in the query the
     store runs, not in a filter applied to results that were already read.
+
+    It also says which conversation is asking. A document belongs to one
+    thread, so a search that only named the owner would read every file the
+    account ever uploaded - the bleed this scoping exists to stop. `None` means
+    no thread, and no thread owns no documents.
     """
 
-    async def retrieve(self, query: str, owner_id: int) -> list[Passage]: ...
+    async def retrieve(
+        self, query: str, owner_id: int, conversation_id: int | None
+    ) -> list[Passage]: ...
+
+
+class DocumentRemover(Protocol):
+    """Removes one document completely: its vectors, its file and its row.
+
+    Declared here as well as in the ingestion context, for the reason
+    `RateLimiter` is declared twice: a port belongs to the layer that needs it,
+    and a chat use case importing an ingestion port would tie two contexts
+    together to save one Protocol. Structural typing means the same object
+    satisfies both.
+
+    Deleting a conversation needs this. The database cascade takes the document
+    rows, but a cascade cannot reach into Qdrant or onto the disk, so without
+    it every deleted thread would leave its passages and its files behind.
+    """
+
+    async def __call__(self, document_id: int, owner_id: int) -> None: ...
 
 
 class Span(Protocol):

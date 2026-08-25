@@ -35,6 +35,10 @@ class RetrieveDocuments(BaseTool[RetrieveDocumentsArgs]):
     "The user's documents" in the description below is load-bearing, not
     marketing: the owner comes from the run context, never from the model, so
     the only documents this can reach are the ones the person asking uploaded.
+    The conversation comes from the same place and narrows it further, to the
+    files attached to this thread - a file the same person uploaded in another
+    chat is out of reach here, which is what stops one document bleeding into
+    an unrelated conversation.
     """
 
     name: ClassVar[str] = "retrieve_documents"
@@ -54,7 +58,9 @@ class RetrieveDocuments(BaseTool[RetrieveDocumentsArgs]):
         self._knowledge = knowledge
 
     async def _run(self, args: RetrieveDocumentsArgs, context: ToolContext) -> ToolResult:
-        passages = await self._knowledge.retrieve(args.query, context.owner_id)
+        passages = await self._knowledge.retrieve(
+            args.query, context.owner_id, context.conversation_id
+        )
         if not passages:
             # An empty string reads to the model as a broken tool, and it tends
             # to retry the same call. A sentence saying "nothing matched" is what

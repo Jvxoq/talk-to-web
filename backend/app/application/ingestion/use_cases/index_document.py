@@ -55,7 +55,12 @@ class IndexDocument:
         self._summarizer = summarizer
 
     async def __call__(
-        self, reference: str, name: str, document_id: int, owner_id: int
+        self,
+        reference: str,
+        name: str,
+        document_id: int,
+        owner_id: int,
+        conversation_id: int,
     ) -> IndexDocumentResult:
         """`reference` is a `TextExtractor`-readable location of the stored file."""
         logger.debug("Indexing {} from {} for owner {}", name, reference, owner_id)
@@ -77,7 +82,9 @@ class IndexDocument:
             batch = chunks[start : start + _EMBED_BATCH_SIZE]
             vectors.extend(await asyncio.gather(*(self._embedder.embed(c.text) for c in batch)))
 
-        await self._index.upsert(chunks, vectors, owner_id, document_id)
+        # The conversation is written onto every point, because it is what
+        # every search filters on. A point without it is retrievable by nobody.
+        await self._index.upsert(chunks, vectors, owner_id, document_id, conversation_id)
 
         summary = await self._digest(name, document.content)
 

@@ -18,6 +18,8 @@ import type { Model } from '../types'
 
 interface ComposerProps {
   model: Model
+  /** The thread an attached file belongs to. Every upload names it. */
+  conversationId: number
   onModelChange: (model: Model) => void
   onSend: (text: string) => void
   isStreaming: boolean
@@ -38,6 +40,7 @@ const stripMotion = {
 
 export function Composer({
   model,
+  conversationId,
   onModelChange,
   onSend,
   isStreaming,
@@ -50,7 +53,7 @@ export function Composer({
   const reduce = useReducedMotion()
 
   const { models, defaultModel } = useModels()
-  const upload = useFileUpload()
+  const upload = useFileUpload(conversationId)
 
   // The caller seeds `model` with a hardcoded fallback before this list can
   // possibly have loaded. Once the real list lands, swap to its default if
@@ -123,7 +126,7 @@ export function Composer({
                   <button
                     type="button"
                     className="attachment-remove"
-                    onClick={upload.clear}
+                    onClick={() => void upload.clear()}
                     aria-label="Remove attached file"
                   >
                     <X strokeWidth={2} aria-hidden="true" />

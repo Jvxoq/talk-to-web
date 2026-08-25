@@ -21,6 +21,7 @@ from app.adapters.vector.qdrant_index import QdrantVectorIndex
 
 DIMENSIONS = 4
 OWNER_FIELD = "owner_id"
+CONVERSATION_FIELD = "conversation_id"
 
 
 @pytest.fixture
@@ -56,6 +57,17 @@ class TestEnsure:
         info = await qdrant.get_collection(collection)
 
         assert OWNER_FIELD in (info.payload_schema or {})
+
+    async def test_it_indexes_the_conversation_field(
+        self, index: QdrantVectorIndex, qdrant: AsyncQdrantClient, collection: str
+    ) -> None:
+        """Every search filters on this one too, so it carries the same cost
+        argument as the owner field: correct without an index, but scanned."""
+        await index.ensure(DIMENSIONS)
+
+        info = await qdrant.get_collection(collection)
+
+        assert CONVERSATION_FIELD in (info.payload_schema or {})
 
     async def test_it_is_idempotent_against_a_live_server(
         self, index: QdrantVectorIndex, qdrant: AsyncQdrantClient, collection: str

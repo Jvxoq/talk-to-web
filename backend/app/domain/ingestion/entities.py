@@ -73,6 +73,13 @@ class UploadedDocument:
     name: str
     reference: str
     owner_id: int
+    # The conversation this upload belongs to. A document is attached to one
+    # thread, never to the account as a whole: two chats about two different
+    # PDFs must not retrieve each other's passages. `None` is the pre-scoping
+    # shape - rows that existed before documents were owned by a conversation -
+    # and such a row matches no conversation filter, so it is invisible to
+    # retrieval until it is deleted.
+    conversation_id: int | None = None
     id: int | None = None
     chunks_indexed: int = 0
     # A few sentences saying what is in this document, written by the condenser

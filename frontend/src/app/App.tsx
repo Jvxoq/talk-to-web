@@ -45,6 +45,7 @@ function Chat({
       <ChatLog messages={messages} isStreaming={isStreaming} />
       <Composer
         model={model}
+        conversationId={conversationId}
         onModelChange={onModelChange}
         onSend={send}
         isStreaming={isStreaming}
@@ -96,6 +97,7 @@ function Shell() {
           isLoading={conversations.isLoading}
           onSelect={conversations.select}
           onNew={() => void conversations.startNew()}
+          error={conversations.error}
           onDelete={(id) => void conversations.remove(id)}
         />
       )}

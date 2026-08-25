@@ -25,10 +25,20 @@ _OWNER_FIELD = "owner_id"
 _DOCUMENT_FIELD = "document_id"
 """The payload key that scopes a point to the one upload it came from.
 
-Search never filters on this - a query should draw from every document an
-owner has uploaded - but a delete does, which is the whole reason it exists:
+Search never filters on this - a query should draw from every document the
+thread holds - but a delete does, which is the whole reason it exists:
 without it, removing one document could only ever mean removing all of an
 owner's passages.
+"""
+
+_CONVERSATION_FIELD = "conversation_id"
+"""The payload key that scopes a point to the thread the file was attached to.
+
+Search filters on this as well as on the owner. Without it a question in one
+chat retrieved passages from a file uploaded in another, which is bleed the
+user never asked for and cannot see. Points written before this field existed
+carry no value for it, so they match no filter and are unreachable by search -
+that is the intended outcome, not a gap: they belong to no thread.
 """
 
 
@@ -87,6 +97,14 @@ class QdrantVectorIndex:
                 field_schema=PayloadSchemaType.INTEGER,
                 wait=True,
             )
+            # Every search filters on this one, so it carries the same argument
+            # as the owner index above: correct without it, but scanned.
+            await self._client.create_payload_index(
+                collection_name=self._collection,
+                field_name=_CONVERSATION_FIELD,
+                field_schema=PayloadSchemaType.INTEGER,
+                wait=True,
+            )
         except (ApiException, ResponseHandlingException) as error:
             logger.error(f"Failed to prepare collection {self._collection}: {error}")
             raise RuntimeError(f"Vector index preparation failed: {error}") from error
@@ -112,6 +130,7 @@ class QdrantVectorIndex:
         vectors: Sequence[list[float]],
         owner_id: int,
         document_id: int,
+        conversation_id: int | None,
     ) -> None:
         """Write every chunk and its vector to the collection in one call."""
         if len(chunks) != len(vectors):
@@ -129,6 +148,7 @@ class QdrantVectorIndex:
                 payload={
                     _OWNER_FIELD: owner_id,
                     _DOCUMENT_FIELD: document_id,
+                    _CONVERSATION_FIELD: conversation_id,
                     "source": chunk.source,
                     "original_text": chunk.text,
                 },
@@ -146,10 +166,25 @@ class QdrantVectorIndex:
             raise RuntimeError(f"Vector index upsert failed: {error}") from error
 
     async def search(
-        self, vector: list[float], limit: int, score_threshold: float, owner_id: int
+        self,
+        vector: list[float],
+        limit: int,
+        score_threshold: float,
+        owner_id: int,
+        conversation_id: int | None,
     ) -> list[Chunk]:
-        """Return this owner's stored passages nearest to `vector`, best first."""
-        logger.debug(f"Searching {self._collection} for owner {owner_id}")
+        """Return this thread's stored passages nearest to `vector`, best first.
+
+        A `None` conversation owns no documents, so the search is not run at
+        all. Returning early rather than filtering on NULL is the safe
+        direction: a filter that fails to match nothing would match everything.
+        """
+        if conversation_id is None:
+            return []
+
+        logger.debug(
+            f"Searching {self._collection} for owner {owner_id}, conversation {conversation_id}"
+        )
         try:
             response = await self._client.query_points(
                 collection_name=self._collection,
@@ -160,7 +195,7 @@ class QdrantVectorIndex:
                 # post-filter would let another owner's chunks consume the `limit`
                 # nearest slots and return fewer of this owner's than asked for -
                 # a correctness bug on top of the obvious one.
-                query_filter=_owned_by(owner_id),
+                query_filter=_owned_by(owner_id, conversation_id),
             )
         except Exception as error:
             # Deliberately broad, preserving the legacy behaviour: a chat request
@@ -184,9 +219,20 @@ class QdrantVectorIndex:
         await self._client.close()
 
 
-def _owned_by(owner_id: int) -> Filter:
-    """The one predicate that keeps one account's documents out of another's answers."""
-    return Filter(must=[FieldCondition(key=_OWNER_FIELD, match=MatchValue(value=owner_id))])
+def _owned_by(owner_id: int, conversation_id: int) -> Filter:
+    """The predicate that keeps one thread's documents out of another's answers.
+
+    Two conditions, both required. The owner one is the security boundary: it
+    is what stops one account reading another's files. The conversation one is
+    the scoping boundary: it is what stops a thread reading a file the same
+    person attached somewhere else.
+    """
+    return Filter(
+        must=[
+            FieldCondition(key=_OWNER_FIELD, match=MatchValue(value=owner_id)),
+            FieldCondition(key=_CONVERSATION_FIELD, match=MatchValue(value=conversation_id)),
+        ]
+    )
 
 
 def _owned_document(document_id: int, owner_id: int) -> Filter:

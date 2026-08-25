@@ -26,6 +26,7 @@ from app.application.chat.dto import (
     ReplyDelta,
     ReplyEvent,
     ReplyFailed,
+    ReplySummarizing,
     ReplyToolFinished,
     ReplyToolStarted,
     StartConversationInput,
@@ -65,6 +66,9 @@ WS_ORIGINS: tuple[str, ...] = ("https://app.example.com",)
 # stands in for the codec, so these tests never depend on the JWT format.
 TOKEN = "a-valid-access-token"
 USER = UserContext(user_id=7, email="owner@example.com")
+# The thread an upload attaches to. Sent as a form field alongside the file,
+# because the two only mean anything together.
+CONVERSATION = 42
 AUTH: dict[str, str] = {"Authorization": f"Bearer {TOKEN}"}
 
 # The WebSocket carries its token as an offered subprotocol rather than a query
@@ -289,6 +293,30 @@ class TestGenerateText:
             {"done": True},
         ]
 
+    async def test_condensing_the_thread_reaches_the_client_as_its_own_frames(self) -> None:
+        stub = StubGenerateReply(
+            [
+                ReplySummarizing(status="start", tokens_before=12480),
+                ReplySummarizing(status="done", tokens_before=12480, tokens_after=4100),
+                ReplyDelta(text="Here you go."),
+                ReplyCompleted(),
+            ]
+        )
+
+        async with client(StubContainer(generate_reply=stub)) as http:
+            response = await http.post(
+                "/generate/text/", json={"model": MODELS[0], "user_input": "hi"}
+            )
+
+        assert frames(response.text) == [
+            # No `tokens_after` on the start frame: it is not known yet, and
+            # sending zero would read as "condensed to nothing".
+            {"summarizing": {"status": "start", "tokens_before": 12480}},
+            {"summarizing": {"status": "done", "tokens_before": 12480, "tokens_after": 4100}},
+            {"delta": "Here you go."},
+            {"done": True},
+        ]
+
     async def test_a_tools_sources_ride_along_in_its_finished_frame(self) -> None:
         stub = StubGenerateReply(
             [
@@ -466,17 +494,21 @@ class TestUpload:
 
         async with client(StubContainer(upload_document=upload, index_document=index)) as http:
             response = await http.post(
-                "/upload/file/", files={"file": ("a.pdf", b"%PDF-1.4 body", "application/pdf")}
+                "/upload/file/",
+                files={"file": ("a.pdf", b"%PDF-1.4 body", "application/pdf")},
+                data={"conversation_id": str(CONVERSATION)},
             )
 
         assert response.status_code == 200
         assert response.json() == {
             "message": "File uploaded successfully",
             "file_path": "uploads/a.pdf",
+            # Returned so the client can undo the attachment it just made.
+            "document_id": 1,
         }
-        # The owner rides along to the background task: indexing happens after
-        # the response, so it cannot look the caller up again.
-        assert index.calls == [("uploads/a.pdf", "a.pdf", 1, USER.user_id)]
+        # The owner and the thread ride along to the background task: indexing
+        # happens after the response, so it cannot look either up again.
+        assert index.calls == [("uploads/a.pdf", "a.pdf", 1, USER.user_id, CONVERSATION)]
 
     async def test_the_uploaded_bytes_reach_the_use_case(self) -> None:
         captured: list[bytes] = []
@@ -489,7 +521,9 @@ class TestUpload:
         container = StubContainer(upload_document=Capturing(), index_document=StubUseCase())
         async with client(container) as http:
             await http.post(
-                "/upload/file/", files={"file": ("a.pdf", b"%PDF-1.4 body", "application/pdf")}
+                "/upload/file/",
+                files={"file": ("a.pdf", b"%PDF-1.4 body", "application/pdf")},
+                data={"conversation_id": str(CONVERSATION)},
             )
 
         assert captured == [b"%PDF-1.4 body"]
@@ -509,7 +543,9 @@ class TestUpload:
         )
         async with client(container) as http:
             response = await http.post(
-                "/upload/file/", files={"file": ("a.html", b"<html>", "text/html")}
+                "/upload/file/",
+                files={"file": ("a.html", b"<html>", "text/html")},
+                data={"conversation_id": str(CONVERSATION)},
             )
 
         assert response.status_code == expected_status
@@ -525,7 +561,9 @@ class TestUpload:
         )
         async with client(container) as http:
             response = await http.post(
-                "/upload/file/", files={"file": ("a.pdf", b"%PDF-1.4", "application/pdf")}
+                "/upload/file/",
+                files={"file": ("a.pdf", b"%PDF-1.4", "application/pdf")},
+                data={"conversation_id": str(CONVERSATION)},
             )
 
         assert response.status_code == 429

@@ -10,14 +10,17 @@ from app.application.ingestion.use_cases.delete_document import DeleteDocument
 from app.application.ingestion.use_cases.index_document import IndexDocument
 from app.application.ingestion.use_cases.list_documents import ListDocuments
 from app.application.ingestion.use_cases.upload_document import UploadDocument
+from app.domain.chat.entities import Conversation
 from app.domain.ingestion.entities import UploadedDocument
 from app.domain.ingestion.errors import (
     DocumentNotFound,
     DocumentNotIndexable,
+    UnknownConversation,
     UnsupportedDocumentType,
 )
 from app.domain.usage.errors import RateLimited
 from tests.fakes import (
+    FakeDocumentRemover,
     FakeDocumentSummarizer,
     FakeEmbedder,
     FakeFileStorage,
@@ -29,6 +32,15 @@ from tests.fakes import (
 
 OWNER = 7
 STRANGER = 8
+# The thread every upload here is attached to. A document belongs to one
+# conversation, so there is no such thing as an upload without one.
+CONVERSATION = 42
+# The stranger's own thread. An upload may only name a conversation its own
+# account owns, so the two never share one.
+STRANGER_CONVERSATION = 43
+# A second thread belonging to the same account, for the tests that prove one
+# thread's upload leaves another's alone.
+OTHER_CONVERSATION = 44
 
 
 async def bytes_stream(*chunks: bytes) -> AsyncIterator[bytes]:
@@ -42,13 +54,31 @@ def upload_document(
     limiter: FakeRateLimiter,
     factory: UnitOfWorkSpy | None = None,
     daily_budget: FakeRateLimiter | None = None,
+    remove_document: "FakeDocumentRemover | None" = None,
 ) -> UploadDocument:
+    factory = factory or UnitOfWorkSpy()
+    # The upload refuses a thread this account does not own, so every test
+    # needs one to aim at. Seeded here rather than in each test, because it is
+    # a precondition of uploading at all rather than anything under test.
+    seed_conversation(factory)
+    seed_conversation(factory, STRANGER, STRANGER_CONVERSATION)
     return UploadDocument(
         storage,
         max_bytes=max_bytes,
         limiter=limiter,
-        uow_factory=factory or UnitOfWorkSpy(),
+        uow_factory=factory,
         daily_budget=daily_budget or FakeRateLimiter(),
+        remove_document=remove_document or FakeDocumentRemover(),
+    )
+
+
+def seed_conversation(
+    factory: UnitOfWorkSpy, owner_id: int = OWNER, conversation_id: int = CONVERSATION
+) -> None:
+    """Give `factory` a conversation an upload in this file can attach to."""
+    factory.repository.rows.setdefault(
+        conversation_id,
+        Conversation(title="t", model_type="m", owner_id=owner_id, id=conversation_id),
     )
 
 
@@ -67,6 +97,7 @@ class TestUploadDocument:
                 content_type="application/pdf",
                 stream=bytes_stream(b"%PDF", b"-data"),
                 owner_id=OWNER,
+                conversation_id=CONVERSATION,
             )
         )
 
@@ -81,7 +112,9 @@ class TestUploadDocument:
         upload = upload_document(FakeFileStorage(), 1024, FakeRateLimiter(), factory)
 
         result = await upload(
-            UploadDocumentInput("a.pdf", "application/pdf", bytes_stream(b"%PDF-1.7"), OWNER)
+            UploadDocumentInput(
+                "a.pdf", "application/pdf", bytes_stream(b"%PDF-1.7"), OWNER, CONVERSATION
+            )
         )
 
         stored = factory.documents.rows[result.document_id]
@@ -94,7 +127,11 @@ class TestUploadDocument:
         # perfectly good upload.
         result = await upload_document(FakeFileStorage(), 1024, FakeRateLimiter())(
             UploadDocumentInput(
-                "a.pdf", "application/pdf; charset=binary", bytes_stream(b"%PDF-1.7"), OWNER
+                "a.pdf",
+                "application/pdf; charset=binary",
+                bytes_stream(b"%PDF-1.7"),
+                OWNER,
+                CONVERSATION,
             )
         )
         assert result.name == "a.pdf"
@@ -104,7 +141,9 @@ class TestUploadDocument:
         storage = FakeFileStorage()
         with pytest.raises(UnsupportedDocumentType):
             await upload_document(storage, 1024, FakeRateLimiter())(
-                UploadDocumentInput("a.exe", content_type, bytes_stream(b"%PDF-1.7"), OWNER)
+                UploadDocumentInput(
+                    "a.exe", content_type, bytes_stream(b"%PDF-1.7"), OWNER, CONVERSATION
+                )
             )
         assert storage.saved == [], "nothing may be written before the type check passes"
 
@@ -115,7 +154,11 @@ class TestUploadDocument:
         with pytest.raises(UnsupportedDocumentType):
             await upload_document(storage, 1024, FakeRateLimiter())(
                 UploadDocumentInput(
-                    "payload.pdf", "application/pdf", bytes_stream(b"MZ\x90\x00"), OWNER
+                    "payload.pdf",
+                    "application/pdf",
+                    bytes_stream(b"MZ\x90\x00"),
+                    OWNER,
+                    CONVERSATION,
                 )
             )
         assert storage.saved == []
@@ -125,7 +168,9 @@ class TestUploadDocument:
         storage = FakeFileStorage()
         with pytest.raises(UnsupportedDocumentType):
             await upload_document(storage, 1024, FakeRateLimiter())(
-                UploadDocumentInput("a.pdf", "application/pdf", bytes_stream(*chunks), OWNER)
+                UploadDocumentInput(
+                    "a.pdf", "application/pdf", bytes_stream(*chunks), OWNER, CONVERSATION
+                )
             )
         assert storage.saved == []
 
@@ -134,7 +179,7 @@ class TestUploadDocument:
         with pytest.raises(UnsupportedDocumentType):
             await upload_document(storage, 1024, FakeRateLimiter())(
                 UploadDocumentInput(
-                    "report.txt", "application/pdf", bytes_stream(b"%PDF-1.7"), OWNER
+                    "report.txt", "application/pdf", bytes_stream(b"%PDF-1.7"), OWNER, CONVERSATION
                 )
             )
         assert storage.saved == []
@@ -145,7 +190,11 @@ class TestUploadDocument:
         storage = FakeFileStorage()
         await upload_document(storage, 1024, FakeRateLimiter())(
             UploadDocumentInput(
-                "a.pdf", "application/pdf", bytes_stream(b"%P", b"DF", b"-1.7", b"body"), OWNER
+                "a.pdf",
+                "application/pdf",
+                bytes_stream(b"%P", b"DF", b"-1.7", b"body"),
+                OWNER,
+                CONVERSATION,
             )
         )
         assert storage.saved == [("a.pdf", b"%PDF-1.7body")]
@@ -159,11 +208,15 @@ class TestUploadDocument:
         upload = upload_document(storage, 1024, limiter)
 
         await upload(
-            UploadDocumentInput("a.pdf", "application/pdf", bytes_stream(b"%PDF-1.7"), OWNER)
+            UploadDocumentInput(
+                "a.pdf", "application/pdf", bytes_stream(b"%PDF-1.7"), OWNER, CONVERSATION
+            )
         )
         with pytest.raises(RateLimited):
             await upload(
-                UploadDocumentInput("b.pdf", "application/pdf", bytes_stream(b"%PDF-1.7"), OWNER)
+                UploadDocumentInput(
+                    "b.pdf", "application/pdf", bytes_stream(b"%PDF-1.7"), OWNER, CONVERSATION
+                )
             )
 
         assert len(storage.saved) == 1
@@ -171,7 +224,9 @@ class TestUploadDocument:
     async def test_accepts_a_txt_file(self) -> None:
         storage = FakeFileStorage()
         result = await upload_document(storage, 1024, FakeRateLimiter())(
-            UploadDocumentInput("notes.txt", "text/plain", bytes_stream(b"just some text"), OWNER)
+            UploadDocumentInput(
+                "notes.txt", "text/plain", bytes_stream(b"just some text"), OWNER, CONVERSATION
+            )
         )
         assert result.name == "notes.txt"
         assert storage.saved == [("notes.txt", b"just some text")]
@@ -180,7 +235,7 @@ class TestUploadDocument:
         storage = FakeFileStorage()
         result = await upload_document(storage, 1024, FakeRateLimiter())(
             UploadDocumentInput(
-                "notes.md", "text/markdown", bytes_stream(b"# heading\n\nbody"), OWNER
+                "notes.md", "text/markdown", bytes_stream(b"# heading\n\nbody"), OWNER, CONVERSATION
             )
         )
         assert result.name == "notes.md"
@@ -194,6 +249,7 @@ class TestUploadDocument:
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 bytes_stream(b"PK\x03\x04", b"therest"),
                 OWNER,
+                CONVERSATION,
             )
         )
         assert result.name == "report.docx"
@@ -204,7 +260,7 @@ class TestUploadDocument:
         with pytest.raises(UnsupportedDocumentType):
             await upload_document(storage, 1024, FakeRateLimiter())(
                 UploadDocumentInput(
-                    "notes.pdf", "text/plain", bytes_stream(b"just some text"), OWNER
+                    "notes.pdf", "text/plain", bytes_stream(b"just some text"), OWNER, CONVERSATION
                 )
             )
         assert storage.saved == []
@@ -218,6 +274,7 @@ class TestUploadDocument:
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     bytes_stream(b"not a zip at all"),
                     OWNER,
+                    CONVERSATION,
                 )
             )
         assert storage.saved == []
@@ -227,11 +284,19 @@ class TestUploadDocument:
         upload = upload_document(FakeFileStorage(), 1024, limiter)
 
         await upload(
-            UploadDocumentInput("a.pdf", "application/pdf", bytes_stream(b"%PDF-1.7"), OWNER)
+            UploadDocumentInput(
+                "a.pdf", "application/pdf", bytes_stream(b"%PDF-1.7"), OWNER, CONVERSATION
+            )
         )
         # Keyed per account, so the stranger still has their own budget.
         await upload(
-            UploadDocumentInput("a.pdf", "application/pdf", bytes_stream(b"%PDF-1.7"), STRANGER)
+            UploadDocumentInput(
+                "a.pdf",
+                "application/pdf",
+                bytes_stream(b"%PDF-1.7"),
+                STRANGER,
+                STRANGER_CONVERSATION,
+            )
         )
 
         assert limiter.hits == {f"upload:{OWNER}": 1, f"upload:{STRANGER}": 1}
@@ -245,11 +310,101 @@ class TestUploadDocument:
 
         with pytest.raises(RateLimited):
             await upload(
-                UploadDocumentInput("a.pdf", "application/pdf", bytes_stream(b"%PDF-1.7"), OWNER)
+                UploadDocumentInput(
+                    "a.pdf", "application/pdf", bytes_stream(b"%PDF-1.7"), OWNER, CONVERSATION
+                )
             )
 
         assert storage.saved == []
         assert limiter.hits == {}, "the per-user limit must not be spent on a refused request"
+
+
+class TestOneAttachmentPerConversation:
+    """A thread holds one document. Uploading a second replaces the first."""
+
+    async def test_a_second_upload_removes_the_first(self) -> None:
+        factory = UnitOfWorkSpy()
+        remover = FakeDocumentRemover()
+        upload = upload_document(
+            FakeFileStorage(), 1024, FakeRateLimiter(), factory=factory, remove_document=remover
+        )
+
+        first = await upload(
+            UploadDocumentInput(
+                "a.pdf", "application/pdf", bytes_stream(b"%PDF-1.7"), OWNER, CONVERSATION
+            )
+        )
+        await upload(
+            UploadDocumentInput(
+                "b.pdf", "application/pdf", bytes_stream(b"%PDF-1.7"), OWNER, CONVERSATION
+            )
+        )
+
+        assert remover.removed == [(first.document_id, OWNER)]
+
+    async def test_it_leaves_another_threads_attachment_alone(self) -> None:
+        factory = UnitOfWorkSpy()
+        remover = FakeDocumentRemover()
+        upload = upload_document(
+            FakeFileStorage(), 1024, FakeRateLimiter(), factory=factory, remove_document=remover
+        )
+        seed_conversation(factory, OWNER, OTHER_CONVERSATION)
+
+        await upload(
+            UploadDocumentInput(
+                "a.pdf", "application/pdf", bytes_stream(b"%PDF-1.7"), OWNER, OTHER_CONVERSATION
+            )
+        )
+        await upload(
+            UploadDocumentInput(
+                "b.pdf", "application/pdf", bytes_stream(b"%PDF-1.7"), OWNER, CONVERSATION
+            )
+        )
+
+        assert remover.removed == [], "the other thread's file is not this thread's to replace"
+
+    async def test_a_failed_removal_does_not_cost_the_new_upload(self) -> None:
+        # The user's new file is already stored. Refusing the upload because a
+        # stale one would not delete trades a working attachment for a dead one.
+        factory = UnitOfWorkSpy()
+        remover = FakeDocumentRemover(fail_with=RuntimeError("qdrant is down"))
+        upload = upload_document(
+            FakeFileStorage(), 1024, FakeRateLimiter(), factory=factory, remove_document=remover
+        )
+
+        await upload(
+            UploadDocumentInput(
+                "a.pdf", "application/pdf", bytes_stream(b"%PDF-1.7"), OWNER, CONVERSATION
+            )
+        )
+        result = await upload(
+            UploadDocumentInput(
+                "b.pdf", "application/pdf", bytes_stream(b"%PDF-1.7"), OWNER, CONVERSATION
+            )
+        )
+
+        assert result.name == "b.pdf"
+
+    async def test_it_refuses_a_thread_this_account_does_not_own(self) -> None:
+        storage = FakeFileStorage()
+        with pytest.raises(UnknownConversation):
+            await upload_document(storage, 1024, FakeRateLimiter())(
+                UploadDocumentInput(
+                    "a.pdf", "application/pdf", bytes_stream(b"%PDF-1.7"), STRANGER, CONVERSATION
+                )
+            )
+
+        assert storage.saved == [], "nothing may be written for a thread that is not theirs"
+
+    async def test_the_stored_row_names_the_thread(self) -> None:
+        factory = UnitOfWorkSpy()
+        result = await upload_document(FakeFileStorage(), 1024, FakeRateLimiter(), factory=factory)(
+            UploadDocumentInput(
+                "a.pdf", "application/pdf", bytes_stream(b"%PDF-1.7"), OWNER, CONVERSATION
+            )
+        )
+
+        assert factory.documents.rows[result.document_id].conversation_id == CONVERSATION
 
 
 class TestIndexDocument:
@@ -274,7 +429,11 @@ class TestIndexDocument:
     async def test_indexes_every_chunk_exactly_once(self) -> None:
         index = FakeVectorIndex()
         result = await self.build("word " * 200, index)(
-            reference="uploads/a.pdf", name="a.pdf", document_id=1, owner_id=OWNER
+            reference="uploads/a.pdf",
+            name="a.pdf",
+            document_id=1,
+            owner_id=OWNER,
+            conversation_id=CONVERSATION,
         )
 
         assert result.chunks_indexed == len(index.chunks)
@@ -286,7 +445,7 @@ class TestIndexDocument:
         factory.documents.rows[1] = existing_document(1, OWNER)
 
         result = await self.build("word " * 200, factory=factory)(
-            "uploads/a.pdf", "a.pdf", 1, OWNER
+            "uploads/a.pdf", "a.pdf", 1, OWNER, CONVERSATION
         )
 
         assert factory.documents.rows[1].chunks_indexed == result.chunks_indexed
@@ -307,13 +466,13 @@ class TestIndexDocument:
             summarizer=FakeDocumentSummarizer(),
         )
 
-        result = await use_case("uploads/a.pdf", "a.pdf", 1, OWNER)
+        result = await use_case("uploads/a.pdf", "a.pdf", 1, OWNER, CONVERSATION)
 
         assert len(embedder.embedded) == result.chunks_indexed > 20
 
     async def test_ensures_the_collection_without_clearing_it(self) -> None:
         index = FakeVectorIndex()
-        await self.build("hello world", index)("uploads/a.pdf", "a.pdf", 1, OWNER)
+        await self.build("hello world", index)("uploads/a.pdf", "a.pdf", 1, OWNER, CONVERSATION)
 
         assert index.ensured == [3], "the collection is created, never recreated"
 
@@ -326,21 +485,27 @@ class TestIndexDocument:
         removes one - never another upload.
         """
         index = FakeVectorIndex()
-        await self.build("first document text", index)("uploads/a.pdf", "a.pdf", 1, OWNER)
+        await self.build("first document text", index)(
+            "uploads/a.pdf", "a.pdf", 1, OWNER, CONVERSATION
+        )
         first_count = len(index.chunks)
         assert first_count > 0
 
-        await self.build("second document text", index)("uploads/b.pdf", "b.pdf", 2, OWNER)
+        await self.build("second document text", index)(
+            "uploads/b.pdf", "b.pdf", 2, OWNER, CONVERSATION
+        )
 
         assert len(index.chunks) > first_count, "the first document's passages must survive"
         assert {chunk.source for chunk in index.chunks} == {"a.pdf", "b.pdf"}
 
     async def test_one_upload_does_not_wipe_another_account(self) -> None:
         index = FakeVectorIndex()
-        await self.build("owner text", index)("uploads/a.pdf", "a.pdf", 1, OWNER)
+        await self.build("owner text", index)("uploads/a.pdf", "a.pdf", 1, OWNER, CONVERSATION)
         assert index.by_owner[OWNER]
 
-        await self.build("stranger text", index)("uploads/b.pdf", "b.pdf", 2, STRANGER)
+        await self.build("stranger text", index)(
+            "uploads/b.pdf", "b.pdf", 2, STRANGER, CONVERSATION
+        )
 
         assert index.by_owner[OWNER], "the first owner's passages must survive"
         assert index.by_owner[STRANGER]
@@ -352,7 +517,11 @@ class TestIndexDocument:
         assert document.id is not None
 
         await self.build("word " * 200, factory=factory, summarizer=summarizer)(
-            reference="uploads/a.pdf", name="a.pdf", document_id=document.id, owner_id=OWNER
+            reference="uploads/a.pdf",
+            name="a.pdf",
+            document_id=document.id,
+            owner_id=OWNER,
+            conversation_id=CONVERSATION,
         )
 
         stored = await factory.documents.get(document.id, OWNER)
@@ -364,7 +533,11 @@ class TestIndexDocument:
         summarizer = FakeDocumentSummarizer()
 
         await self.build("the extracted words", summarizer=summarizer)(
-            reference="uploads/a.pdf", name="a.pdf", document_id=1, owner_id=OWNER
+            reference="uploads/a.pdf",
+            name="a.pdf",
+            document_id=1,
+            owner_id=OWNER,
+            conversation_id=CONVERSATION,
         )
 
         assert summarizer.calls == [("a.pdf", "the extracted words")]
@@ -379,7 +552,13 @@ class TestIndexDocument:
 
         result = await self.build(
             "word " * 200, factory=factory, summarizer=FakeDocumentSummarizer(fail=True)
-        )(reference="uploads/a.pdf", name="a.pdf", document_id=document.id, owner_id=OWNER)
+        )(
+            reference="uploads/a.pdf",
+            name="a.pdf",
+            document_id=document.id,
+            owner_id=OWNER,
+            conversation_id=CONVERSATION,
+        )
 
         assert result.chunks_indexed > 0
         stored = await factory.documents.get(document.id, OWNER)
@@ -401,7 +580,11 @@ class TestIndexDocument:
         assert document.id is not None
 
         result = await self.build("word " * 200, factory=factory, summarizer=ExplodingSummarizer())(
-            reference="uploads/a.pdf", name="a.pdf", document_id=document.id, owner_id=OWNER
+            reference="uploads/a.pdf",
+            name="a.pdf",
+            document_id=document.id,
+            owner_id=OWNER,
+            conversation_id=CONVERSATION,
         )
 
         assert result.chunks_indexed > 0
@@ -412,15 +595,17 @@ class TestIndexDocument:
     async def test_a_scan_with_no_text_is_a_business_failure(self) -> None:
         index = FakeVectorIndex()
         with pytest.raises(DocumentNotIndexable):
-            await self.build("   \n ", index)("uploads/a.pdf", "a.pdf", 1, OWNER)
+            await self.build("   \n ", index)("uploads/a.pdf", "a.pdf", 1, OWNER, CONVERSATION)
         assert index.chunks == [], "an unindexable document must not write anything"
 
     async def test_search_never_crosses_owners(self) -> None:
         index = FakeVectorIndex(hits=["a secret passage"])
-        await self.build("owner text", index)("uploads/a.pdf", "a.pdf", 1, OWNER)
+        await self.build("owner text", index)("uploads/a.pdf", "a.pdf", 1, OWNER, CONVERSATION)
 
-        assert [c.text for c in await index.search([0.0], 3, 0.5, OWNER)] == ["a secret passage"]
-        assert await index.search([0.0], 3, 0.5, STRANGER) == []
+        assert [c.text for c in await index.search([0.0], 3, 0.5, OWNER, CONVERSATION)] == [
+            "a secret passage"
+        ]
+        assert await index.search([0.0], 3, 0.5, STRANGER, CONVERSATION) == []
 
 
 class TestListDocuments:

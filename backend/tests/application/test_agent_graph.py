@@ -31,6 +31,7 @@ from app.application.chat.dto import (
     ReplyDelta,
     ReplyEvent,
     ReplyFailed,
+    ReplySummarizing,
     ReplyToolFinished,
     ReplyToolStarted,
 )
@@ -55,6 +56,12 @@ SYSTEM_PROMPT = "SYSTEM PROMPT"
 
 def make_guard() -> ToolOutputGuard:
     return ToolOutputGuard(strip_instructions=True, max_scan_chars=50_000)
+
+
+# The thread every test here runs in. A document belongs to one conversation,
+# so a turn with no conversation has nothing to retrieve - which is a real
+# shape, but not the one most of these tests are about.
+THREAD = 42
 
 
 def make_condenser(
@@ -155,7 +162,12 @@ def build_graph(
     )
 
 
-def run_config(model: str = "test-model", owner_id: int = 1, document_scoped: bool = False) -> Any:
+def run_config(
+    model: str = "test-model",
+    owner_id: int = 1,
+    document_scoped: bool = False,
+    conversation_id: int | None = THREAD,
+) -> Any:
     """What `GenerateReply` puts on the wire, for a test that drives the graph.
 
     `document_scoped` is a parameter here for the same reason it is a config
@@ -167,6 +179,7 @@ def run_config(model: str = "test-model", owner_id: int = 1, document_scoped: bo
             "model": model,
             "temperature": 0.0,
             "owner_id": owner_id,
+            "conversation_id": conversation_id,
             "document_scoped": document_scoped,
         }
     }
@@ -175,7 +188,7 @@ def run_config(model: str = "test-model", owner_id: int = 1, document_scoped: bo
 async def collect(
     use_case: GenerateReply,
     user_input: str = "hello",
-    conversation_id: int | None = None,
+    conversation_id: int | None = THREAD,
     owner_id: int = 1,
 ) -> list[ReplyEvent]:
     events = await use_case(
@@ -451,8 +464,8 @@ class TestMemory:
         model = FakeChatModel(turns=[[ModelChunk(text="first")], [ModelChunk(text="second")]])
         use_case = build_use_case(model, checkpointer=InMemorySaver())
 
-        await collect(use_case, user_input="one")
-        await collect(use_case, user_input="two")
+        await collect(use_case, user_input="one", conversation_id=None)
+        await collect(use_case, user_input="two", conversation_id=None)
 
         assert questions_in(model.seen_messages[1]) == ["two"]
 
@@ -529,6 +542,54 @@ class TestSummarization:
 
         # The hot path must cost nothing: a short thread never reaches the model.
         assert condenser_model.calls == 0
+
+    async def test_the_user_is_told_while_the_thread_is_being_condensed(self) -> None:
+        # The point of the events: condensing is a whole model call in the
+        # middle of a reply, during which no text arrives. Without them a long
+        # thread looks like a stalled one.
+        condenser_model = FakeChatModel(turns=[[ModelChunk(text="SUMMARY")]])
+        use_case = build_use_case(
+            FakeChatModel(turns=[[ModelChunk(text="hi")]]),
+            condenser=make_condenser(condenser_model),
+            counter=FakeTokenCounter(tokens_per_message=1_000),
+            history_token_budget=1_500,
+        )
+
+        events = await collect(use_case)
+
+        reported = [event for event in events if isinstance(event, ReplySummarizing)]
+        assert [event.status for event in reported] == ["start", "done"]
+        # The start event cannot know the new size yet; the done event does.
+        assert reported[0].tokens_after is None
+        assert reported[1].tokens_after is not None
+        assert reported[0].tokens_before == reported[1].tokens_before
+
+    async def test_a_failed_condenser_still_closes_the_notice(self) -> None:
+        # The chip must not sit on "condensing" forever. A condenser that broke
+        # still shortened the thread, and the failure is not the user's
+        # business - the wait ending is.
+        use_case = build_use_case(
+            FakeChatModel(turns=[[ModelChunk(text="hi")]]),
+            condenser=make_condenser(FakeChatModel(fail_with=RuntimeError("boom"))),
+            counter=FakeTokenCounter(tokens_per_message=1_000),
+            history_token_budget=1_500,
+        )
+
+        events = await collect(use_case)
+
+        reported = [event for event in events if isinstance(event, ReplySummarizing)]
+        assert [event.status for event in reported] == ["start", "done"]
+
+    async def test_a_thread_under_budget_reports_nothing(self) -> None:
+        use_case = build_use_case(
+            FakeChatModel(turns=[[ModelChunk(text="hi")]]),
+            counter=FakeTokenCounter(tokens_per_message=1),
+            history_token_budget=1_000,
+        )
+
+        events = await collect(use_case)
+
+        assert not any(isinstance(event, ReplySummarizing) for event in events)
 
     async def test_over_budget_replaces_the_head_with_a_summary(self) -> None:
         condenser_model = FakeChatModel(turns=[[ModelChunk(text="SUMMARY")]])
@@ -1296,9 +1357,15 @@ def with_documents(*documents: UploadedDocument) -> UnitOfWorkSpy:
     return factory
 
 
-def an_upload(name: str, summary: str = "", owner_id: int = 1) -> UploadedDocument:
+def an_upload(
+    name: str, summary: str = "", owner_id: int = 1, conversation_id: int = THREAD
+) -> UploadedDocument:
     return UploadedDocument(
-        name=name, reference=f"uploads/{name}", owner_id=owner_id, summary=summary
+        name=name,
+        reference=f"uploads/{name}",
+        owner_id=owner_id,
+        conversation_id=conversation_id,
+        summary=summary,
     )
 
 
@@ -1307,6 +1374,56 @@ def user_turn(model: FakeChatModel) -> str:
     return next(
         message.content for message in reversed(model.seen_messages[0]) if message.role == "user"
     )
+
+
+class TestDocumentsBelongToOneThread:
+    """A file attached in one chat must not surface in another.
+
+    The owner check cannot catch this: it is the same person on both sides.
+    """
+
+    async def test_another_threads_document_is_not_named_in_the_digest(self) -> None:
+        model = FakeChatModel()
+        use_case = build_use_case(
+            model,
+            uow_factory=with_documents(
+                an_upload("lease.pdf", "A tenancy agreement.", conversation_id=THREAD + 1)
+            ),
+        )
+
+        await collect(use_case, user_input="what did we spend?", conversation_id=THREAD)
+
+        turn = user_turn(model)
+        assert "lease.pdf" not in turn
+        assert "[NO DOCUMENTS]" in turn, "this thread has nothing, and is told so"
+
+    async def test_this_threads_document_still_is(self) -> None:
+        model = FakeChatModel()
+        use_case = build_use_case(
+            model,
+            uow_factory=with_documents(
+                an_upload("lease.pdf", "A tenancy agreement.", conversation_id=THREAD + 1),
+                an_upload("budget.pdf", "The Q3 budget.", conversation_id=THREAD),
+            ),
+        )
+
+        await collect(use_case, user_input="what did we spend?", conversation_id=THREAD)
+
+        turn = user_turn(model)
+        assert "budget.pdf" in turn
+        assert "lease.pdf" not in turn
+
+    async def test_a_turn_with_no_thread_is_told_it_has_nothing(self) -> None:
+        # Not a failed read: a request that opened no conversation owns no
+        # documents, so the gate closes rather than leaving a retrieval open.
+        model = FakeChatModel()
+        use_case = build_use_case(
+            model, uow_factory=with_documents(an_upload("budget.pdf", "The Q3 budget."))
+        )
+
+        await collect(use_case, user_input="what did we spend?", conversation_id=None)
+
+        assert "[NO DOCUMENTS]" in user_turn(model)
 
 
 class TestTheModelIsToldWhatWasUploaded:

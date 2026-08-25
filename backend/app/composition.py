@@ -402,6 +402,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             tracer=tracer,
         )
 
+        # Built before the container because three of its members take it:
+        # removing a document entirely is one operation, and the alternative -
+        # each caller doing the three steps itself - is how one of them ends up
+        # deleting the row and leaving the vectors behind.
+        delete_document = DeleteDocument(uow_factory, index=vector_index, storage=storage)
+
         # Annotated as the API's Protocol so mypy proves, here at the one place
         # that knows both sides, that the concrete container provides everything
         # the routes ask for.
@@ -422,17 +428,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 max_digest_documents=settings.chat_digest_max_documents,
                 max_digest_summary_chars=settings.chat_digest_max_summary_chars,
             ),
-            start_conversation=StartConversation(uow_factory),
+            start_conversation=StartConversation(
+                uow_factory, max_per_owner=settings.max_conversations_per_user
+            ),
             get_conversation=GetConversation(uow_factory),
             list_conversations=ListConversations(uow_factory),
             record_exchange=RecordExchange(uow_factory),
-            delete_conversation=DeleteConversation(uow_factory),
+            # Both of these take `delete_document`, the one use case that
+            # removes a document entirely - vectors, file and row. Built above
+            # them so the same instance serves all three call sites: replacing
+            # a conversation's attachment, deleting a conversation, and the
+            # user pressing the close button.
+            delete_conversation=DeleteConversation(uow_factory, remove_document=delete_document),
             upload_document=UploadDocument(
                 storage=storage,
                 max_bytes=settings.max_upload_bytes,
                 limiter=upload_limiter,
                 uow_factory=uow_factory,
                 daily_budget=daily_budget_limiter,
+                remove_document=delete_document,
             ),
             index_document=IndexDocument(
                 extractor=extractor,
@@ -448,7 +462,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 summarizer=condenser,
             ),
             list_documents=ListDocuments(uow_factory),
-            delete_document=DeleteDocument(uow_factory, index=vector_index, storage=storage),
+            delete_document=delete_document,
             transcribe_stream=TranscribeStream(
                 transcriber=transcriber,
                 finalize_timeout=settings.finalize_timeout_seconds,

@@ -114,11 +114,24 @@ class DocumentModel(Base):
     __tablename__ = "documents"
 
     # Every read, list and delete is "this owner's documents", the same shape
-    # as the conversations index above.
-    __table_args__ = (Index("ix_documents_owner_id_id", "owner_id", "id"),)
+    # as the conversations index above. The second index serves the query the
+    # agent runs on every turn: this owner's documents in this conversation.
+    __table_args__ = (
+        Index("ix_documents_owner_id_id", "owner_id", "id"),
+        Index("ix_documents_owner_id_conversation_id", "owner_id", "conversation_id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    # The thread this upload belongs to. Nullable because rows written before
+    # documents were scoped to a conversation have no thread to name, and a
+    # NULL matches no conversation filter - such a row is inert rather than
+    # shared with every chat. `CASCADE` because deleting a conversation must
+    # take its attachments with it; the vectors and the stored file are removed
+    # by `DeleteConversation` before the row goes.
+    conversation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), default=None
+    )
     name: Mapped[str] = mapped_column()
     # The storage adapter's opaque reference (a filesystem path today). Only the
     # matching `FileStorage`/`TextExtractor` pair may interpret it.

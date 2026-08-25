@@ -17,6 +17,8 @@ export default defineConfig({
       '/auth': backendUrl,
       '/generate': backendUrl,
       '/upload': backendUrl,
+      // Removing an attachment. Same list as nginx.conf and vercel.json.
+      '/documents': backendUrl,
       '/conversations': backendUrl,
       // Without this the model list request is served by Vite itself, which
       // answers 200 with index.html - so the fetch succeeds, the JSON parse

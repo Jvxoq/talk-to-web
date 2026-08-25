@@ -13,8 +13,9 @@ from app.application.chat.use_cases.list_conversations import ListConversations
 from app.application.chat.use_cases.record_exchange import RecordExchange
 from app.application.chat.use_cases.start_conversation import StartConversation
 from app.domain.chat.entities import Conversation
-from app.domain.chat.errors import ConversationNotFound
-from tests.fakes import UnitOfWorkSpy
+from app.domain.chat.errors import ConversationLimitReached, ConversationNotFound
+from app.domain.ingestion.entities import UploadedDocument
+from tests.fakes import FakeDocumentRemover, UnitOfWorkSpy
 
 OWNER = 1
 STRANGER = 2
@@ -23,7 +24,7 @@ STRANGER = 2
 class TestConversationUseCases:
     async def test_start_persists_and_commits(self) -> None:
         factory = UnitOfWorkSpy()
-        conversation = await StartConversation(factory)(
+        conversation = await StartConversation(factory, max_per_owner=2)(
             StartConversationInput(title="T", model_type="m", owner_id=OWNER)
         )
 
@@ -82,14 +83,105 @@ class TestConversationUseCases:
         factory = UnitOfWorkSpy()
         factory.repository.rows[3] = Conversation(title="T", model_type="m", owner_id=OWNER, id=3)
 
-        await DeleteConversation(factory)(3, OWNER)
+        await DeleteConversation(factory, remove_document=FakeDocumentRemover())(3, OWNER)
 
         assert factory.repository.rows == {}
-        assert factory.issued[0].committed
+        # The last unit of work, not the first: the read that finds the thread
+        # and its attachments is separate from the write that removes it,
+        # because removing a document opens a unit of work of its own.
+        assert factory.issued[-1].committed
 
     async def test_delete_missing_is_reported_not_swallowed(self) -> None:
         with pytest.raises(ConversationNotFound):
-            await DeleteConversation(UnitOfWorkSpy())(404, OWNER)
+            await DeleteConversation(UnitOfWorkSpy(), remove_document=FakeDocumentRemover())(
+                404, OWNER
+            )
+
+
+class TestConversationLimit:
+    """An account may hold only so many threads at once."""
+
+    async def test_it_refuses_past_the_cap(self) -> None:
+        factory = UnitOfWorkSpy()
+        start = StartConversation(factory, max_per_owner=2)
+        request = StartConversationInput(title="T", model_type="m", owner_id=OWNER)
+
+        await start(request)
+        await start(request)
+        with pytest.raises(ConversationLimitReached):
+            await start(request)
+
+        assert len(factory.repository.rows) == 2
+
+    async def test_the_cap_is_per_account(self) -> None:
+        factory = UnitOfWorkSpy()
+        start = StartConversation(factory, max_per_owner=1)
+
+        await start(StartConversationInput(title="T", model_type="m", owner_id=OWNER))
+        await start(StartConversationInput(title="T", model_type="m", owner_id=STRANGER))
+
+        assert len(factory.repository.rows) == 2
+
+    async def test_deleting_one_makes_room(self) -> None:
+        factory = UnitOfWorkSpy()
+        start = StartConversation(factory, max_per_owner=1)
+        first = await start(StartConversationInput(title="T", model_type="m", owner_id=OWNER))
+        assert first.id is not None
+
+        await DeleteConversation(factory, remove_document=FakeDocumentRemover())(first.id, OWNER)
+        await start(StartConversationInput(title="T", model_type="m", owner_id=OWNER))
+
+        assert len(factory.repository.rows) == 1
+
+
+class TestDeletingAThreadTakesItsAttachments:
+    """The database cascade removes the rows. It cannot reach the vector store
+    or the disk, so the documents are removed one at a time first."""
+
+    async def test_it_removes_every_attached_document(self) -> None:
+        factory = UnitOfWorkSpy()
+        factory.repository.rows[3] = Conversation(title="T", model_type="m", owner_id=OWNER, id=3)
+        attached = await factory.documents.add(
+            UploadedDocument(
+                name="a.pdf", reference="uploads/a.pdf", owner_id=OWNER, conversation_id=3
+            )
+        )
+        remover = FakeDocumentRemover()
+
+        await DeleteConversation(factory, remove_document=remover)(3, OWNER)
+
+        assert remover.removed == [(attached.id, OWNER)]
+
+    async def test_a_document_that_will_not_delete_still_lets_the_thread_go(self) -> None:
+        # A vector store that will not answer must not leave someone unable to
+        # delete their own conversation.
+        factory = UnitOfWorkSpy()
+        factory.repository.rows[3] = Conversation(title="T", model_type="m", owner_id=OWNER, id=3)
+        await factory.documents.add(
+            UploadedDocument(
+                name="a.pdf", reference="uploads/a.pdf", owner_id=OWNER, conversation_id=3
+            )
+        )
+
+        await DeleteConversation(
+            factory, remove_document=FakeDocumentRemover(fail_with=RuntimeError("qdrant is down"))
+        )(3, OWNER)
+
+        assert factory.repository.rows == {}
+
+    async def test_it_leaves_another_threads_documents_alone(self) -> None:
+        factory = UnitOfWorkSpy()
+        factory.repository.rows[3] = Conversation(title="T", model_type="m", owner_id=OWNER, id=3)
+        await factory.documents.add(
+            UploadedDocument(
+                name="other.pdf", reference="uploads/other.pdf", owner_id=OWNER, conversation_id=4
+            )
+        )
+        remover = FakeDocumentRemover()
+
+        await DeleteConversation(factory, remove_document=remover)(3, OWNER)
+
+        assert remover.removed == []
 
 
 class TestOwnershipIsolation:
@@ -116,7 +208,7 @@ class TestOwnershipIsolation:
         factory = self._existing()
 
         with pytest.raises(ConversationNotFound):
-            await DeleteConversation(factory)(3, STRANGER)
+            await DeleteConversation(factory, remove_document=FakeDocumentRemover())(3, STRANGER)
 
         # The refusal is not enough on its own: the row has to still be there.
         assert 3 in factory.repository.rows

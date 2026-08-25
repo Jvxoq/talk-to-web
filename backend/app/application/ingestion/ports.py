@@ -60,10 +60,16 @@ class VectorIndex(Protocol):
         vectors: Sequence[list[float]],
         owner_id: int,
         document_id: int,
+        conversation_id: int | None,
     ) -> None: ...
 
     async def search(
-        self, vector: list[float], limit: int, score_threshold: float, owner_id: int
+        self,
+        vector: list[float],
+        limit: int,
+        score_threshold: float,
+        owner_id: int,
+        conversation_id: int | None,
     ) -> list[Chunk]: ...
 
     async def delete_document(self, document_id: int, owner_id: int) -> None:
@@ -83,6 +89,12 @@ class DocumentRepository(Protocol):
 
     async def list_by_owner(self, owner_id: int) -> list[UploadedDocument]: ...
 
+    async def list_by_conversation(
+        self, owner_id: int, conversation_id: int
+    ) -> list[UploadedDocument]:
+        """This owner's documents attached to one conversation, newest first."""
+        ...
+
     async def add(self, document: UploadedDocument) -> UploadedDocument: ...
 
     async def set_indexed(self, document_id: int, owner_id: int, count: int, summary: str) -> None:
@@ -90,6 +102,19 @@ class DocumentRepository(Protocol):
         ...
 
     async def delete(self, document_id: int, owner_id: int) -> None: ...
+
+
+class DocumentRemover(Protocol):
+    """Removes one document completely: its vectors, its file and its row.
+
+    A port over a use case rather than over an adapter, which is unusual here
+    and deliberate. Two callers need "get rid of this document, entirely", and
+    the three steps that make it entire already live together in
+    `DeleteDocument`. Re-deriving them at each call site is how one of them
+    ends up deleting the row and leaving the vectors behind.
+    """
+
+    async def __call__(self, document_id: int, owner_id: int) -> None: ...
 
 
 class DocumentSummarizer(Protocol):

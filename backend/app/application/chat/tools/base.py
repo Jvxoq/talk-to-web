@@ -27,14 +27,19 @@ class ToolContext(BaseModel):
     would be a model that could talk its way out of the routing policy below.
 
     Every field is written by the tool node - see `agent.nodes.make_tool_node`.
-    `owner_id`, `document_scoped` and `has_documents` come off the run config,
-    decided once per request by `GenerateReply`; `prior_tools` is read out of
-    the history, because it is the one of the four that changes between laps.
+    `owner_id`, `conversation_id`, `document_scoped` and `has_documents` come
+    off the run config, decided once per request by `GenerateReply`.
+    `prior_tools` is read out of the history, because it is the one of the five
+    that changes between laps.
     """
 
     model_config = ConfigDict(frozen=True)
 
     owner_id: int
+    # The thread this turn belongs to, and the only documents a retrieval may
+    # read. `None` is a one-off turn with no conversation, which owns no
+    # documents at all.
+    conversation_id: int | None = None
     # Whether the user's question on this turn is about files they supplied.
     # Decided from the request text, not from the checkpointed history: a
     # summarized thread can lose the turn it is about, and a gate that reads

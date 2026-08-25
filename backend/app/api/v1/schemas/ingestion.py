@@ -10,6 +10,9 @@ from app.domain.ingestion.entities import UploadedDocument
 class FileUploadResponse(BaseModel):
     message: str
     file_path: str
+    # Returned so the client can remove what it just attached. Without it the
+    # only way to undo an upload was to reload and find the row in a list.
+    document_id: int
 
 
 class DocumentOut(BaseModel):

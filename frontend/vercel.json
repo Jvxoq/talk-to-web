@@ -8,6 +8,10 @@
     { "source": "/generate/:path*", "destination": "https://talk-to-web.duckdns.org/generate/:path*" },
     { "source": "/upload/:path*", "destination": "https://talk-to-web.duckdns.org/upload/:path*" },
     {
+      "source": "/documents/:path*",
+      "destination": "https://talk-to-web.duckdns.org/documents/:path*"
+    },
+    {
       "source": "/conversations/:path*",
       "destination": "https://talk-to-web.duckdns.org/conversations/:path*"
     },

@@ -32,6 +32,12 @@ DOC_A = 10
 DOC_B = 20
 DOC_C = 30
 
+# Conversation ids, distinct again from both of the above. Every point is
+# written into a thread and every search names one, because a document belongs
+# to the chat it was attached to rather than to the account.
+THREAD = 100
+OTHER_THREAD = 200
+
 # Deliberately axis-aligned, so "nearest" is obvious by inspection rather than
 # an artefact of whatever numbers happened to be typed.
 NORTH = [1.0, 0.0, 0.0, 0.0]
@@ -55,7 +61,11 @@ def chunk(text: str, source: str = "doc.pdf") -> Chunk:
 
 
 async def texts(
-    index: QdrantVectorIndex, vector: list[float], owner_id: int, limit: int = 10
+    index: QdrantVectorIndex,
+    vector: list[float],
+    owner_id: int,
+    limit: int = 10,
+    conversation_id: int = THREAD,
 ) -> list[str]:
     """The passages a search found, as plain text.
 
@@ -64,7 +74,13 @@ async def texts(
     that, so they read the text off rather than restating the source every time.
     One test below asserts on the source itself.
     """
-    found = await index.search(vector, limit=limit, score_threshold=-1.0, owner_id=owner_id)
+    found = await index.search(
+        vector,
+        limit=limit,
+        score_threshold=-1.0,
+        owner_id=owner_id,
+        conversation_id=conversation_id,
+    )
     return [chunk.text for chunk in found]
 
 
@@ -72,7 +88,7 @@ class TestEnsure:
     async def test_it_creates_the_collection(self, index: QdrantVectorIndex) -> None:
         # The fixture already called `ensure`; upserting proves the collection
         # it was supposed to create is really there.
-        await index.upsert([chunk("hello")], [NORTH], ALICE, DOC_A)
+        await index.upsert([chunk("hello")], [NORTH], ALICE, DOC_A, THREAD)
 
         assert await texts(index, NORTH, ALICE) == ["hello"]
 
@@ -84,7 +100,7 @@ class TestEnsure:
         client = AsyncQdrantClient(location=":memory:")
         index = QdrantVectorIndex(client, COLLECTION)
         await index.ensure(DIMENSIONS)
-        await index.upsert([chunk("survives")], [NORTH], ALICE, DOC_A)
+        await index.upsert([chunk("survives")], [NORTH], ALICE, DOC_A, THREAD)
 
         await index.ensure(DIMENSIONS)
 
@@ -96,7 +112,7 @@ class TestUpsert:
     async def test_it_stores_the_original_text_of_every_chunk(
         self, index: QdrantVectorIndex
     ) -> None:
-        await index.upsert([chunk("north"), chunk("east")], [NORTH, EAST], ALICE, DOC_A)
+        await index.upsert([chunk("north"), chunk("east")], [NORTH, EAST], ALICE, DOC_A, THREAD)
 
         found = await texts(index, NORTH, ALICE)
 
@@ -109,8 +125,8 @@ class TestUpsert:
         # Counting to pick an id overwrites points whenever anything was
         # deleted, and two concurrent uploads read the same count and clobber
         # each other.
-        await index.upsert([chunk("same")], [NORTH], ALICE, DOC_A)
-        await index.upsert([chunk("same")], [NORTH], ALICE, DOC_A)
+        await index.upsert([chunk("same")], [NORTH], ALICE, DOC_A, THREAD)
+        await index.upsert([chunk("same")], [NORTH], ALICE, DOC_A, THREAD)
 
         found = await texts(index, NORTH, ALICE)
 
@@ -122,20 +138,24 @@ class TestUpsert:
         # Zipping these without checking would silently drop the tail, and the
         # missing chunks would only surface as an answer that omitted them.
         with pytest.raises(ValueError, match="exactly one vector"):
-            await index.upsert([chunk("a"), chunk("b")], [NORTH], ALICE, DOC_A)
+            await index.upsert([chunk("a"), chunk("b")], [NORTH], ALICE, DOC_A, THREAD)
 
     async def test_the_source_file_survives_the_round_trip(self, index: QdrantVectorIndex) -> None:
         # `search` returns `Chunk`s rather than bare strings so an answer can
         # say which document a passage came from. That only works if the source
         # is written into the payload and read back out of it.
-        await index.upsert([chunk("a passage", source="handbook.pdf")], [NORTH], ALICE, DOC_A)
+        await index.upsert(
+            [chunk("a passage", source="handbook.pdf")], [NORTH], ALICE, DOC_A, THREAD
+        )
 
-        found = await index.search(NORTH, limit=1, score_threshold=-1.0, owner_id=ALICE)
+        found = await index.search(
+            NORTH, limit=1, score_threshold=-1.0, owner_id=ALICE, conversation_id=THREAD
+        )
 
         assert found == [Chunk(text="a passage", source="handbook.pdf")]
 
     async def test_upserting_nothing_is_not_a_request(self, index: QdrantVectorIndex) -> None:
-        await index.upsert([], [], ALICE, DOC_A)
+        await index.upsert([], [], ALICE, DOC_A, THREAD)
 
         assert await texts(index, NORTH, ALICE) == []
 
@@ -149,6 +169,7 @@ class TestSearch:
             [SOUTH, EAST, NORTH],
             ALICE,
             DOC_A,
+            THREAD,
         )
 
         found = await texts(index, NORTH, ALICE, limit=3)
@@ -156,15 +177,19 @@ class TestSearch:
         assert found == ["identical", "adjacent", "opposite"]
 
     async def test_it_honours_the_limit(self, index: QdrantVectorIndex) -> None:
-        await index.upsert([chunk("a"), chunk("b"), chunk("c")], [NORTH, EAST, SOUTH], ALICE, DOC_A)
+        await index.upsert(
+            [chunk("a"), chunk("b"), chunk("c")], [NORTH, EAST, SOUTH], ALICE, DOC_A, THREAD
+        )
 
         assert len(await texts(index, NORTH, ALICE, limit=2)) == 2
 
     async def test_the_score_threshold_drops_the_irrelevant(self, index: QdrantVectorIndex) -> None:
-        await index.upsert([chunk("near"), chunk("far")], [NORTH, SOUTH], ALICE, DOC_A)
+        await index.upsert([chunk("near"), chunk("far")], [NORTH, SOUTH], ALICE, DOC_A, THREAD)
 
         # Cosine: 1.0 for NORTH, -1.0 for SOUTH.
-        found = await index.search(NORTH, limit=10, score_threshold=0.5, owner_id=ALICE)
+        found = await index.search(
+            NORTH, limit=10, score_threshold=0.5, owner_id=ALICE, conversation_id=THREAD
+        )
 
         assert [chunk.text for chunk in found] == ["near"]
 
@@ -172,7 +197,7 @@ class TestSearch:
         self, index: QdrantVectorIndex
     ) -> None:
         # The single most consequential assertion about this adapter.
-        await index.upsert([chunk("alice's private notes")], [NORTH], ALICE, DOC_A)
+        await index.upsert([chunk("alice's private notes")], [NORTH], ALICE, DOC_A, THREAD)
 
         assert await texts(index, NORTH, BOB) == []
 
@@ -184,9 +209,9 @@ class TestSearch:
         # every slot and Alice would get nothing back - a correctness bug on top
         # of the isolation one.
         await index.upsert(
-            [chunk("bob 1"), chunk("bob 2"), chunk("bob 3")], [NORTH] * 3, BOB, DOC_B
+            [chunk("bob 1"), chunk("bob 2"), chunk("bob 3")], [NORTH] * 3, BOB, DOC_B, THREAD
         )
-        await index.upsert([chunk("alice")], [EAST], ALICE, DOC_A)
+        await index.upsert([chunk("alice")], [EAST], ALICE, DOC_A, THREAD)
 
         found = await texts(index, NORTH, ALICE, limit=3)
 
@@ -199,14 +224,19 @@ class TestSearch:
         client = AsyncQdrantClient(location=":memory:")
         index = QdrantVectorIndex(client, "never-created")
 
-        assert await index.search(NORTH, limit=3, score_threshold=0.0, owner_id=ALICE) == []
+        assert (
+            await index.search(
+                NORTH, limit=3, score_threshold=0.0, owner_id=ALICE, conversation_id=THREAD
+            )
+            == []
+        )
 
         await index.aclose()
 
 
 class TestDeleteDocument:
     async def test_it_removes_that_documents_passages(self, index: QdrantVectorIndex) -> None:
-        await index.upsert([chunk("gone")], [NORTH], ALICE, DOC_A)
+        await index.upsert([chunk("gone")], [NORTH], ALICE, DOC_A, THREAD)
 
         await index.delete_document(DOC_A, ALICE)
 
@@ -217,8 +247,8 @@ class TestDeleteDocument:
     ) -> None:
         # The reason points carry a document id at all: without it, removing one
         # upload could only ever mean removing everything the owner had.
-        await index.upsert([chunk("deleted doc")], [NORTH], ALICE, DOC_A)
-        await index.upsert([chunk("kept doc")], [EAST], ALICE, DOC_C)
+        await index.upsert([chunk("deleted doc")], [NORTH], ALICE, DOC_A, THREAD)
+        await index.upsert([chunk("kept doc")], [EAST], ALICE, DOC_C, THREAD)
 
         await index.delete_document(DOC_A, ALICE)
 
@@ -227,7 +257,7 @@ class TestDeleteDocument:
     async def test_it_cannot_reach_another_owners_document(self, index: QdrantVectorIndex) -> None:
         # Both fields are in the filter. An id alone would let one account
         # delete another's upload by naming its number.
-        await index.upsert([chunk("bob's")], [NORTH], BOB, DOC_B)
+        await index.upsert([chunk("bob's")], [NORTH], BOB, DOC_B, THREAD)
 
         await index.delete_document(DOC_B, ALICE)
 
@@ -237,3 +267,29 @@ class TestDeleteDocument:
         self, index: QdrantVectorIndex
     ) -> None:
         await index.delete_document(DOC_C, BOB)
+
+
+class TestConversationIsolation:
+    """One thread must not answer out of a file attached to another.
+
+    The owner filter cannot catch this: it is the same person on both sides.
+    """
+
+    async def test_a_search_never_reads_another_threads_document(
+        self, index: QdrantVectorIndex
+    ) -> None:
+        await index.upsert([chunk("the tax return")], [NORTH], ALICE, DOC_A, THREAD)
+        await index.upsert([chunk("the lease")], [NORTH], ALICE, DOC_C, OTHER_THREAD)
+
+        assert await texts(index, NORTH, ALICE, conversation_id=THREAD) == ["the tax return"]
+        assert await texts(index, NORTH, ALICE, conversation_id=OTHER_THREAD) == ["the lease"]
+
+    async def test_a_turn_with_no_thread_reads_nothing(self, index: QdrantVectorIndex) -> None:
+        """`None` is not a wildcard. No thread owns no documents."""
+        await index.upsert([chunk("the tax return")], [NORTH], ALICE, DOC_A, THREAD)
+
+        found = await index.search(
+            NORTH, limit=10, score_threshold=-1.0, owner_id=ALICE, conversation_id=None
+        )
+
+        assert found == []

@@ -6,9 +6,9 @@ from loguru import logger
 
 from app.application.common.uow import UnitOfWorkFactory
 from app.application.ingestion.dto import UploadDocumentInput, UploadDocumentResult
-from app.application.ingestion.ports import FileStorage, RateLimiter
+from app.application.ingestion.ports import DocumentRemover, FileStorage, RateLimiter
 from app.domain.ingestion.entities import UploadedDocument
-from app.domain.ingestion.errors import UnsupportedDocumentType
+from app.domain.ingestion.errors import UnknownConversation, UnsupportedDocumentType
 from app.domain.ingestion.value_objects import DocumentName
 
 # What each accepted media type must actually look like: the extension the name
@@ -56,6 +56,7 @@ class UploadDocument:
         limiter: RateLimiter,
         uow_factory: UnitOfWorkFactory,
         daily_budget: RateLimiter,
+        remove_document: DocumentRemover,
         allowed_content_types: frozenset[str] = frozenset(_ACCEPTED),
     ) -> None:
         self._storage = storage
@@ -63,6 +64,7 @@ class UploadDocument:
         self._limiter = limiter
         self._uow_factory = uow_factory
         self._daily_budget = daily_budget
+        self._remove_document = remove_document
         self._allowed_content_types = allowed_content_types
 
     async def __call__(self, data: UploadDocumentInput) -> UploadDocumentResult:
@@ -81,6 +83,13 @@ class UploadDocument:
         # leave a loop of rejected ones free to run forever. Keyed on the account
         # because that is who the bill follows.
         await self._limiter.hit(f"upload:{data.owner_id}")
+
+        # Checked before a byte is read, for the same reason the type is: an
+        # upload aimed at a thread this account does not own is refused, not
+        # stored and then hidden.
+        async with self._uow_factory() as uow:
+            if await uow.conversations.get(data.conversation_id, data.owner_id) is None:
+                raise UnknownConversation(data.conversation_id)
 
         # Browsers may append parameters ("application/pdf; charset=..."), so
         # only the media type itself is compared.
@@ -102,10 +111,24 @@ class UploadDocument:
         reference = await self._storage.save(name, stream, self._max_bytes, data.owner_id)
         logger.debug("Stored upload {} as {}", name.value, reference)
 
+        # A conversation holds one attachment at a time, so whatever was
+        # attached before is removed now - vectors, file and row. Attaching a
+        # second file used to leave the first one indexed and retrievable, so
+        # a question about the new document could be answered out of the old
+        # one, with a citation naming a file the user thought they had
+        # replaced. Done after the new file is safely stored, never before: a
+        # failed upload must not cost the user the document they still had.
+        await self._replace_attachments(data.owner_id, data.conversation_id)
+
         # Recorded here, not by the indexer: the file exists and is this
         # owner's the moment it lands on disk, whether or not indexing behind
         # it ever succeeds, and a document manager needs to list it either way.
-        record = UploadedDocument(name=name.value, reference=reference, owner_id=data.owner_id)
+        record = UploadedDocument(
+            name=name.value,
+            reference=reference,
+            owner_id=data.owner_id,
+            conversation_id=data.conversation_id,
+        )
         async with self._uow_factory() as uow:
             stored = await uow.documents.add(record)
             await uow.commit()
@@ -113,6 +136,25 @@ class UploadDocument:
         return UploadDocumentResult(
             reference=stored.reference, name=stored.name, document_id=_require_id(stored)
         )
+
+    async def _replace_attachments(self, owner_id: int, conversation_id: int) -> None:
+        """Remove every document already attached to this conversation.
+
+        A failure here is logged and swallowed. The user's new file is already
+        stored, and refusing the upload because an old one would not delete
+        would trade a working attachment for a stale one. What is left behind
+        is a document the user can still remove by hand.
+        """
+        async with self._uow_factory() as uow:
+            previous = await uow.documents.list_by_conversation(owner_id, conversation_id)
+
+        for document in previous:
+            if document.id is None:
+                continue
+            try:
+                await self._remove_document(document.id, owner_id)
+            except Exception as exc:
+                logger.warning(f"Could not replace document {document.id}: {exc}")
 
 
 def _require_id(document: UploadedDocument) -> int:

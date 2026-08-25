@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, isAbort, messageFrom } from '../../../lib/http'
-import { uploadPdf } from '../api'
+import { deleteDocument, uploadPdf } from '../api'
 import type { UploadedFile } from '../types'
 
 // Mirrors the backend's `_ACCEPTED` table in
@@ -15,8 +15,16 @@ const ACCEPTED_TYPES = new Set([
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 ])
 
-/** Owns the document attachment: file selection or a pasted URL, and the error surfaced inline. */
-export function useFileUpload() {
+/**
+ * Owns the document attachment for one conversation.
+ *
+ * A document belongs to the thread it was attached to, so this hook takes the
+ * conversation id and does two things with it. Every upload names it, and
+ * switching threads drops the chip - the file it named is not this thread's
+ * attachment, and showing it would claim the model can read something it
+ * cannot.
+ */
+export function useFileUpload(conversationId: number) {
   const [file, setFile] = useState<UploadedFile | null>(null)
   const [isUploading, setIsUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -61,15 +69,38 @@ export function useFileUpload() {
         setError('File must be a PDF, text, markdown, or Word (.docx) document.')
         return
       }
-      await run((signal) => uploadPdf(selected, signal))
+      await run((signal) => uploadPdf(selected, conversationId, signal))
     },
-    [run],
+    [run, conversationId],
   )
 
-  const clear = useCallback(() => {
+  /**
+   * Removes the attachment for good: passages, stored file and row.
+   *
+   * The chip disappears first and does not come back if the request fails. The
+   * user asked for this document to be gone, and leaving the chip up to report
+   * a server-side failure would invite them to keep pressing a button that has
+   * already done what it can. The failure is surfaced in its place instead.
+   */
+  const clear = useCallback(async () => {
+    const attached = file
     setFile(null)
     setError(null)
-  }, [])
+    if (attached === null) return
+
+    try {
+      await deleteDocument(attached.id)
+    } catch (err) {
+      setError(messageFrom(err, 'Could not remove that file.'))
+    }
+  }, [file])
+
+  // Switching threads is not a removal: the document stays attached to the
+  // conversation it was uploaded into, and this only stops showing it here.
+  useEffect(() => {
+    setFile(null)
+    setError(null)
+  }, [conversationId])
 
   useEffect(() => () => abortRef.current?.abort(), [])
 
