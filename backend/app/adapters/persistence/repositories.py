@@ -156,11 +156,17 @@ class SqlAlchemyDocumentRepository:
         logger.debug(f"Inserted document {row.id} for owner {row.owner_id}")
         return document_to_domain(row)
 
-    async def set_chunks_indexed(self, document_id: int, owner_id: int, count: int) -> None:
+    async def set_indexed(self, document_id: int, owner_id: int, count: int, summary: str) -> None:
+        """Record what indexing produced: how many chunks, and what it is about.
+
+        One statement rather than two, because both values are written at the
+        same moment by the same caller and a second round trip would buy
+        nothing. Scoped by owner like every other method here.
+        """
         await self._session.execute(
             update(DocumentModel)
             .where(DocumentModel.id == document_id, DocumentModel.owner_id == owner_id)
-            .values(chunks_indexed=count)
+            .values(chunks_indexed=count, summary=summary)
         )
 
     async def delete(self, document_id: int, owner_id: int) -> None:

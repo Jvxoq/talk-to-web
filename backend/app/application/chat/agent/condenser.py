@@ -1,8 +1,9 @@
-"""The one place a conversation is shortened.
+"""The one place text is shortened.
 
-Both compression points - history summarization and tool-output compression -
-go through this single service, so there is one prompt style, one failure
-policy and one place to tune. It is a plain application service: it calls the
+All three compression points - history summarization, tool-output compression
+and the digest written for an uploaded document - go through this single
+service, so there is one prompt style, one failure policy and one place to
+tune. It is a plain application service: it calls the
 `ChatModel` port with an empty tool list, so it never imports LangGraph or
 LangChain and never becomes a second agent.
 
@@ -31,6 +32,7 @@ class Condenser:
         max_chars: int,
         tool_condense_prompt: str,
         summary_prompt: str,
+        document_summary_prompt: str,
         tracer: Tracer,
     ) -> None:
         self._model = model
@@ -38,6 +40,7 @@ class Condenser:
         self.max_chars = max_chars
         self._tool_condense_prompt = tool_condense_prompt
         self._summary_prompt = summary_prompt
+        self._document_summary_prompt = document_summary_prompt
         self._tracer = tracer
 
     async def condense(self, text: str, *, focus: str) -> str | None:
@@ -59,6 +62,29 @@ class Condenser:
             return None
         payload = [ChatMessage(role="system", content=self._summary_prompt), *messages]
         return await self._run(payload, span_name="condense.summary")
+
+    async def summarize_document(self, name: str, text: str) -> str | None:
+        """Write the few sentences that say what an uploaded document is about.
+
+        Satisfies `app.application.ingestion.ports.DocumentSummarizer`
+        structurally - ingestion declares that port and never learns this class
+        exists. Returning `None` on failure is the same contract as the two
+        methods above, and matters more here: a digest is an enhancement, and a
+        condenser having a bad day must not cost the user their upload.
+
+        The same `max_chars` ceiling applies. A digest is written from the
+        opening of a document rather than the whole of it on purpose - the
+        first pages are what say what a document *is*, and paying to read a
+        200-page PDF in full to produce three sentences is not a trade worth
+        making.
+        """
+        if not text.strip():
+            return None
+        messages = [
+            ChatMessage(role="system", content=self._document_summary_prompt),
+            ChatMessage(role="user", content=f"Filename: {name}\n\n{text[: self.max_chars]}"),
+        ]
+        return await self._run(messages, span_name="condense.document_summary")
 
     async def _run(self, messages: Sequence[ChatMessage], *, span_name: str) -> str | None:
         """One condenser turn. Returns `None` on any failure, never raises."""

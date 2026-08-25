@@ -6,7 +6,7 @@ a connection, which is what lets tests and migrations import it freely.
 
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, String
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -124,4 +124,10 @@ class DocumentModel(Base):
     # matching `FileStorage`/`TextExtractor` pair may interpret it.
     reference: Mapped[str] = mapped_column()
     chunks_indexed: Mapped[int] = mapped_column(default=0)
+    # What this document is about, in a few sentences, written once when the
+    # upload was indexed. `server_default` rather than a Python-side default so
+    # the rows that existed before this column did read as "" instead of NULL,
+    # and the domain entity never has to model an absent summary separately
+    # from an empty one.
+    summary: Mapped[str] = mapped_column(Text, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(_TIMESTAMP, default=_utc_now)

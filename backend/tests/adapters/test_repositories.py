@@ -357,20 +357,22 @@ class TestSqlAlchemyDocumentRepository:
             "mine.pdf"
         ]
 
-    async def test_set_chunks_indexed_records_how_much_was_indexed(
+    async def test_set_indexed_records_how_much_was_indexed(
         self, session: AsyncSession, owner: UserModel
     ) -> None:
         repository = SqlAlchemyDocumentRepository(session)
         stored = await repository.add(a_document(owner.id))
         assert stored.id is not None
 
-        await repository.set_chunks_indexed(stored.id, owner.id, 17)
+        await repository.set_indexed(stored.id, owner.id, 17, "what it is about")
         session.expunge_all()
 
         loaded = await repository.get(stored.id, owner.id)
-        assert loaded is not None and loaded.chunks_indexed == 17
+        assert loaded is not None
+        assert loaded.chunks_indexed == 17
+        assert loaded.summary == "what it is about"
 
-    async def test_set_chunks_indexed_cannot_touch_another_owners_document(
+    async def test_set_indexed_cannot_touch_another_owners_document(
         self, session: AsyncSession, owner: UserModel
     ) -> None:
         stranger = await make_user(session, "stranger@example.com")
@@ -378,11 +380,13 @@ class TestSqlAlchemyDocumentRepository:
         stored = await repository.add(a_document(owner.id))
         assert stored.id is not None
 
-        await repository.set_chunks_indexed(stored.id, stranger.id, 99)
+        await repository.set_indexed(stored.id, stranger.id, 99, "not theirs to write")
         session.expunge_all()
 
         loaded = await repository.get(stored.id, owner.id)
-        assert loaded is not None and loaded.chunks_indexed == 0
+        assert loaded is not None
+        assert loaded.chunks_indexed == 0
+        assert loaded.summary == "", "a stranger must not be able to write a summary either"
 
     async def test_delete_removes_the_document(
         self, session: AsyncSession, owner: UserModel

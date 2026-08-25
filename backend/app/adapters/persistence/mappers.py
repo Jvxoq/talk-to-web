@@ -139,6 +139,7 @@ def document_to_domain(row: DocumentModel) -> UploadedDocument:
         owner_id=row.owner_id,
         id=row.id,
         chunks_indexed=row.chunks_indexed,
+        summary=row.summary,
         created_at=row.created_at,
     )
 
@@ -150,6 +151,7 @@ def document_to_model(entity: UploadedDocument) -> DocumentModel:
         reference=entity.reference,
         owner_id=entity.owner_id,
         chunks_indexed=entity.chunks_indexed,
+        summary=entity.summary,
     )
     if entity.id is not None:
         model.id = entity.id

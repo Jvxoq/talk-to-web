@@ -20,6 +20,7 @@ def make_condenser(
         max_chars=max_chars,
         tool_condense_prompt="condense",
         summary_prompt="summarize",
+        document_summary_prompt="describe this document",
         tracer=tracer or RecordingTracer(),
     )
 
@@ -102,3 +103,58 @@ class TestCondenserTracing:
         assert len(spans) == 1
         assert len(spans[0].errors) == 1
         assert "boom" in str(spans[0].errors[0])
+
+
+class TestSummarizeDocument:
+    """The digest written once per upload, and read on every turn after it."""
+
+    async def test_it_returns_what_the_model_wrote(self) -> None:
+        condenser = make_condenser(
+            FakeChatModel(turns=[[ModelChunk(text="A budget "), ModelChunk(text="for Q3.")]])
+        )
+
+        result = await condenser.summarize_document("budget.pdf", "lots of text")
+
+        assert result == "A budget for Q3."
+
+    async def test_the_filename_and_the_text_both_reach_the_model(self) -> None:
+        model = FakeChatModel(turns=[[ModelChunk(text="ok")]])
+        condenser = make_condenser(model)
+
+        await condenser.summarize_document("budget-q3.pdf", "travel spend rose")
+
+        sent = "\n".join(message.content for message in model.seen_messages[0])
+        assert "budget-q3.pdf" in sent, "the name is often the clearest signal of what a file is"
+        assert "travel spend rose" in sent
+
+    async def test_a_summarizer_is_given_no_tools(self) -> None:
+        # Same reason the other two condenser methods pass none: a condenser
+        # that can call tools is a second agent.
+        model = FakeChatModel(turns=[[ModelChunk(text="ok")]])
+
+        await make_condenser(model).summarize_document("a.pdf", "text")
+
+        assert model.seen_tools == [[]]
+
+    async def test_an_empty_document_is_not_worth_a_model_call(self) -> None:
+        model = FakeChatModel(turns=[[ModelChunk(text="never asked")]])
+        condenser = make_condenser(model)
+
+        assert await condenser.summarize_document("blank.pdf", "   \n  ") is None
+        assert model.seen_messages == [], "nothing to summarize must not cost a request"
+
+    async def test_a_failing_model_returns_none_rather_than_raising(self) -> None:
+        # The contract ingestion relies on: a digest is an enhancement, so a
+        # summarizer having a bad day must never cost the user their upload.
+        condenser = make_condenser(FakeChatModel(fail_with=RuntimeError("boom")))
+
+        assert await condenser.summarize_document("budget.pdf", "text") is None
+
+    async def test_the_input_is_sliced_to_max_chars(self) -> None:
+        model = FakeChatModel(turns=[[ModelChunk(text="ok")]])
+        condenser = make_condenser(model, max_chars=50)
+
+        await condenser.summarize_document("big.pdf", "y" * 5_000)
+
+        sent = model.seen_messages[0][-1].content
+        assert sent.count("y") == 50, "a 200-page PDF must not be read in full for three sentences"

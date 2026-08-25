@@ -75,4 +75,14 @@ class UploadedDocument:
     owner_id: int
     id: int | None = None
     chunks_indexed: int = 0
+    # A few sentences saying what is in this document, written by the condenser
+    # when the upload was indexed. Empty until indexing finishes, and empty
+    # forever if the condenser could not answer - a digest is an enhancement,
+    # and a document with no summary is still fully searchable.
+    #
+    # It exists so the agent can tell, before searching anything, whether this
+    # user's files are likely to hold the answer. Without it the model is
+    # guessing, and a guess that goes the wrong way sends a private question to
+    # a web search.
+    summary: str = ""
     created_at: datetime | None = None

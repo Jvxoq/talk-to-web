@@ -6,7 +6,12 @@ from loguru import logger
 
 from app.application.common.uow import UnitOfWorkFactory
 from app.application.ingestion.dto import IndexDocumentResult
-from app.application.ingestion.ports import Embedder, TextExtractor, VectorIndex
+from app.application.ingestion.ports import (
+    DocumentSummarizer,
+    Embedder,
+    TextExtractor,
+    VectorIndex,
+)
 from app.domain.ingestion.entities import Document
 from app.domain.ingestion.errors import DocumentNotIndexable
 from app.domain.ingestion.value_objects import DocumentName
@@ -38,6 +43,7 @@ class IndexDocument:
         chunk_overlap: int,
         embedding_dimensions: int,
         uow_factory: UnitOfWorkFactory,
+        summarizer: DocumentSummarizer,
     ) -> None:
         self._extractor = extractor
         self._embedder = embedder
@@ -46,19 +52,15 @@ class IndexDocument:
         self._chunk_overlap = chunk_overlap
         self._embedding_dimensions = embedding_dimensions
         self._uow_factory = uow_factory
+        self._summarizer = summarizer
 
     async def __call__(
-        self, reference: str, name: str, document_id: int, owner_id: int, text: str | None = None
+        self, reference: str, name: str, document_id: int, owner_id: int
     ) -> IndexDocumentResult:
-        """
-        `text`, when given, is already-fetched content (currently only
-        `IngestUrl`'s page text) and is indexed as-is - `reference` is then
-        just the record's identity, never read from. Left `None`, `reference`
-        is a `TextExtractor`-readable location, as it is for an uploaded file.
-        """
+        """`reference` is a `TextExtractor`-readable location of the stored file."""
         logger.debug("Indexing {} from {} for owner {}", name, reference, owner_id)
 
-        content = text if text is not None else await self._extractor.extract(reference)
+        content = await self._extractor.extract(reference)
         document = Document(name=DocumentName(name), content=content)
         if not document.is_indexable():
             raise DocumentNotIndexable(name)
@@ -77,9 +79,42 @@ class IndexDocument:
 
         await self._index.upsert(chunks, vectors, owner_id, document_id)
 
+        summary = await self._digest(name, document.content)
+
         async with self._uow_factory() as uow:
-            await uow.documents.set_chunks_indexed(document_id, owner_id, len(chunks))
+            await uow.documents.set_indexed(document_id, owner_id, len(chunks), summary)
             await uow.commit()
 
         logger.debug("Indexed {} chunk(s) from {}", len(chunks), name)
         return IndexDocumentResult(chunks_indexed=len(chunks))
+
+    async def _digest(self, name: str, content: str) -> str:
+        """A few sentences on what this document is, or "" if none could be had.
+
+        Never raises and never blocks the upload. The document is already
+        embedded and searchable by the time this runs; the digest only decides
+        how readily the agent *reaches* for it, so failing to write one costs
+        discoverability, not the file.
+
+        Stored exactly as the summarizer wrote it. It is derived from an
+        uploaded file, so a hostile document shapes part of it - but the fence
+        that makes that safe belongs where the model reads it, not here.
+        `GenerateReply` puts the whole digest block through the same
+        `ToolOutputGuard` every tool result goes through, which keeps fencing
+        in one place rather than storing pre-fenced text in a column.
+        """
+        # Caught, even though the port says a summarizer returns `None` rather
+        # than raising - the same belt-and-braces `ToolRegistry.invoke` applies
+        # to tools that do not extend `BaseTool`. By this point the document is
+        # embedded and upserted, so an exception escaping here would abandon the
+        # run before the chunk count was ever written: the vectors would exist
+        # while the row still claimed nothing had been indexed.
+        try:
+            summary = await self._summarizer.summarize_document(name, content)
+        except Exception as error:
+            logger.warning("Summarizer raised for {}; indexing it without one: {}", name, error)
+            return ""
+        if summary is None:
+            logger.info("No summary produced for {}; indexing it without one", name)
+            return ""
+        return summary

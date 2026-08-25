@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 import pytest
 
 from app.application.ingestion.dto import UploadDocumentInput
+from app.application.ingestion.ports import DocumentSummarizer
 from app.application.ingestion.use_cases.delete_document import DeleteDocument
 from app.application.ingestion.use_cases.index_document import IndexDocument
 from app.application.ingestion.use_cases.list_documents import ListDocuments
@@ -17,6 +18,7 @@ from app.domain.ingestion.errors import (
 )
 from app.domain.usage.errors import RateLimited
 from tests.fakes import (
+    FakeDocumentSummarizer,
     FakeEmbedder,
     FakeFileStorage,
     FakeRateLimiter,
@@ -256,6 +258,7 @@ class TestIndexDocument:
         text: str,
         index: FakeVectorIndex | None = None,
         factory: UnitOfWorkSpy | None = None,
+        summarizer: DocumentSummarizer | None = None,
     ) -> IndexDocument:
         return IndexDocument(
             extractor=FakeTextExtractor(text),
@@ -265,6 +268,7 @@ class TestIndexDocument:
             chunk_overlap=20,
             embedding_dimensions=3,
             uow_factory=factory or UnitOfWorkSpy(),
+            summarizer=summarizer or FakeDocumentSummarizer(),
         )
 
     async def test_indexes_every_chunk_exactly_once(self) -> None:
@@ -300,38 +304,12 @@ class TestIndexDocument:
             chunk_overlap=10,
             embedding_dimensions=3,
             uow_factory=UnitOfWorkSpy(),
+            summarizer=FakeDocumentSummarizer(),
         )
 
         result = await use_case("uploads/a.pdf", "a.pdf", 1, OWNER)
 
         assert len(embedder.embedded) == result.chunks_indexed > 20
-
-    async def test_inline_text_is_indexed_without_calling_the_extractor(self) -> None:
-        """The `IngestUrl` path: the page text arrives with the call, so there is
-        nothing at `reference` for the extractor to read - and it must not try."""
-        extractor = FakeTextExtractor("should never be read")
-        index = FakeVectorIndex()
-        use_case = IndexDocument(
-            extractor=extractor,
-            embedder=FakeEmbedder(),
-            index=index,
-            chunk_size=100,
-            chunk_overlap=20,
-            embedding_dimensions=3,
-            uow_factory=UnitOfWorkSpy(),
-        )
-
-        result = await use_case(
-            "https://example.com/a",
-            "example.com-abc123.txt",
-            1,
-            OWNER,
-            text="the fetched page text",
-        )
-
-        assert extractor.calls == []
-        assert result.chunks_indexed == len(index.chunks) > 0
-        assert all(chunk.source == "example.com-abc123.txt" for chunk in index.chunks)
 
     async def test_ensures_the_collection_without_clearing_it(self) -> None:
         index = FakeVectorIndex()
@@ -366,6 +344,70 @@ class TestIndexDocument:
 
         assert index.by_owner[OWNER], "the first owner's passages must survive"
         assert index.by_owner[STRANGER]
+
+    async def test_it_stores_the_digest_alongside_the_chunk_count(self) -> None:
+        factory = UnitOfWorkSpy()
+        summarizer = FakeDocumentSummarizer("A quarterly travel budget.")
+        document = await factory.documents.add(existing_document(1, OWNER))
+        assert document.id is not None
+
+        await self.build("word " * 200, factory=factory, summarizer=summarizer)(
+            reference="uploads/a.pdf", name="a.pdf", document_id=document.id, owner_id=OWNER
+        )
+
+        stored = await factory.documents.get(document.id, OWNER)
+        assert stored is not None
+        assert stored.summary == "A quarterly travel budget."
+        assert stored.chunks_indexed > 0
+
+    async def test_the_summarizer_reads_the_extracted_text_not_the_raw_file(self) -> None:
+        summarizer = FakeDocumentSummarizer()
+
+        await self.build("the extracted words", summarizer=summarizer)(
+            reference="uploads/a.pdf", name="a.pdf", document_id=1, owner_id=OWNER
+        )
+
+        assert summarizer.calls == [("a.pdf", "the extracted words")]
+
+    async def test_a_summarizer_that_declines_still_indexes_the_document(self) -> None:
+        # `None` is the port's "could not summarize this". The file is already
+        # embedded by then, so it must stay fully searchable with an empty
+        # digest rather than losing the upload over an enhancement.
+        factory = UnitOfWorkSpy()
+        document = await factory.documents.add(existing_document(1, OWNER))
+        assert document.id is not None
+
+        result = await self.build(
+            "word " * 200, factory=factory, summarizer=FakeDocumentSummarizer(fail=True)
+        )(reference="uploads/a.pdf", name="a.pdf", document_id=document.id, owner_id=OWNER)
+
+        assert result.chunks_indexed > 0
+        stored = await factory.documents.get(document.id, OWNER)
+        assert stored is not None
+        assert stored.summary == ""
+        assert stored.chunks_indexed == result.chunks_indexed
+
+    async def test_a_summarizer_that_raises_still_indexes_the_document(self) -> None:
+        # Belt and braces against a summarizer that breaks the port's contract.
+        # The vectors are already upserted at this point, so an exception
+        # escaping would leave them stranded behind a row still claiming zero
+        # chunks - the one inconsistency this use case must not produce.
+        class ExplodingSummarizer:
+            async def summarize_document(self, name: str, text: str) -> str | None:
+                raise RuntimeError("provider down")
+
+        factory = UnitOfWorkSpy()
+        document = await factory.documents.add(existing_document(1, OWNER))
+        assert document.id is not None
+
+        result = await self.build("word " * 200, factory=factory, summarizer=ExplodingSummarizer())(
+            reference="uploads/a.pdf", name="a.pdf", document_id=document.id, owner_id=OWNER
+        )
+
+        assert result.chunks_indexed > 0
+        stored = await factory.documents.get(document.id, OWNER)
+        assert stored is not None
+        assert stored.chunks_indexed == result.chunks_indexed
 
     async def test_a_scan_with_no_text_is_a_business_failure(self) -> None:
         index = FakeVectorIndex()
@@ -407,8 +449,9 @@ class TestDeleteDocument:
         assert factory.issued[0].committed
 
     async def test_a_url_ingested_document_never_touches_storage(self) -> None:
-        """`IngestUrl` never wrote a file - its `reference` is the source URL -
-        so deleting it must not ask `FileStorage` to remove anything."""
+        """A document from the removed URL path never had a file - its `reference`
+        is the source URL - so deleting it must not ask `FileStorage` to remove
+        anything."""
         factory = UnitOfWorkSpy()
         factory.documents.rows[1] = UploadedDocument(
             name="example.com-abc123.txt",
