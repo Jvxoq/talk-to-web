@@ -6,7 +6,7 @@ import type { Model } from '../types'
  * Used to seed state before the real list has arrived, and again if the
  * request fails outright — the composer's model select must never be empty.
  */
-export const FALLBACK_MODELS: Model[] = ['openai/gpt-oss-120b', 'openai/gpt-oss-20b']
+export const FALLBACK_MODELS: Model[] = ['qwen/qwen3.6-27b']
 export const FALLBACK_DEFAULT_MODEL: Model = FALLBACK_MODELS[0]
 
 /**

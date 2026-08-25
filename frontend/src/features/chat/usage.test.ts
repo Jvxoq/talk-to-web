@@ -7,14 +7,14 @@ describe('parseUsage', () => {
       prompt_tokens: 812,
       completion_tokens: 143,
       elapsed_ms: 1834,
-      model: 'openai/gpt-oss-120b',
+      model: 'qwen/qwen3.6-27b',
     }
 
     expect(parseUsage(raw)).toEqual({
       promptTokens: 812,
       completionTokens: 143,
       elapsedMs: 1834,
-      model: 'openai/gpt-oss-120b',
+      model: 'qwen/qwen3.6-27b',
     })
   })
 

@@ -27,14 +27,17 @@ function Chat({
   model,
   onModelChange,
   conversationId,
+  preloaded,
 }: {
   model: Model
   onModelChange: (m: Model) => void
   conversationId: number
+  preloaded: ConversationOut | null
 }) {
   const { messages, isStreaming, send, cooldownUntil, restoreText, clearRestoreText } = useChat(
     model,
     conversationId,
+    preloaded,
   )
 
   return (
@@ -76,7 +79,6 @@ function Shell() {
   const [model, setModel] = useState<Model>(FALLBACK_DEFAULT_MODEL)
   const { theme, toggle } = useTheme()
   const { user, status } = useAuth()
-  const [documentsOpen, setDocumentsOpen] = useState(false)
 
   // Idle until signed in - `useConversations` would otherwise fire its first
   // `GET /conversations/` before there is a token to send with it.
@@ -109,14 +111,6 @@ function Shell() {
           <h1>Talk to web</h1>
           <span className="eyebrow">Beta</span>
           {user && <span className="header__email">{user.email}</span>}
-          {user && (
-            <IconButton
-              variant="secondary"
-              label="Manage documents"
-              icon={<FileText strokeWidth={2} aria-hidden="true" />}
-              onClick={() => setDocumentsOpen(true)}
-            />
-          )}
           <ThemeToggle theme={theme} onToggle={toggle} />
           {user && <SignOutButton />}
         </header>
