@@ -11,6 +11,7 @@ from loguru import logger
 from app.api.middleware import request_id_of
 from app.domain.chat.errors import (
     ChatError,
+    ConversationLimitReached,
     ConversationNotFound,
     EmptyUserMessage,
     UnsafeUrl,
@@ -31,6 +32,7 @@ from app.domain.ingestion.errors import (
     DocumentNotIndexable,
     DocumentTooLarge,
     IngestionError,
+    UnknownConversation,
     UnsupportedDocumentType,
 )
 from app.domain.transcription.errors import (
@@ -46,7 +48,12 @@ _INTERNAL_ERROR_DETAIL = "Internal server error"
 
 _STATUS: dict[type[Exception], int] = {
     ConversationNotFound: status.HTTP_404_NOT_FOUND,
+    # 409, not 429: nothing is rate limited and waiting changes nothing. The
+    # account is in a state that conflicts with the request, and the client
+    # fixes it by deleting a conversation.
+    ConversationLimitReached: status.HTTP_409_CONFLICT,
     DocumentNotFound: status.HTTP_404_NOT_FOUND,
+    UnknownConversation: status.HTTP_404_NOT_FOUND,
     EmptyUserMessage: status.HTTP_422_UNPROCESSABLE_CONTENT,
     DocumentNotIndexable: status.HTTP_422_UNPROCESSABLE_CONTENT,
     UnsupportedDocumentType: status.HTTP_400_BAD_REQUEST,

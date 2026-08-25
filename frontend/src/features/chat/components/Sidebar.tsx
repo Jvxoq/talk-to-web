@@ -11,6 +11,8 @@ interface SidebarProps {
   onSelect: (id: number) => void
   onNew: () => void
   onDelete: (id: number) => void
+  /** Why the last "new chat" did nothing, most often the per-account cap. */
+  error: string | null
 }
 
 /**
@@ -20,7 +22,15 @@ interface SidebarProps {
  * did and was never called from anywhere - this is the UI that finally calls
  * it.
  */
-export function Sidebar({ conversations, activeId, isLoading, onSelect, onNew, onDelete }: SidebarProps) {
+export function Sidebar({
+  conversations,
+  activeId,
+  isLoading,
+  onSelect,
+  onNew,
+  onDelete,
+  error,
+}: SidebarProps) {
   const reduce = useReducedMotion() ?? false
 
   return (
@@ -34,6 +44,14 @@ export function Sidebar({ conversations, activeId, isLoading, onSelect, onNew, o
           onClick={() => void onNew()}
         />
       </div>
+
+      {/* `role="status"`, not `alert`: it appears in response to a button the
+          user just pressed, so it needs announcing without interrupting. */}
+      {error !== null && (
+        <p className="sidebar-error" role="status">
+          {error}
+        </p>
+      )}
 
       <ul className="sidebar-list">
         {conversations.length === 0 && (

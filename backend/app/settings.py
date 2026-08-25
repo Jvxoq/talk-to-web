@@ -277,6 +277,11 @@ class Settings(BaseSettings):
     # bounded so a prolific uploader does not crowd out their own question.
     # Newest documents win, since those are what a person is most likely asking
     # about.
+    # How many conversations one account may hold at once. Small on purpose:
+    # each thread now owns its own uploads, and the deployment embeds every
+    # accepted file at the provider's per-token price. Reaching the cap is
+    # refused with a 409, never resolved by deleting the oldest thread.
+    max_conversations_per_user: int = 2
     chat_digest_max_documents: int = 6
     chat_digest_max_summary_chars: int = 200
 

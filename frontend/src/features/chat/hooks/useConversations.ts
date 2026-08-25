@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { ApiError } from '../../../lib/http'
 import {
   createConversation,
   deleteConversation,
@@ -44,6 +45,10 @@ export function useConversations(model: Model, enabled: boolean) {
   // instead of fetching it again. Null whenever there was nothing to preload —
   // a first-ever visit, or a pin that turned out to be stale.
   const [preloaded, setPreloaded] = useState<ConversationOut | null>(null)
+  // Why the last "new chat" did nothing. The server caps how many
+  // conversations an account may hold and answers 409 past it, so this is a
+  // state the user has to act on - delete one - rather than a failure to log.
+  const [error, setError] = useState<string | null>(null)
 
   // Read at bootstrap and inside `startNew` via a ref, so neither re-runs
   // when the user switches models mid-session.
@@ -113,7 +118,19 @@ export function useConversations(model: Model, enabled: boolean) {
   }, [])
 
   const startNew = useCallback(async () => {
-    const created = await createConversation(modelRef.current)
+    setError(null)
+    let created: ConversationOut
+    try {
+      created = await createConversation(modelRef.current)
+    } catch (err) {
+      // 409 is the cap, and its detail is the server's own sentence about how
+      // many threads are allowed. Anything else is a real failure and is
+      // surfaced in the same place rather than disappearing.
+      setError(
+        err instanceof ApiError ? err.message : 'Could not start a new chat. Try again.',
+      )
+      return
+    }
     // A brand new conversation has no messages, so hand it over as its own
     // preload rather than letting `useChat` fetch an empty transcript.
     setPreloaded(created)
@@ -125,6 +142,8 @@ export function useConversations(model: Model, enabled: boolean) {
   const remove = useCallback(
     async (id: number) => {
       await deleteConversation(id)
+      // Deleting one makes room, so whatever the cap last said is stale.
+      setError(null)
       const remaining = conversationsRef.current.filter((c) => c.id !== id)
       setConversations(remaining)
 
@@ -147,5 +166,5 @@ export function useConversations(model: Model, enabled: boolean) {
     [activeId, select],
   )
 
-  return { conversations, activeId, isLoading, preloaded, select, startNew, remove }
+  return { conversations, activeId, isLoading, preloaded, error, select, startNew, remove }
 }

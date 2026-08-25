@@ -16,6 +16,21 @@ class ConversationNotFound(ChatError):
         super().__init__(f"Conversation {conversation_id} not found")
 
 
+class ConversationLimitReached(ChatError):
+    """The account already holds as many conversations as it may.
+
+    A cap rather than an eviction: deleting someone's oldest thread to make
+    room for a new one destroys data they never asked to lose. Refusing tells
+    them what to do about it.
+    """
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        super().__init__(
+            f"You can keep {limit} conversations at a time. Delete one to start another."
+        )
+
+
 class UnsupportedModel(ChatError):
     def __init__(self, model: str) -> None:
         self.model = model
