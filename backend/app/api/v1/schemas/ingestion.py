@@ -12,10 +12,6 @@ class FileUploadResponse(BaseModel):
     file_path: str
 
 
-class UrlUploadRequest(BaseModel):
-    url: str
-
-
 class DocumentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

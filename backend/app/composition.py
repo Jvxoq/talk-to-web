@@ -13,6 +13,7 @@ import aiohttp
 from fastapi import FastAPI
 from google import genai
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from loguru import logger
 from psycopg import AsyncConnection
 from psycopg.rows import DictRow, dict_row
@@ -49,8 +50,9 @@ from app.application.chat.agent.condenser import Condenser
 from app.application.chat.agent.graph import build_agent_graph
 from app.application.chat.guardrails.policy import InputGuardPolicy
 from app.application.chat.guardrails.tool_output import ToolOutputGuard
+from app.application.chat.models import ChatMessage
 from app.application.chat.ports import Tracer
-from app.application.chat.tools.base import ToolRegistry
+from app.application.chat.tools.base import ToolRegistry, ToolRoutingPolicy
 from app.application.chat.tools.fetch_web_pages import FetchWebPages
 from app.application.chat.tools.retrieve_documents import RetrieveDocuments
 from app.application.chat.tools.search_web import SearchWeb
@@ -70,7 +72,6 @@ from app.application.identity.use_cases.register_user import RegisterUser
 from app.application.identity.use_cases.revoke_session import RevokeSession
 from app.application.ingestion.use_cases.delete_document import DeleteDocument
 from app.application.ingestion.use_cases.index_document import IndexDocument
-from app.application.ingestion.use_cases.ingest_url import IngestUrl
 from app.application.ingestion.use_cases.list_documents import ListDocuments
 from app.application.ingestion.use_cases.upload_document import UploadDocument
 from app.application.transcription.use_cases.transcribe_stream import TranscribeStream
@@ -106,7 +107,6 @@ class AppContainer:
     record_exchange: RecordExchange
     delete_conversation: DeleteConversation
     upload_document: UploadDocument
-    ingest_url: IngestUrl
     index_document: IndexDocument
     list_documents: ListDocuments
     delete_document: DeleteDocument
@@ -233,6 +233,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         max_chars=settings.agent_condenser_max_chars,
         tool_condense_prompt=settings.agent_tool_condense_prompt,
         summary_prompt=settings.agent_summary_prompt,
+        document_summary_prompt=settings.agent_document_summary_prompt,
         tracer=tracer,
     )
     vector_index = QdrantVectorIndex(client=qdrant_client, collection=settings.qdrant_collection)
@@ -348,7 +349,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 max_lifetime=300,
             )
         )
-        checkpointer = AsyncPostgresSaver(conn=checkpointer_pool)
+        # `serde` allow-lists `ChatMessage` for msgpack, the binary format the
+        # checkpointer uses to serialize `AgentState.messages`. Without it,
+        # LangGraph only warns today but a future version refuses to load
+        # checkpoints holding our own type.
+        checkpointer = AsyncPostgresSaver(
+            conn=checkpointer_pool,
+            serde=JsonPlusSerializer(allowed_msgpack_modules=(ChatMessage,)),
+        )
         # Deliberately NOT gated on `environment == "local"`, unlike the
         # `create_all` above. These tables belong to LangGraph, not to us: they
         # are not in our Alembic history, and `setup()` is the only supported way
@@ -374,6 +382,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     SearchWeb(searcher, max_results=settings.tavily_max_results),
                 ],
                 guard=tool_output_guard,
+                # Which tool must be tried first, on a question the user framed
+                # as being about their own files. Named here rather than inside
+                # the registry because this is the file that decides which tools
+                # exist at all; the registry only enforces the order.
+                routing=ToolRoutingPolicy(
+                    document_tool=RetrieveDocuments.name,
+                    web_search_tool=SearchWeb.name,
+                ),
             ),
             max_iterations=settings.agent_max_tool_iterations,
             checkpointer=checkpointer,
@@ -382,6 +398,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             history_token_budget=settings.agent_history_token_budget,
             recent_token_budget=settings.agent_recent_token_budget,
             tool_output_token_budget=settings.agent_tool_output_token_budget,
+            max_request_tokens=settings.agent_max_request_tokens,
             tracer=tracer,
         )
 
@@ -397,6 +414,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 daily_budget=daily_budget_limiter,
                 guards=input_guard,
                 tracer=tracer,
+                uow_factory=uow_factory,
+                # The same guard instance the tool registry uses. A document
+                # digest is external content by the same definition a fetched
+                # page is, so it gets the same fence.
+                tool_output_guard=tool_output_guard,
+                max_digest_documents=settings.chat_digest_max_documents,
+                max_digest_summary_chars=settings.chat_digest_max_summary_chars,
             ),
             start_conversation=StartConversation(uow_factory),
             get_conversation=GetConversation(uow_factory),
@@ -410,12 +434,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 uow_factory=uow_factory,
                 daily_budget=daily_budget_limiter,
             ),
-            ingest_url=IngestUrl(
-                fetcher=web,
-                limiter=upload_limiter,
-                uow_factory=uow_factory,
-                daily_budget=daily_budget_limiter,
-            ),
             index_document=IndexDocument(
                 extractor=extractor,
                 embedder=embedder,
@@ -424,6 +442,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 chunk_overlap=settings.chunk_overlap,
                 embedding_dimensions=settings.embedding_dimensions,
                 uow_factory=uow_factory,
+                # The condenser again, satisfying ingestion's own
+                # `DocumentSummarizer` port structurally. One cheap model does
+                # every shortening this app performs.
+                summarizer=condenser,
             ),
             list_documents=ListDocuments(uow_factory),
             delete_document=DeleteDocument(uow_factory, index=vector_index, storage=storage),

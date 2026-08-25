@@ -88,17 +88,6 @@ class AiohttpWebContentFetcher:
 
         return " ".join(texts)
 
-    async def fetch(self, url: str) -> str:
-        """Fetch one URL and return its full, untruncated text.
-
-        Satisfies `app.application.ingestion.ports.UrlContentFetcher`. Unlike
-        `fetch_all`, a failure here is not swallowed: there is only one URL, so
-        there is nothing else worth returning, and the caller - ingesting a
-        document a user is about to pay to embed - needs to know it failed
-        rather than silently store nothing.
-        """
-        return await self._fetch(url)
-
     async def _fetch(self, url: str) -> str:
         """
         Read one page, refusing any address that is not on the public internet.

@@ -33,7 +33,6 @@ from app.application.identity.use_cases.register_user import RegisterUser
 from app.application.identity.use_cases.revoke_session import RevokeSession
 from app.application.ingestion.use_cases.delete_document import DeleteDocument
 from app.application.ingestion.use_cases.index_document import IndexDocument
-from app.application.ingestion.use_cases.ingest_url import IngestUrl
 from app.application.ingestion.use_cases.list_documents import ListDocuments
 from app.application.ingestion.use_cases.upload_document import UploadDocument
 from app.application.transcription.use_cases.transcribe_stream import TranscribeStream
@@ -77,9 +76,6 @@ class Container(Protocol):
 
     @property
     def upload_document(self) -> UploadDocument: ...
-
-    @property
-    def ingest_url(self) -> IngestUrl: ...
 
     @property
     def index_document(self) -> IndexDocument: ...
@@ -198,10 +194,6 @@ def get_upload_document(container: ContainerDep) -> UploadDocument:
     return container.upload_document
 
 
-def get_ingest_url(container: ContainerDep) -> IngestUrl:
-    return container.ingest_url
-
-
 def get_index_document(container: ContainerDep) -> IndexDocument:
     return container.index_document
 
@@ -265,7 +257,6 @@ ListConversationsDep = Annotated[ListConversations, Depends(get_list_conversatio
 RecordExchangeDep = Annotated[RecordExchange, Depends(get_record_exchange)]
 DeleteConversationDep = Annotated[DeleteConversation, Depends(get_delete_conversation)]
 UploadDocumentDep = Annotated[UploadDocument, Depends(get_upload_document)]
-IngestUrlDep = Annotated[IngestUrl, Depends(get_ingest_url)]
 IndexDocumentDep = Annotated[IndexDocument, Depends(get_index_document)]
 ListDocumentsDep = Annotated[ListDocuments, Depends(get_list_documents)]
 DeleteDocumentDep = Annotated[DeleteDocument, Depends(get_delete_document)]

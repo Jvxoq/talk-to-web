@@ -231,15 +231,34 @@ class FakeDocumentRepository:
         self._next_id += 1
         return document
 
-    async def set_chunks_indexed(self, document_id: int, owner_id: int, count: int) -> None:
+    async def set_indexed(self, document_id: int, owner_id: int, count: int, summary: str) -> None:
         row = self.rows.get(document_id)
         if row is not None and row.owner_id == owner_id:
             row.chunks_indexed = count
+            row.summary = summary
 
     async def delete(self, document_id: int, owner_id: int) -> None:
         row = self.rows.get(document_id)
         if row is not None and row.owner_id == owner_id:
             del self.rows[document_id]
+
+
+class FakeDocumentSummarizer:
+    """Satisfies `DocumentSummarizer`, without a model behind it.
+
+    `summary` is what every document gets; `fail` makes it return `None`, which
+    is the contract's "could not summarize this" and must never stop an upload
+    being indexed.
+    """
+
+    def __init__(self, summary: str = "A summary.", *, fail: bool = False) -> None:
+        self._summary = summary
+        self._fail = fail
+        self.calls: list[tuple[str, str]] = []
+
+    async def summarize_document(self, name: str, text: str) -> str | None:
+        self.calls.append((name, text))
+        return None if self._fail else self._summary
 
 
 class FakeUnitOfWork:
@@ -471,19 +490,6 @@ class FakeFileStorage:
 
     async def delete(self, reference: str) -> None:
         self.deleted.append(reference)
-
-
-class FakeUrlContentFetcher:
-    def __init__(self, text: str = "", fail_with: Exception | None = None) -> None:
-        self.text = text
-        self.fail_with = fail_with
-        self.calls: list[str] = []
-
-    async def fetch(self, url: str) -> str:
-        self.calls.append(url)
-        if self.fail_with is not None:
-            raise self.fail_with
-        return self.text
 
 
 class FakeTextExtractor:

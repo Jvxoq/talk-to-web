@@ -1,4 +1,4 @@
-"""Upload routes: stream a file, or fetch a URL, into a use case, then queue indexing."""
+"""Upload routes: stream a file into a use case, then queue indexing."""
 
 from collections.abc import AsyncIterator
 from typing import Annotated
@@ -10,12 +10,11 @@ from app.api.dependencies import (
     CurrentUserDep,
     DeleteDocumentDep,
     IndexDocumentDep,
-    IngestUrlDep,
     ListDocumentsDep,
     UploadDocumentDep,
 )
-from app.api.v1.schemas.ingestion import DocumentOut, FileUploadResponse, UrlUploadRequest
-from app.application.ingestion.dto import IngestUrlInput, UploadDocumentInput
+from app.api.v1.schemas.ingestion import DocumentOut, FileUploadResponse
+from app.application.ingestion.dto import UploadDocumentInput
 
 router = APIRouter(tags=["ingestion"])
 
@@ -54,34 +53,6 @@ async def upload_file(
 
     return FileUploadResponse(
         message="File uploaded successfully",
-        file_path=result.reference,
-    )
-
-
-@router.post("/upload/url/")
-async def upload_url(
-    body: UrlUploadRequest,
-    ingest_url: IngestUrlDep,
-    index_document: IndexDocumentDep,
-    background: BackgroundTasks,
-    user: CurrentUserDep,
-) -> FileUploadResponse:
-    result = await ingest_url(IngestUrlInput(url=body.url, owner_id=user.user_id))
-
-    # Same fire-and-forget as the file route, but the page text travels with
-    # the task instead of being read back from storage: `IngestUrl` never
-    # wrote it anywhere for `index_document` to read from.
-    background.add_task(
-        index_document,
-        result.reference,
-        result.name,
-        result.document_id,
-        user.user_id,
-        text=result.text,
-    )
-
-    return FileUploadResponse(
-        message="URL ingested successfully",
         file_path=result.reference,
     )
 

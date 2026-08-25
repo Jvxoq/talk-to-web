@@ -28,21 +28,6 @@ class FileStorage(Protocol):
         ...
 
 
-class UrlContentFetcher(Protocol):
-    """Reads the full text of one page, for something meant to be indexed.
-
-    Deliberately separate from `app.application.chat.ports.WebContentFetcher`:
-    that port fetches several URLs for one turn of a conversation and truncates
-    each to keep a prompt small, which is the wrong behaviour for a page that is
-    about to be chunked and embedded in full. Kept in this module rather than
-    imported from `chat` so ingestion never reaches across into another
-    application submodule - `AiohttpWebContentFetcher` satisfies both ports
-    structurally, with no relocation or inheritance needed.
-    """
-
-    async def fetch(self, url: str) -> str: ...
-
-
 class TextExtractor(Protocol):
     """Pulls plain text out of a stored file."""
 
@@ -100,9 +85,29 @@ class DocumentRepository(Protocol):
 
     async def add(self, document: UploadedDocument) -> UploadedDocument: ...
 
-    async def set_chunks_indexed(self, document_id: int, owner_id: int, count: int) -> None: ...
+    async def set_indexed(self, document_id: int, owner_id: int, count: int, summary: str) -> None:
+        """Record what indexing produced: the chunk count and the digest."""
+        ...
 
     async def delete(self, document_id: int, owner_id: int) -> None: ...
+
+
+class DocumentSummarizer(Protocol):
+    """Writes the few sentences that say what a document is about.
+
+    Declared here rather than imported from the chat context, for the same
+    reason `RateLimiter` is declared twice: a port belongs to the layer that
+    consumes it, and ingestion needing a summary is not ingestion depending on
+    the agent. `Condenser` happens to satisfy this structurally, without
+    knowing that ingestion exists.
+
+    Returning `None` rather than raising is part of the contract. A digest is an
+    enhancement - a document that could not be summarized is still fully
+    indexed and fully searchable - so a summarizer having a bad day must cost
+    the upload nothing.
+    """
+
+    async def summarize_document(self, name: str, text: str) -> str | None: ...
 
 
 class RateLimiter(Protocol):
