@@ -1,12 +1,11 @@
 import { useState } from 'react'
 import { motion } from 'motion/react'
-import { FileText, LogOut } from 'lucide-react'
-import { buttonClass, ErrorBoundary, IconButton, Mark } from '../components/ui'
+import { LogOut } from 'lucide-react'
+import { buttonClass, ErrorBoundary, Mark } from '../components/ui'
 import { AuthGate, AuthProvider, useAuth } from '../features/auth'
 import {
   ChatLog,
   Composer,
-  DocumentManager,
   FALLBACK_DEFAULT_MODEL,
   Sidebar,
   useChat,
@@ -14,6 +13,7 @@ import {
   type Model,
 } from '../features/chat'
 import { ThemeToggle, useTheme } from '../features/theme'
+import type { ConversationOut } from '../lib/conversation'
 import { springs } from '../lib/motion'
 import '../features/auth/auth.css'
 import '../features/chat/chat.css'
@@ -125,7 +125,12 @@ function Shell() {
             sign-in, so the app does not appear to reload around the user. */}
         <AuthGate>
           {conversations.activeId !== null ? (
-            <Chat model={model} onModelChange={setModel} conversationId={conversations.activeId} />
+            <Chat
+              model={model}
+              onModelChange={setModel}
+              conversationId={conversations.activeId}
+              preloaded={conversations.preloaded}
+            />
           ) : (
             // The conversation list is still loading (or opening a first
             // conversation for a brand new account) - an empty region beats a
@@ -134,8 +139,6 @@ function Shell() {
           )}
         </AuthGate>
       </div>
-
-      {user && <DocumentManager open={documentsOpen} onClose={() => setDocumentsOpen(false)} />}
     </div>
   )
 }

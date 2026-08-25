@@ -1,12 +1,10 @@
 import { ApiError, requireStringFields } from '../../lib/http'
 import { authorizedFetch } from '../../lib/session'
 import { parseUsage } from './usage'
-import type { DocumentSummary, Model, ToolActivity, UploadedFile, Usage } from './types'
+import type { Model, ToolActivity, UploadedFile, Usage } from './types'
 
 const API_URL = import.meta.env.VITE_API_URL ?? '/generate/text/'
 const UPLOAD_URL = import.meta.env.VITE_UPLOAD_URL ?? '/upload/file/'
-const INGEST_URL_URL = import.meta.env.VITE_INGEST_URL_URL ?? '/upload/url/'
-const DOCUMENTS_URL = import.meta.env.VITE_DOCUMENTS_URL ?? '/documents/'
 const MODELS_URL = import.meta.env.VITE_MODELS_URL ?? '/models/'
 
 /** One parsed frame off the SSE stream. */
@@ -170,81 +168,6 @@ export async function uploadPdf(
 
   const parsed = requireStringFields(await response.json(), ['file_path'], 'Upload')
   return { name: file.name, path: parsed.file_path }
-}
-
-/** Fetches a URL server-side and indexes its full text, the same way an upload is. */
-export async function ingestUrl(url: string, signal?: AbortSignal): Promise<UploadedFile> {
-  const response = await authorizedFetch(INGEST_URL_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url }),
-    signal,
-  })
-
-  if (!response.ok) {
-    const failure = await failureOf(response, 'Could not fetch that URL')
-    throw new ApiError(response.status, failure.detail, failure.retryAfterSeconds)
-  }
-
-  const parsed = requireStringFields(await response.json(), ['file_path'], 'Ingest')
-  return { name: url, path: parsed.file_path }
-}
-
-function documentEndpoint(...segments: (string | number)[]): string {
-  const base = DOCUMENTS_URL.endsWith('/') ? DOCUMENTS_URL : `${DOCUMENTS_URL}/`
-  return segments.length > 0 ? `${base}${segments.join('/')}` : base
-}
-
-/** Narrows one untrusted `/documents/` list item to the fields the panel reads. */
-function parseDocument(raw: unknown): DocumentSummary {
-  if (typeof raw !== 'object' || raw === null) {
-    throw new ApiError(0, 'Document: expected an object')
-  }
-  const record = raw as Record<string, unknown>
-
-  if (typeof record.id !== 'number') {
-    throw new ApiError(0, 'Document: missing "id"')
-  }
-  if (typeof record.name !== 'string') {
-    throw new ApiError(0, 'Document: missing "name"')
-  }
-
-  return {
-    id: record.id,
-    name: record.name,
-    chunksIndexed: typeof record.chunks_indexed === 'number' ? record.chunks_indexed : 0,
-  }
-}
-
-/** Every document this account has uploaded, for the document manager panel. */
-export async function fetchDocuments(signal?: AbortSignal): Promise<DocumentSummary[]> {
-  const response = await authorizedFetch(documentEndpoint(), { signal })
-
-  if (!response.ok) {
-    throw new ApiError(response.status, `Request failed with status ${response.status}`)
-  }
-
-  const raw: unknown = await response.json()
-  if (!Array.isArray(raw)) {
-    throw new ApiError(0, 'Documents: expected an array')
-  }
-  return raw.map(parseDocument)
-}
-
-/**
- * Deletes a document: its vectors, its stored file, and its row.
- *
- * A POST, not a DELETE, for the same CORS reason as `deleteConversation` in
- * `lib/conversation.ts` — this app allows only GET, POST and OPTIONS
- * cross-origin.
- */
-export async function deleteDocument(id: number): Promise<void> {
-  const response = await authorizedFetch(documentEndpoint(id, 'delete'), { method: 'POST' })
-
-  // 404 means it is already gone, which is the outcome the caller wanted.
-  if (!response.ok && response.status !== 404) {
-    throw new ApiError(response.status, `Could not delete document ${id}`)
-  }
 }
 
 export interface ModelsResponse {

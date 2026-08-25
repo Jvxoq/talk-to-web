@@ -7,7 +7,7 @@ import {
   type KeyboardEvent,
 } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
-import { ArrowUp, Link2, Mic, Paperclip, X } from 'lucide-react'
+import { ArrowUp, Mic, Paperclip, X } from 'lucide-react'
 import { buttonClass } from '../../../components/ui'
 import { easeStandard, springs, timing } from '../../../lib/motion'
 import { useFileUpload } from '../hooks/useFileUpload'
@@ -46,7 +46,6 @@ export function Composer({
   onTextRestored,
 }: ComposerProps) {
   const [input, setInput] = useState('')
-  const [urlInput, setUrlInput] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const reduce = useReducedMotion()
 
@@ -103,21 +102,6 @@ export function Composer({
     const file = e.target.files?.[0]
     e.target.value = ''
     if (file) void upload.upload(file)
-  }
-
-  const submitUrl = () => {
-    const url = urlInput?.trim()
-    setUrlInput(null)
-    if (url) void upload.ingestUrl(url)
-  }
-
-  const handleUrlKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') {
-      e.preventDefault()
-      submitUrl()
-    } else if (e.key === 'Escape') {
-      setUrlInput(null)
-    }
   }
 
   const showAttachmentStrip = Boolean(
@@ -196,27 +180,6 @@ export function Composer({
           hidden
         />
 
-        <AnimatePresence initial={false}>
-          {urlInput !== null && (
-            <motion.div className="composer-strip" {...stripMotion}>
-              <label className="sr-only" htmlFor="composer-url-input">
-                Page URL
-              </label>
-              <input
-                id="composer-url-input"
-                type="url"
-                className="composer-url-input"
-                value={urlInput}
-                onChange={(e) => setUrlInput(e.target.value)}
-                onKeyDown={handleUrlKeyDown}
-                onBlur={() => setUrlInput(null)}
-                placeholder="Paste a URL to fetch and index… (Enter to submit)"
-                autoFocus
-              />
-            </motion.div>
-          )}
-        </AnimatePresence>
-
         <label className="sr-only" htmlFor="composer-input">
           Message
         </label>
@@ -250,21 +213,6 @@ export function Composer({
               }
             >
               <Paperclip strokeWidth={2} aria-hidden="true" />
-            </motion.button>
-
-            <motion.button
-              type="button"
-              className={buttonClass('secondary', { icon: true, selected: urlInput !== null })}
-              onClick={() => setUrlInput((current) => (current === null ? '' : null))}
-              disabled={isStreaming || upload.isUploading || uploadWait > 0}
-              whileHover={uploadWait > 0 ? undefined : { x: -2, y: -2 }}
-              whileTap={{ x: 0, y: 0 }}
-              transition={springs.press}
-              aria-pressed={urlInput !== null}
-              aria-label="Paste a URL to fetch and index"
-              title="Paste a URL to fetch and index"
-            >
-              <Link2 strokeWidth={2} aria-hidden="true" />
             </motion.button>
 
             <span className="mic-wrap">

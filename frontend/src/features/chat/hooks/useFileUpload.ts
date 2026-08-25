@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, isAbort, messageFrom } from '../../../lib/http'
-import { ingestUrl, uploadPdf } from '../api'
+import { uploadPdf } from '../api'
 import type { UploadedFile } from '../types'
 
 // Mirrors the backend's `_ACCEPTED` table in
@@ -26,9 +26,8 @@ export function useFileUpload() {
   const [cooldownUntil, setCooldownUntil] = useState<number | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
-  // Shared by both `upload` and `ingestUrl`: same abort handling, same error
-  // and cooldown surfacing, same attachment chip on success — a URL and a file
-  // are two ways to reach the same result.
+  // Wraps every upload: abort handling, error and cooldown surfacing, and the
+  // attachment chip on success.
   const run = useCallback(async (task: (signal: AbortSignal) => Promise<UploadedFile>) => {
     abortRef.current?.abort()
     const controller = new AbortController()
@@ -67,13 +66,6 @@ export function useFileUpload() {
     [run],
   )
 
-  const ingestUrlAttachment = useCallback(
-    async (url: string) => {
-      await run((signal) => ingestUrl(url, signal))
-    },
-    [run],
-  )
-
   const clear = useCallback(() => {
     setFile(null)
     setError(null)
@@ -81,5 +73,5 @@ export function useFileUpload() {
 
   useEffect(() => () => abortRef.current?.abort(), [])
 
-  return { file, isUploading, error, cooldownUntil, upload, ingestUrl: ingestUrlAttachment, clear }
+  return { file, isUploading, error, cooldownUntil, upload, clear }
 }

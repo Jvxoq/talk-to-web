@@ -44,10 +44,3 @@ export interface UploadedFile {
   name: string
   path: string
 }
-
-/** One row in the document manager panel. */
-export interface DocumentSummary {
-  id: number
-  name: string
-  chunksIndexed: number
-}
