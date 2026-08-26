@@ -19,8 +19,6 @@ uv.lock.bak
 .env
 .env.*
 !.env.example
-!.env.production.example
-!.env.parity.example
 
 # Uploaded files
 backend/uploads/
