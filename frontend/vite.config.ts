@@ -25,6 +25,11 @@ export default defineConfig({
       // fails, and the composer quietly falls back to its hardcoded models
       // instead of showing anything went wrong.
       '/models': backendUrl,
+      // The liveness probe `BackendGate` polls while the deployed backend is
+      // starting. Proxied for the same reason /models is: without it Vite
+      // answers 200 with index.html and the gate would call a sleeping
+      // backend awake.
+      '/health': backendUrl,
       // ws: true makes Vite forward the Upgrade handshake instead of
       // treating it as a plain HTTP request.
       '/ws': { target: backendUrl, ws: true },

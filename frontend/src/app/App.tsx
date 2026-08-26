@@ -15,6 +15,8 @@ import {
 import { ThemeToggle, useTheme } from '../features/theme'
 import type { ConversationOut } from '../lib/conversation'
 import { springs } from '../lib/motion'
+import { BackendGate } from './BackendGate'
+import './app.css'
 import '../features/auth/auth.css'
 import '../features/chat/chat.css'
 
@@ -145,9 +147,15 @@ export default function App() {
     // `/auth/refresh` body on mount, say - still lands on the crash screen
     // rather than on a blank document.
     <ErrorBoundary>
-      <AuthProvider>
-        <Shell />
-      </AuthProvider>
+      {/* Above `AuthProvider`, because that provider's mount effect is the
+          first backend call the app makes. The free instance sleeps, and a
+          failed `/auth/refresh` looks exactly like being signed out - so the
+          wait happens here, before anything asks. */}
+      <BackendGate>
+        <AuthProvider>
+          <Shell />
+        </AuthProvider>
+      </BackendGate>
     </ErrorBoundary>
   )
 }

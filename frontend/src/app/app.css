@@ -1,0 +1,39 @@
+/* The shell's own styles. Like every file under src/ except globals.css, this
+   holds no literal colour — only tokens. */
+
+.backend-gate {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-2);
+  text-align: center;
+}
+
+.backend-gate__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1rem;
+  letter-spacing: var(--tracking-ui);
+  text-transform: uppercase;
+}
+
+.backend-gate__body {
+  max-width: 42ch;
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+/* Tabular figures so the number does not shift the layout as it climbs. */
+.backend-gate__elapsed {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-tab);
+  color: var(--color-muted);
+}
