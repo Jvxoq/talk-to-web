@@ -91,15 +91,15 @@ and needs real Postgres/Qdrant — see Commands above.
 
 | Endpoint | Use case | What it does |
 |---|---|---|
-| `POST /generate/text/` | `GenerateReply` | Streams (SSE) an agent reply for a conversation turn; agent may call `retrieve_documents`, `fetch_web_pages`, `search_web` |
-| `POST /conversations/` | `StartConversation` | Creates a conversation for the current user |
+| `POST /generate/text/` | `GenerateReply` | Streams (SSE) an agent reply for a conversation turn; agent may call `retrieve_documents`, `fetch_web_pages`, `search_web`. Frames: `delta`, `tool`, `summarizing`, `usage`, `done` |
+| `POST /conversations/` | `StartConversation` | Creates a conversation for the current user; 409 past `MAX_CONVERSATIONS_PER_USER` |
 | `GET /conversations/` | `ListConversations` | Lists the user's conversations |
 | `GET /conversations/{id}` | `GetConversation` | Loads one conversation with its messages |
 | `POST /conversations/{id}/messages` | `RecordExchange` | Persists a user/assistant message pair |
-| `POST /conversations/{id}/delete` | `DeleteConversation` | Deletes a conversation (POST, not DELETE — CORS only allows GET/POST/OPTIONS; see frontend README) |
-| `POST /upload/file/` | `UploadDocument` → `IndexDocument` | Extracts text (PDF/DOCX/plain text), chunks, embeds (Gemini), stores in Qdrant + Postgres, and writes a short digest to `documents.summary` |
+| `POST /conversations/{id}/delete` | `DeleteConversation` | Deletes a conversation and every document attached to it (POST, not DELETE — CORS only allows GET/POST/OPTIONS; see frontend README) |
+| `POST /upload/file/` | `UploadDocument` → `IndexDocument` | Names its conversation (404 if the thread is not the caller's), replaces whatever that thread already held, extracts text (PDF/DOCX/plain text), chunks, embeds (Gemini), stores in Qdrant + Postgres, and writes a short digest to `documents.summary` |
 | `GET /documents/` | `ListDocuments` | Lists the user's indexed documents |
-| `POST /documents/{id}/delete` | `DeleteDocument` | Removes a document's chunks from Qdrant and its row from Postgres |
+| `POST /documents/{id}/delete` | `DeleteDocument` | Removes a document completely: its chunks from Qdrant, its stored file from disk, its row from Postgres |
 | `POST /auth/register` | `RegisterUser` | Creates an account (Argon2-hashed password) |
 | `POST /auth/login` | `AuthenticateUser` | Issues an access token + refresh cookie |
 | `POST /auth/refresh` | `RefreshSession` | Rotates the refresh token, issues a new access token |
@@ -131,10 +131,21 @@ and needs real Postgres/Qdrant — see Commands above.
   schemas are measured once at startup by `build_agent_graph` and subtracted
   from it, so the setting holds the provider's number rather than a
   pre-shrunk guess.
+- **Conversation cap.** `MAX_CONVERSATIONS_PER_USER` (default 2) bounds how
+  many threads one account holds, and each thread holds at most one document,
+  so the same number caps how many files an account keeps indexed.
+  `StartConversation` counts inside the insert's own transaction and raises
+  `ConversationLimitReached`, mapped to 409. It refuses rather than evicting
+  the oldest thread: making room by deleting someone's work is not the
+  server's call.
 - **Rate limiting.** Auth endpoints are limited in-memory
   (`auth_rate_limit_attempts` per `auth_rate_limit_window_seconds`) — correct
   only for a single backend process; a multi-instance deployment needs a
-  shared store.
+  shared store. Those limits are keyed by client address, so behind a proxy
+  they need `TRUST_FORWARDED_CLIENT_IP=true` *and* a server that accepts the
+  header (`--forwarded-allow-ips`, set in `render.yaml`). Left false behind a
+  proxy, `client_ip` in `app/api/dependencies.py` returns `None` and the auth
+  limits are skipped entirely rather than failing loudly.
 - **Readiness vs liveness.** `/health` never touches a dependency, on
   purpose — a liveness probe that does turns a two-second blip into every
   instance restarting at once. `/ready` does the real check, under
@@ -150,18 +161,26 @@ and needs real Postgres/Qdrant — see Commands above.
   apart from one that never existed, which is what reuse detection depends
   on. `app/cleanup_expired_refresh_tokens.py` deletes rows past
   `REFRESH_TOKEN_CLEANUP_RETENTION_SECONDS` (30 days default). It's a
-  standalone entry point, not a route, wired as a `cleanup-refresh-tokens`
-  service behind a `jobs` compose profile — run it from cron or a
-  Kubernetes CronJob, it does not run on a plain `up`:
+  standalone entry point, not a route, so something outside the app has to
+  call it on a schedule. On the current deployment nothing does: Render cron
+  jobs need a paid plan, and `render.yaml` carries the cron service commented
+  out ready for one. Until then the table grows. Run it by hand against a
+  deployment's database, or locally, with:
   ```bash
-  docker compose --profile jobs run --rm cleanup-refresh-tokens
+  uv run python -m app.cleanup_expired_refresh_tokens
   ```
 
 ## Known limits
 
-- **Uploads are on local disk** (`local_file_storage.py`). Fine for one
-  instance; does not survive replacing it or scale past one box. Move to S3
-  first.
+- **Uploads are on local disk** (`local_file_storage.py`), and on Render's
+  free plan that disk is wiped on every restart and deploy. It works only
+  because the file is read exactly once, by `PdfTextExtractor` during the same
+  upload request that indexed it — afterwards the chunks live in Qdrant and
+  the row in Postgres, and nothing opens the file again. `DeleteDocument`
+  still tries to remove it, and `LocalFileStorage.delete` never raises for a
+  reference already gone, so a wiped disk costs nothing there either. Move to
+  object storage before adding a second instance, or before any feature needs
+  the original file back.
 - **In-memory rate limiter and LangGraph's Postgres checkpointer both
   assume a single process** — horizontal scaling needs a shared rate-limit
   store before it needs anything else here.
@@ -179,6 +198,11 @@ and needs real Postgres/Qdrant — see Commands above.
 - **`agent_max_request_tokens` has not been confirmed against a real 400.**
   The previous value was Groq's measured 8,000-token limit. The current one is
   a provisional read of Together's larger window — tighten it if a 400 appears.
+- **A replaced attachment can be left behind.** `UploadDocument` swallows a
+  failure while removing the thread's previous document, so the new file still
+  works and the old row, file and vectors stay. The log line is
+  `Could not replace document ...`. Nothing in the UI lists such a document, so
+  removing it means calling `POST /documents/{id}/delete` by hand.
 - **The condenser can fail silently.** It is allowed to, on purpose, but the
   cost is not silent: a thread over the history budget that cannot be
   summarized falls through to dropping older messages, so the conversation
@@ -196,9 +220,26 @@ and needs real Postgres/Qdrant — see Commands above.
   a rule enforced in one node, or one tool, is a rule the next caller forgets.
   An empty retrieval opens the search immediately, so the model still chooses
   *whether* to go to the web.
+- **A document belongs to one conversation, not to the account.**
+  `documents.conversation_id` (nullable, `ON DELETE CASCADE`) is the column,
+  every Qdrant point carries `conversation_id` in its payload, and every
+  search filters on owner **and** thread. The owner filter is the security
+  boundary; the thread filter is what stops a question in one chat being
+  answered out of a file attached to another. A `None` thread is not a
+  wildcard — the retriever returns `[]` without embedding the query, because
+  no thread owns no documents.
+- **"Gone" means vectors, file and row, in one place.** A thread keeps one
+  attachment, so a second upload removes the first, and deleting a thread
+  removes its documents one at a time before the row goes. Both go through
+  `DocumentRemover`, a port over the `DeleteDocument` use case, because a
+  database cascade cannot reach Qdrant or the disk and each caller re-deriving
+  those three steps is how one of them forgets the vectors. `UploadDocument`
+  removes the old document *after* the new file is stored — a failed upload
+  must not cost the user the document they still had.
 - **`ToolContext` is written by us, never by the model.** `owner_id`,
-  `document_scoped`, `has_documents` and `prior_tools` all ride the run config
-  or the history, not the tool arguments. `document_scoped` is decided once
+  `conversation_id`, `document_scoped`, `has_documents` and `prior_tools` all
+  ride the run config or the history, not the tool arguments. Which thread is
+  asking is a fact about the request, never something the model may name. `document_scoped` is decided once
   per request by `GenerateReply` rather than re-derived by the tool node,
   because the summarize node can replace the history a re-derivation would
   read — and that failure direction is the silent one, "search allowed".
@@ -228,6 +269,13 @@ and needs real Postgres/Qdrant — see Commands above.
 - **Domain errors never become `HTTPException` inside a use case.** The
   mapping lives in one place, `_STATUS` in `app/api/errors.py`, so a 5xx
   never leaks internals and the mapping is auditable in one file.
+- **History summarization is reported to the client.** The summarize node
+  writes a `summarize` payload onto the custom stream (`agent/progress.py`,
+  a no-op when no writer exists), `GenerateReply` turns it into
+  `ReplySummarizing`, and `sse.py` frames it under its own `summarizing` key.
+  Condensing is a whole model call mid-reply during which no text arrives, so
+  without it a long thread looks like a stalled one. The `done` status is sent
+  on both outcomes, including a failed condenser.
 - **Streaming stays behind one seam.** `GenerateReply` yields `ReplyEvent`
   DTOs; only `app/api/v1/sse.py` knows the SSE wire format. The WebSocket
   handler implements a `ClientTransport` port so `TranscribeStream` never

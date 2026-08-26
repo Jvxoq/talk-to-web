@@ -8,7 +8,7 @@ frontend internals.
 
 ```bash
 npm install
-npm run dev        # :5173, proxies /auth /generate /upload /conversations /models /ws to :8000
+npm run dev        # :5173, proxies /auth /generate /upload /documents /conversations /models /ws to :8000
 npm run build      # tsc -b && vite build
 npm run lint        # oxlint
 npm run typecheck   # tsc -b, same check the build runs
@@ -55,8 +55,9 @@ src/
 | Feature | Where | Notes |
 |---|---|---|
 | Chat (streamed replies) | `features/chat` (`useChat`, `api.ts`) | Consumes the backend's SSE stream from `POST /generate/text/` |
-| Conversation list / switch / delete | `features/chat` (`useConversations`, `Sidebar`) | Delete is a `POST`, not a `DELETE` — see below. The bootstrap also preloads the pinned conversation's transcript, see below |
-| Document upload | `features/chat` (`useFileUpload`, `Composer`) | `POST /upload/file/` only. The document manager panel, the URL-ingest field, and their `/documents/*` calls are gone — see Known limits |
+| Summarizing notice | `features/chat` (`summarizing.ts`, `MessageBubble`) | The `summarizing` frame becomes one chip beside the tool chips, so the silent pause while the thread is condensed has a reason on screen. One slot per turn, overwritten |
+| Conversation list / switch / delete | `features/chat` (`useConversations`, `Sidebar`) | Delete is a `POST`, not a `DELETE` — see below. A 409 from "new chat" is the per-account cap, shown as `sidebar-error` under the button. The bootstrap also preloads the pinned conversation's transcript, see below |
+| Document upload | `features/chat` (`useFileUpload`, `Composer`) | `POST /upload/file/`, naming the conversation. The chip's close button calls `POST /documents/{id}/delete`, which removes the file for good. Switching threads drops the chip without deleting anything |
 | Model picker | `features/chat` (`useModels`) | Backed by `GET /models/` |
 | Live voice input | `features/chat` (`useVoiceInput`) | Connects a WebSocket directly to the backend (see below), streams mic audio, renders partial/final transcripts |
 | Auth (register/login/session) | `features/auth` (`AuthProvider`, `AuthGate`, `AuthForm`, `useAuth`) | Access token in memory only; see Key decisions |
@@ -82,14 +83,16 @@ src/
   rather than failing the pair. The preload is consumed once per conversation
   id, so switching away and back re-fetches instead of showing a stale
   snapshot.
-- **Route parity between `nginx.conf` and `vercel.json`.** Both list the
-  same API path prefixes for the reverse proxy / rewrites. Adding a backend
-  route to one and not the other is how a call quietly starts returning
-  `index.html` with a 200 instead of an error.
+- **`vercel.json` lists every API path prefix, and the list has to be
+  complete.** A backend route missing from the rewrites does not error. It
+  falls through to the SPA catch-all and returns `index.html` with a 200.
+  It is also the only such list now: `nginx.conf` and the frontend
+  `Dockerfile` went with the EC2 deployment, so nothing cross-checks this one.
+  Adding a route to the API means adding it here by hand.
 - **The WebSocket is the one call that can't be proxied.** Vercel does not
   proxy an `Upgrade` handshake, so `useVoiceInput` reads `VITE_WS_URL` and
   connects to the backend directly, falling back to same-origin when unset
-  (what `npm run dev` and the nginx parity harness use). This makes it the
+  (what `npm run dev` uses). This makes it the
   one route the browser's CORS/same-origin model doesn't cover — the backend
   enforces `ALLOWED_WEBSOCKET_ORIGINS` itself instead.
 
@@ -101,9 +104,14 @@ src/
 - No component tests yet — the Vitest setup runs in the `node` environment
   only; adding one means adding jsdom and the `environment: 'jsdom'` block
   first.
-- **No document management UI.** A user can upload a file but cannot list or
-  delete one from the app. The backend still serves `GET /documents/` and
-  `POST /documents/{id}/delete`; nothing in `src/` calls them any more.
+- **No document list UI.** The attachment chip can remove the file it names
+  (`POST /documents/{id}/delete`), and a thread holds one file at a time, so
+  the chip is the whole document surface. `GET /documents/` is still served
+  and nothing in `src/` calls it.
+- **Removing an attachment is optimistic and one-way.** The chip disappears
+  before the request answers and does not come back if it fails. The failure
+  is shown in the chip's place instead, because re-showing a chip invites the
+  user to keep pressing a button that already did what it could.
 - The voice input path depends on a direct, cross-origin WebSocket in
   production; if `VITE_WS_URL` and the backend's `ALLOWED_WEBSOCKET_ORIGINS`
   drift out of sync, voice input fails silently at the handshake rather than
@@ -116,7 +124,7 @@ src/
   the access token in `localStorage` would undo that protection for the
   half that's left.
 - **`/auth` proxied same-origin everywhere** — dev (Vite proxy), and
-  production (`vercel.json` rewrites, `nginx.conf`) — so the refresh cookie
+  production (`vercel.json` rewrites) — so the refresh cookie
   stays first-party. A cross-site cookie would need `SameSite=None`, which a
   plain-http dev origin can't accept.
 - **Conversation deletion is a `POST`, not a `DELETE`.** CORS only allows

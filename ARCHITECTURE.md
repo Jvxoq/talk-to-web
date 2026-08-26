@@ -93,25 +93,24 @@ in `frontend/README.md`. This file stays at the whole-picture level.
 
 ## Deployment
 
-Four pieces, three of them managed:
+Four pieces, all four managed:
 
 ```
- Vercel (static)                     EC2
- ┌────────────────┐         ┌──────────────────────┐        Neon Postgres
- │ built frontend │         │ caddy  (TLS, :443)   │───────▶ Qdrant Cloud
- │  vercel.json   │──HTTPS─▶│   └─ backend :8000   │        Together/Gemini/
- │   rewrites     │         │ migrate (runs once)  │        Deepgram/Tavily
- └────────┬───────┘         └──────────────────────┘
-          └──── WebSocket, direct to api.<domain> ────┘
+ Vercel (static)                    Render (free web service)
+ ┌────────────────┐         ┌──────────────────────────┐     Neon Postgres
+ │ built frontend │         │ TLS + proxy (Render's)   │────▶ Qdrant Cloud
+ │  vercel.json   │──HTTPS─▶│   └─ backend  :$PORT     │     Together/Gemini/
+ │   rewrites     │         │ alembic upgrade on boot  │     Deepgram/Tavily
+ └────────┬───────┘         └──────────────────────────┘
+          └─── WebSocket, direct to <service>.onrender.com ───┘
 ```
 
 Two things about that diagram are load-bearing:
 
 - **HTTP calls go through Vercel's rewrites**, so the browser still sees them
-  as same-origin. That is not cosmetic: conversation deletion runs on tab
-  close via `navigator.sendBeacon`, beacons cannot send a CORS preflight, and
-  a cross-origin JSON POST would need one. Same-origin is what keeps deletes
-  working.
+  as same-origin. That is not cosmetic: the refresh token is a cookie the
+  browser attributes to whichever host answered, and same-origin is what keeps
+  it first-party.
 - **The WebSocket bypasses Vercel entirely.** Rewrites do not carry an
   Upgrade handshake, so voice input connects to the backend's own domain, set
   through `VITE_WS_URL`. Being genuinely cross-origin, it is also the one
@@ -127,118 +126,93 @@ are two separate variables.
 
 Create a **Qdrant Cloud** cluster and copy its HTTPS URL and API key.
 
-### 2. Backend on EC2
+Put both in the same region, and put the Render service there too. Every chat
+turn makes several round trips to each.
 
-DNS first: point an A record for `api.<your-domain>` at the instance and open
-80 and 443. Caddy requests its certificate on first request, and Let's
-Encrypt validates over those ports — without DNS in place beforehand, it will
-fail and back off.
+### 2. Backend on Render
+
+`render.yaml` at the repo root is the whole deployment. Point Render at this
+repo as a Blueprint; it reads that file, builds `backend/Dockerfile`, and
+prompts once for every variable marked `sync: false`. Secrets are stored in
+Render and never enter the repo or an image layer. `JWT_SECRET` is not
+prompted for at all — `generateValue: true` has Render mint it on first deploy
+and keep it.
 
 ```bash
-git clone <repo> && cd talk-to-web
-
-cp .env.example .env                                # API_DOMAIN=api.your-domain
-cp backend/.env.production.example backend/.env.production   # then fill it in
-
-./scripts/check-env.sh                                # fails if a placeholder is still in there
-docker compose -f docker-compose.prod.yml up -d --build
-curl https://api.<your-domain>/health                # {"status":"ok"}
-curl https://api.<your-domain>/ready                 # {"status":"ready","checks":{…}}
+curl https://<service>.onrender.com/health   # {"status":"ok"}
+curl https://<service>.onrender.com/ready    # {"status":"ready","checks":{…}}
 ```
-
-`scripts/check-env.sh` only checks that the checked-in placeholder strings were
-changed, not that what replaced them is correct — it exists to catch exactly
-the failure mode of copying the example and forgetting a line, not to
-validate credentials.
 
 The two are not the same question. `/health` is liveness and is deliberately
 static — a liveness probe that touches the database turns a two-second blip
-into every instance restarting at once. `/ready` actually probes Postgres and
-Qdrant, concurrently and under `READINESS_TIMEOUT_SECONDS` (2s by default),
-and answers **503** with `{"status":"degraded"}` plus a per-dependency
-`checks` map when any of them is unreachable. That status code is what a
-rollout gate should read; the body names the dependency that was missing, and
-nothing more, because the endpoint needs no credentials.
+into a restart. `/ready` actually probes Postgres and Qdrant, concurrently and
+under `READINESS_TIMEOUT_SECONDS` (2s by default), and answers **503** with
+`{"status":"degraded"}` plus a per-dependency `checks` map when any of them is
+unreachable. `healthCheckPath` in `render.yaml` points at `/health`, on
+purpose: a Neon blip must not fail a deploy.
 
-That compose file runs three services and no more: `caddy` (TLS, the only
-thing published), `migrate` (`alembic upgrade head`, must exit 0 before
-anything serves), and `backend` (no host port — reachable only through
-Caddy).
+Three things the previous EC2 deployment had do not exist here, and each was
+doing a job:
 
-`ENVIRONMENT=production` is set in the compose file rather than the env file,
-on purpose: a missing value there would silently fall back to `local` rather
-than fail, and it is what switches logging to JSON.
+- **Caddy is gone.** Render terminates TLS and issues the certificate for the
+  service's domain. What went with it is the edge rate limit on `/generate*`
+  and `/upload*`, so `global_daily_call_budget` is now the only ceiling
+  between a script and the provider bills. Put Cloudflare in front of a custom
+  domain if that stops being enough.
+- **The one-shot `migrate` service is gone.** Render's pre-deploy hook is
+  where `alembic upgrade head` belongs, and it needs a paid instance type. On
+  `free` it runs from `dockerCommand` on every boot instead. Alembic is
+  idempotent, so a boot with nothing to migrate costs one query.
+- **The uploads volume is gone.** A free service has no disk and its
+  filesystem is wiped on restart. That is survivable here and only here:
+  `LocalFileStorage` writes the file, `PdfTextExtractor` reads it once during
+  the same upload request, and after indexing the vectors live in Qdrant and
+  the row in Postgres. Nothing opens the file again. Attach a disk before that
+  stops being true.
+
+One more property of the free plan is worth planning around: the service sleeps
+after roughly 15 minutes without traffic, and the next request pays about a
+minute of cold start. `useChat` and the fetch helpers in `lib/http.ts` set no
+client-side timeout, so the request waits rather than failing — but the first
+visitor after a quiet spell sees a long pause.
 
 ### 3. Frontend on Vercel
 
-Edit `frontend/vercel.json` and replace `api.example.com` in all five
-rewrites with your backend domain. Then point Vercel at the `frontend/`
-directory and set one environment variable:
-
-This repo's `frontend/vercel.json` (and the `VITE_WS_URL` example in
-`frontend/.env.example`) already point at the live domain,
-`talk-to-web.duckdns.org` — this DuckDNS name matches the repo/folder name.
-Don't repoint it without also moving DNS and the TLS certificate first; Caddy
-holds the certificate for whatever domain is live in production, and changing
-it here alone breaks the deployment.
+`frontend/vercel.json` rewrites six paths to the backend. Replace the
+`talk-to-web-api.onrender.com` placeholder in all of them with your service's
+domain. Then point Vercel at the `frontend/` directory and set one environment
+variable:
 
 ```
-VITE_WS_URL=wss://api.<your-domain>/ws/transcribe/
+VITE_WS_URL=wss://<service>.onrender.com/ws/transcribe/
 ```
 
 Leave `VITE_API_URL`, `VITE_UPLOAD_URL`, `VITE_CONVERSATIONS_URL` and
 `VITE_MODELS_URL` unset — they default to relative paths, which is exactly
 what the rewrites need.
 
-Finally put the Vercel domain in `backend/.env.production` under both
-`CORS_ORIGINS` and `ALLOWED_WEBSOCKET_ORIGINS`, and restart the backend.
+Finally put the Vercel domain into Render under both `CORS_ORIGINS` and
+`ALLOWED_WEBSOCKET_ORIGINS`, as a JSON list, and redeploy.
 
-### Checking it before AWS
+### Checking it before Render
 
-`docker-compose.prod.yml` has a `parity` profile that adds the built frontend
-behind nginx on `:8080`, so the production images can be exercised locally —
-same Dockerfiles, same Caddy TLS setup, on your laptop instead of EC2:
-
-```bash
-docker compose -f docker-compose.prod.yml --profile parity up --build
-```
-
-With `API_DOMAIN=localhost` Caddy issues a certificate from its own internal
-CA instead of calling Let's Encrypt, so `curl -k https://localhost/health`
-works on a laptop. Add `http://localhost:8080` to `ALLOWED_WEBSOCKET_ORIGINS`
-for the run, since that is the origin the parity frontend is served from.
-
-By default `migrate`/`backend` read `backend/.env.production`, same as the
-real deploy — which means an unmodified parity run hits the real Neon `main`
-branch and the real Qdrant Cloud cluster/collection. To exercise the managed
-services without touching production data, add `docker-compose.parity.yml`:
+`docker compose up` runs the whole stack locally — its own Postgres and
+Qdrant, the `migrate` step, the backend, and the Vite dev server. It does not
+build `backend/Dockerfile`, does not run the built frontend, and does not
+exercise TLS. TLS is Render's concern now rather than this repo's, but the
+image is not: the only thing that builds it is a Render deploy, so a
+Dockerfile-level break is found there and nowhere earlier. Build it by hand
+before pushing anything that touches dependencies or the Dockerfile:
 
 ```bash
-cp backend/.env.parity.example backend/.env.parity   # then fill it in
-docker compose -f docker-compose.prod.yml -f docker-compose.parity.yml \
-  --profile parity up --build
+docker build -t talk-to-web-backend ./backend
 ```
 
-Postgres and Qdrant both get a safe "same service, different copy" swap,
-carried entirely by `backend/.env.parity` — `docker-compose.parity.yml` adds
-no service of its own and no `environment:` override, just a later `env_file`
-entry that wins for any key it sets:
+The old EC2 setup also had a *parity* profile that served the built frontend
+behind nginx. Vercel serves the frontend now, so `frontend/Dockerfile` and
+`frontend/nginx.conf` were deleted rather than left as a route list nothing
+checks. `frontend/vercel.json` is the only proxy list left.
 
-- **Postgres** points at a branch created off `main` (Neon MCP's
-  `create_branch`, or the console) — a full copy-on-write clone, so schema
-  and data look real without ever writing back to production.
-- **Qdrant** points at the *same* Cloud cluster and API key as production,
-  but a separate collection (`knowledge_base_dev` rather than
-  `knowledge_base`). Qdrant has no branch equivalent, so a different
-  collection on the same cluster is what stands in for one — the app creates
-  it on first ingest, nothing to pre-provision.
-- `env_file` lists append across `-f` files rather than being replaced, so
-  `backend/.env.parity` only needs to carry what differs — `JWT_SECRET`,
-  provider keys, `ENVIRONMENT`, etc. still come from `.env.production`
-  unchanged. `CORS_ORIGINS`/`ALLOWED_WEBSOCKET_ORIGINS` are the one exception
-  worth calling out: `.env.production` names the real Vercel domain, which
-  this box never serves during a parity run (the parity frontend is nginx on
-  `:8080` instead), so `.env.parity` overrides both to `http://localhost:8080`.
 
 ## Operational concerns
 
@@ -255,10 +229,11 @@ entry that wins for any key it sets:
   actually rejects; it is checked on every lap, not only when the thread
   crosses the history budget. Indexing an upload now also costs one condenser
   call, for the document digest.
-- **Scaling bottleneck: uploads on local disk.** Files land on the
-  backend instance's filesystem. Fine for one instance; broken the moment
-  there's more than one, or the instance is replaced. Move to S3 before
-  scaling past one box.
+- **Scaling bottleneck: uploads on local disk.** Files land on the backend
+  instance's filesystem, which on Render's free plan is wiped on every
+  restart. That is survivable only because nothing reads the file after the
+  upload request that indexed it. Move to object storage before adding a
+  second instance, or before any feature needs the original file back.
 - **Rate limiting.** Auth endpoints are rate-limited in-memory
   (`auth_rate_limit_attempts` per `auth_rate_limit_window_seconds`), which
   only works correctly with a single backend process — a multi-instance
@@ -267,14 +242,18 @@ entry that wins for any key it sets:
   (`global_daily_call_budget`, default 200/day) shared by chat replies,
   uploads and transcription alike — registration has no
   CAPTCHA, so the per-account limits alone only cap one account's spend, not
-  the total across as many as someone is willing to create. `Caddyfile` adds a
-  second, edge-level layer in front of that: `caddy-ratelimit` (built into the
-  `caddy` image by `Caddy.Dockerfile`, since the stock image has no
-  rate-limiting module) caps requests per address on `/generate*` and
-  `/upload*` before they reach the backend at all. Both are meant to sit behind
-  a CDN/WAF (e.g. Cloudflare, proxying DNS in front of the EC2 instance) doing
-  the first-line filtering — this layer is the backstop for whatever gets
-  through, not a replacement for one.
+  the total across as many as someone is willing to create. On EC2 a second,
+  edge-level layer sat in front of that, capping requests per address on
+  `/generate*` and `/upload*` before they reached the backend at all. Render's
+  proxy has no equivalent, so that layer is gone and the daily ceiling is the
+  whole defence. It was always meant to sit behind a CDN/WAF (Cloudflare
+  proxying DNS in front of a custom domain) doing the first-line filtering, and
+  with the edge limit gone that is now the way to get one back.
+- **Per-account ceilings.** `MAX_CONVERSATIONS_PER_USER` (default 2) caps how
+  many threads an account holds, and a thread holds one document, so the same
+  number caps how many files it keeps embedded. Past the cap the API answers
+  409 and the sidebar tells the user to delete a thread; the server never
+  evicts the oldest one.
 - **Monitoring.** Every request gets an id (`X-Request-ID`), visible in logs,
   500 bodies, and Sentry events — see `backend/README.md` for how that's
   wired. Sentry itself is opt-in via `SENTRY_DSN`; nothing is sent from local
@@ -284,7 +263,9 @@ entry that wins for any key it sets:
 - **Housekeeping jobs.** Dependabot (weekly, grouped per ecosystem), CodeQL
   (every push/PR to `main` plus weekly), pre-commit hooks mirroring the fast
   half of CI, and a `cleanup-refresh-tokens` job (see `backend/README.md`)
-  that must be run on a schedule — it does not run on a plain `docker compose up`.
+  that must be run on a schedule. Render cron jobs need a paid plan, so on the
+  free one it does not run at all and the `refresh_tokens` table grows slowly;
+  `render.yaml` carries the cron service commented out, ready for a paid plan.
 
 ## Observability
 
@@ -302,12 +283,12 @@ compression and history summarization get their own `condense.tool_output` and
 
 Langfuse is deliberately cloud-hosted, not self-hosted. Self-hosting needs five
 extra containers (web, worker, ClickHouse, MinIO, Redis) plus its own Postgres,
-and this deployment is 1 GiB where the backend alone is capped at 700 MB. The
-hosted free tier costs two environment variables.
+and this deployment is a 512 MB free instance. The hosted free tier costs two
+environment variables.
 
 Because traces of a chat reply are long and expensive, Langfuse itself is never
 on the `/ready` probe — a tracing outage must not return 503. Set `LANGFUSE_*`
-keys in `backend/.env.production` to enable it; unset, tracing is off.
+keys in Render's environment page to enable it; unset, tracing is off.
 
 [Langfuse trace screenshot goes here]
 
@@ -398,14 +379,18 @@ measuring a gate with nothing behind it.
 
 ## Known limits
 
-- **Uploads are on local disk** — see above. Not shared or durable across
-  instances.
+- **Uploads are on local disk, and the disk is ephemeral.** Render's free
+  plan gives the service no persistent volume, so the filesystem is wiped on
+  every restart and every deploy. Survivable only because nothing reads a
+  stored file after the upload request that indexed it. Any feature that needs
+  the original file back needs object storage first.
 - **SSE through Vercel's rewrites** is streamed by Vercel's edge, not
   buffered by a serverless function, but it's worth watching on the first
   long reply. If it ever misbehaves, the fallback is to point
-  `VITE_API_URL` straight at `https://api.<domain>/generate/text/` and
-  accept CORS for that one call — `VITE_CONVERSATIONS_URL` must stay
-  relative regardless, because of the beacon.
+  `VITE_API_URL` straight at `https://<service>.onrender.com/generate/text/`
+  and accept CORS for that one call. `VITE_CONVERSATIONS_URL` must stay
+  relative regardless, because `/auth` and the calls that share its origin are
+  what keep the refresh cookie first-party.
 - `created_at` / `updated_at` are `DateTime` without timezone, so Postgres
   drops the offset on values the models write as timezone-aware. Worth
   fixing before there is production data to migrate.
@@ -414,10 +399,33 @@ measuring a gate with nothing behind it.
   rate-limit store first.
 - **No email verification** — anyone can register with any address they
   like. The global budget cap bounds the damage a throwaway account can do.
-- **Documents have no UI any more.** `GET /documents/` and
-  `POST /documents/{id}/delete` are still served, but the panel that called
-  them is gone, so a user can upload a file and never list or remove it.
-  Uploading is now the whole document surface in the app.
+- **One attachment per conversation, and no list UI.** A thread holds one
+  document, so the attachment chip (upload, then close to delete) is the whole
+  document surface in the app. `GET /documents/` is still served and nothing
+  in the frontend calls it. A user who wants two files at once needs two
+  threads, which the conversation cap then bounds.
+- **Qdrant points written before thread scoping match nothing.** Every search
+  now filters on owner and `conversation_id`, and older points carry no such
+  payload field. That is the intended outcome rather than a gap, but it means
+  documents indexed before this change are unreachable and have to be
+  re-uploaded.
+- **The free service sleeps.** After roughly 15 minutes without traffic
+  Render stops the instance, and the next request pays about a minute of cold
+  start while the image boots and `alembic upgrade head` runs. No client-side
+  timeout is set, so the request waits rather than failing, but the first
+  visitor after a quiet spell sees a long pause.
+- **No edge rate limit any more.** EC2 had Caddy capping requests per address
+  on `/generate*` and `/upload*` before they reached the backend. Render's
+  proxy has no equivalent, so `global_daily_call_budget` (200/day) is the only
+  ceiling left that a fresh account cannot walk around. Cloudflare in front of
+  a custom domain is how to get that layer back.
+- **Nothing checks the `vercel.json` route list.** It is the only proxy list
+  left, and a backend route missing from it does not error. The request falls
+  through to the SPA catch-all and returns `index.html` with a 200. Adding a
+  route to the API means adding it there by hand.
+- **The housekeeping job does not run.** `cleanup-refresh-tokens` needs a
+  scheduler, and Render cron jobs need a paid plan. `render.yaml` carries the
+  service commented out; until then the `refresh_tokens` table grows.
 - **`agent_max_request_tokens` is provisional.** The old value was Groq's real
   8,000-token limit, confirmed against a 400 in production. The current one is
   a guess at Together's much larger window and has not been confirmed the same
@@ -425,13 +433,22 @@ measuring a gate with nothing behind it.
 
 ## Key decisions
 
+- **A free managed platform over a self-managed box.** The backend ran on EC2
+  behind Caddy, on AWS credits that expire. Render's free web service hosts
+  the same `backend/Dockerfile` at no cost and with no expiry, and it
+  terminates TLS itself. The price is three real capabilities: the edge rate
+  limit, the persistent uploads disk, and the scheduled cleanup job, none of
+  which the free plan offers. Each was checked against what this app actually
+  needs before it was given up, and each is listed under Known limits rather
+  than quietly dropped. The alternative was paying about $10 a month for an
+  instance, which is not worth it for a portfolio deployment.
 - **Onion architecture with a single composition root**, enforced by
   `lint-imports` rather than convention — a wrong import fails the build
   instead of getting caught in review. See `backend/README.md`.
 - **Same-origin proxying for HTTP, direct connection for WebSocket.** Vercel
   can rewrite HTTP but not an `Upgrade` handshake, so the two calls take
   different paths to the same backend. This is what drives both the
-  `vercel.json`/`nginx.conf` route lists and `ALLOWED_WEBSOCKET_ORIGINS`.
+  `vercel.json` route list and `ALLOWED_WEBSOCKET_ORIGINS`.
 - **Refresh tokens as revocable rows, access tokens as stateless JWTs.**
   A 15-minute access token needs no database hit to verify; a 14-day refresh
   token is rotated and can be revoked, with reuse-of-a-revoked-token treated
@@ -443,6 +460,12 @@ measuring a gate with nothing behind it.
   through LangChain's `init_chat_model`, so swapping one provider for another
   is an env change, not a code change. The move from Groq to Together was
   exactly that: two variables, no code touched.
+- **A document is scoped to its conversation, not to the account.** Every
+  Qdrant search filters on owner **and** thread. The owner filter is the
+  security boundary; the thread filter is what stops a question in one chat
+  being answered out of a file attached to another. It also bounds cost: one
+  attachment per thread, and `MAX_CONVERSATIONS_PER_USER` threads per account,
+  is how many files one person can keep embedded.
 - **Tool routing is enforced, not prompted.** The system prompt asks the model
   to try `retrieve_documents` before `search_web` on a question about the
   user's own files; `ToolRegistry.invoke` makes it binding. A rule that only
