@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
+import { PulseBlocks } from '../../../components/ui'
 import { easeStandard, timing } from '../../../lib/motion'
 import { useAuth } from '../hooks/useAuth'
 import { AuthForm } from './AuthForm'
@@ -26,14 +27,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
         aria-live="polite"
         aria-busy
       >
-        {/* Three ink blocks marching in step. No text: the shape says "wait"
-            without naming the mechanism, and the stepped keyframes keep it a
-            hard cut rather than a fade. */}
-        <span className="auth-restoring__blocks" aria-hidden="true">
-          <i />
-          <i />
-          <i />
-        </span>
+        <PulseBlocks />
         <span className="sr-only">Loading</span>
       </motion.div>
     )
