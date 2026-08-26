@@ -30,30 +30,23 @@ function toMessages(turns: MessageOut[]): Message[] {
 }
 
 /**
- * Owns the transcript and the in-flight stream for one, externally-chosen
- * conversation.
- *
- * `conversationId` is now a prop rather than something this hook resolves
- * itself — `useConversations` owns the sidebar's list and which id is active,
- * and this hook's only job is to load and talk into whichever one that is.
- * Switching it is a normal prop change: the effect below reloads the
- * transcript and cuts off any stream still running against the thread the
- * user just left.
- *
- * The assistant's turn is appended empty and filled in place as deltas land, so
- * the list renders a pending bubble without a second piece of state to keep in
- * sync with `messages`.
- *
- * Turns are mirrored to the server as they complete, but that mirror is
- * best-effort: what is on screen stays authoritative for this page-life.
- *
- * `preloaded` is a transcript `useConversations` already fetched in parallel
- * with the conversation list. When it matches the conversation being opened,
- * the load below is skipped entirely — that is one whole round trip off the
- * time between signing in and seeing the chat. It is consumed once: switching
- * away and back re-fetches, because by then the preload is a stale snapshot
- * rather than a shortcut.
- */
+  * Owns the transcript and the in-flight stream for one, externally-chosen
+  * conversation.
+  *
+  * `conversationId` is a prop: `useConversations` owns which id is active,
+  * and switching it is a normal prop change. The effect below reloads the
+  * transcript and cuts off any stream still running against the old thread.
+  *
+  * The assistant's turn is appended empty and filled in place as deltas land,
+  * so no second piece of state has to stay in sync with `messages`.
+  *
+  * Turns are mirrored to the server as they complete, best-effort: what is on
+  * screen stays authoritative for this page-life.
+  *
+  * `preloaded` is a transcript `useConversations` already fetched, which saves
+  * a whole round trip on first load. Consumed once: switching away and back
+  * refetches, because by then it is a stale snapshot.
+  */
 export function useChat(model: Model, conversationId: number, preloaded?: ConversationOut | null) {
   const [messages, setMessages] = useState<Message[]>([])
   const [isStreaming, setIsStreaming] = useState(false)
@@ -73,12 +66,10 @@ export function useChat(model: Model, conversationId: number, preloaded?: Conver
   preloadedRef.current = preloaded
   // Which conversation ids have already had their preload spent.
   const consumedRef = useRef<Set<number>>(new Set())
-  // The id this effect last started loading (by either path). StrictMode
-  // reruns this effect once right after mount with the same conversationId -
-  // without this guard, the rerun would find `consumedRef` already marked
-  // from the first run and fall through to a real, duplicate `getConversation`
-  // call. Storing the id itself, not a boolean, keeps a genuine switch back to
-  // the same conversation later free to refetch.
+  // The id this effect last started loading. StrictMode reruns it once after
+  // mount, and without this guard the rerun would find `consumedRef` marked
+  // and fall through to a duplicate `getConversation`. Storing the id, not a
+  // boolean, keeps a genuine switch back free to refetch.
   const loadStartedForRef = useRef<number | null>(null)
 
   useEffect(() => {

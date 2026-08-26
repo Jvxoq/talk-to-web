@@ -22,43 +22,34 @@ class ToolContext(BaseModel):
 
     Separate from the arguments on purpose: arguments are written by the model,
     and none of this is negotiable by it. A model that could name the owner it
-    wanted to search would be a model that could read anyone's documents; a
-    model that could declare its own question "not about the uploaded files"
-    would be a model that could talk its way out of the routing policy below.
+    searched could read anyone's documents, and one that could call its own
+    question "not about the uploaded files" could talk past the routing policy.
 
-    Every field is written by the tool node - see `agent.nodes.make_tool_node`.
-    `owner_id`, `conversation_id`, `document_scoped` and `has_documents` come
-    off the run config, decided once per request by `GenerateReply`.
-    `prior_tools` is read out of the history, because it is the one of the five
-    that changes between laps.
+    Every field is written by the tool node. The first four come off the run
+    config, decided once per request by `GenerateReply`. `prior_tools` is read
+    out of the history, because it is the one that changes between laps.
     """
 
     model_config = ConfigDict(frozen=True)
 
     owner_id: int
     # The thread this turn belongs to, and the only documents a retrieval may
-    # read. `None` is a one-off turn with no conversation, which owns no
-    # documents at all.
+    # read. `None` is a one-off turn, which owns no documents at all.
     conversation_id: int | None = None
-    # Whether the user's question on this turn is about files they supplied.
-    # Decided from the request text, not from the checkpointed history: a
-    # summarized thread can lose the turn it is about, and a gate that reads
-    # its own input out of a lossy record fails open.
+    # Whether this turn is about files the user supplied. Decided from the
+    # request text, not the history: a summarized thread can lose the turn it
+    # is about, and a gate reading a lossy record fails open.
     document_scoped: bool = False
-    # Whether this owner has anything to retrieve at all. Read from the
-    # database once per request, alongside the names the digest is built from,
-    # so it costs no extra query.
+    # Whether this owner has anything to retrieve. Read once per request
+    # alongside the digest names, so it costs no extra query.
     #
-    # Defaults to `True`, and the default is the honest answer to "we do not
-    # know": every gate below is an optimisation, and the cost of guessing
-    # wrong in the permissive direction is one wasted call, while guessing
-    # wrong in the strict direction is a user with documents being told they
-    # have none. `GenerateReply` sets this to `False` only when a read that
-    # actually succeeded came back empty - never when the read itself failed.
+    # Defaults to `True`, the honest answer to "we do not know". Guessing
+    # permissively costs one wasted call; guessing strictly tells a user with
+    # documents that they have none. `GenerateReply` sets it `False` only for
+    # a read that succeeded and came back empty.
     has_documents: bool = True
-    # Every tool that has already run and answered since the user's last
-    # message - requested is not enough, for the reason `tools_run_this_turn`
-    # gives.
+    # Every tool that has already run and answered since the last user
+    # message. Requested is not enough - see `tools_run_this_turn`.
     prior_tools: frozenset[str] = frozenset()
 
 
@@ -69,21 +60,16 @@ class ToolSpec(BaseModel):
 
     name: str
     description: str
-    # JSON Schema. Produced by `model_json_schema()` rather than written by
-    # hand, so the schema the model is shown can never drift from the model the
-    # arguments are validated against.
+    # JSON Schema from `model_json_schema()`, never hand-written, so what the
+    # model is shown cannot drift from what validates its arguments.
     parameters: dict[str, Any]
 
 
 class ToolResult(BaseModel):
-    """
-    What `BaseTool._run` hands back on success: the text the model reads, and
-    the sources behind it for the person watching.
+    """What `_run` hands back on success: text for the model, sources for the user.
 
-    Kept separate from `ToolOutcome` because a tool never decides `ok` -
-    reaching `_run` at all already means the call succeeded from the tool's
-    point of view. `ok=False` is what `run()` writes when `_run` never got
-    that far.
+    Separate from `ToolOutcome` because a tool never decides `ok` - reaching
+    `_run` already means it succeeded. `ok=False` is written by `run()`.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -93,19 +79,11 @@ class ToolResult(BaseModel):
 
 
 class ToolOutcome(BaseModel):
-    """
-    What a tool produced, and whether it worked.
+    """What a tool produced, and whether it worked.
 
-    Both halves are needed and they are not the same question. `content` always
-    goes back to the model - even a failure is phrased as something the model can
-    read and route around. `ok` is for the person watching: it is what turns the
-    tool chip in the transcript red. Collapsing the two into a bare string, as an
-    earlier draft did, made every failure silently indistinguishable from an
-    answer.
-
-    `sources` rides along for the same audience as `ok`: the model never reads
-    it back, since the citation-worthy detail (a URL, a document name) is
-    already inline in `content` where the model can quote it.
+    Two different questions. `content` always goes back to the model, even a
+    failure, phrased so it can route around it. `ok` is for the person watching:
+    it turns the tool chip red. `sources` is for the same audience.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -148,14 +126,10 @@ class ToolRoutingPolicy(BaseModel):
         if call.name == self.document_tool:
             if context.has_documents:
                 return None
-            # The prompt tells the model to try this lookup whenever a question
-            # names an entity it does not know, on the reasoning that coming
-            # back empty costs only one call. That reasoning holds right up
-            # until the account has nothing indexed, at which point every such
-            # call is a guaranteed miss - and not a free one: it is an
-            # embedding request and a vector-store round trip before the empty
-            # answer comes back. Answered here instead, from a fact the model
-            # cannot argue with.
+            # The prompt tells the model to try this lookup whenever a question names
+            # an unknown entity, because coming back empty costs one call. That stops
+            # holding once the account has nothing indexed: every such call is a
+            # guaranteed miss, and not a free one. Answered here from a fact instead.
             return ToolOutcome(
                 content=(
                     "This user has not uploaded any documents, so "
@@ -171,11 +145,10 @@ class ToolRoutingPolicy(BaseModel):
         if not context.document_scoped or self.document_tool in context.prior_tools:
             return None
         if not context.has_documents:
-            # Reachable: `is_document_scoped` matches phrasing ("what does my
-            # PDF say"), so a user with an empty library can ask a
-            # document-scoped question. Holding the search back here would
-            # bounce the model between a retrieval that is refused above and a
-            # search that is refused here until the lap budget runs out.
+            # Reachable: `is_document_scoped` matches phrasing, so a user with an
+            # empty library can ask a document-scoped question. Holding the search
+            # back too would bounce the model between two refusals until the lap
+            # budget ran out.
             return None
         return ToolOutcome(
             content=(
@@ -198,14 +171,11 @@ class AgentTool(Protocol):
 
 
 class BaseTool[ArgsT: BaseModel](ABC):
-    """
-    Declare the args model once; schema, validation and errors follow.
+    """Declare the args model once; schema, validation and errors follow.
 
-    `run` never raises. A tool that raises would take down a response the user
-    is already watching stream, to punish a mistake the model could have fixed
-    itself. Both failure modes return a string instead, which lands back in the
-    conversation as a tool result and gives the model a chance to correct course
-    or to answer without that tool.
+    `run` never raises. A raise would kill a response the user is already
+    watching stream, over a mistake the model could have fixed. Both failure
+    modes return a string the model can read and route around.
     """
 
     name: ClassVar[str]
@@ -224,8 +194,8 @@ class BaseTool[ArgsT: BaseModel](ABC):
         try:
             args = self.args_model.model_validate(dict(arguments))
         except ValidationError as error:
-            # Returned rather than logged and swallowed: the model wrote these
-            # arguments, so the model is the one who can fix them.
+            # Returned rather than swallowed: the model wrote these arguments, so the
+            # model is the one who can fix them.
             logger.debug("Tool {} got invalid arguments: {}", self.name, error)
             return ToolOutcome(content=f"Invalid arguments for {self.name}: {error}", ok=False)
 
@@ -240,21 +210,16 @@ class BaseTool[ArgsT: BaseModel](ABC):
     async def _run(self, args: ArgsT, context: ToolContext) -> ToolResult:
         """Do the work. Arguments are already validated; exceptions are caught.
 
-        Every tool is handed the context whether or not it reads one. Passing it
-        only to the tools that currently need it would mean changing the
-        contract again the first time a second one does, and an optional
-        parameter is an invitation to forget it.
+        Every tool is handed the context whether or not it reads one, because an
+        optional parameter is an invitation to forget it.
         """
 
 
 class ToolRegistry:
-    """
-    Name to tool, and the only thing the graph knows about tools.
+    """Name to tool, and the only thing the graph knows about tools.
 
-    The graph asks for `specs()` to tell the model what exists and calls
-    `invoke()` to run what the model picked. Neither operation names a concrete
-    tool, which is what makes the registry the single place a new capability is
-    added.
+    Neither `specs()` nor `invoke()` names a concrete tool, which is what makes
+    this the single place a new capability is added.
     """
 
     def __init__(

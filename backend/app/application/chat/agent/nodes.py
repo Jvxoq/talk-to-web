@@ -21,10 +21,9 @@ from app.application.chat.models import ChatMessage, ToolCall
 from app.application.chat.ports import ChatModel, TokenCounter, Tracer
 from app.application.chat.tools.base import ToolContext, ToolRegistry
 
-# The vocabulary of the custom stream. These payloads are an internal protocol
-# between this module and `use_cases.generate_reply`, which is the only reader:
-# nothing outside the application layer ever sees one. Keeping them as plain
-# dicts (rather than DTOs) keeps the checkpointer's serialisation trivial.
+# The vocabulary of the custom stream: an internal protocol between this
+# module and `use_cases.generate_reply`, the only reader. Plain dicts, so
+# the checkpointer's serialisation stays trivial.
 DELTA: Final = "delta"
 TOOL_START: Final = "tool_start"
 TOOL_END: Final = "tool_end"
@@ -71,8 +70,7 @@ def make_agent_node(
     model: ChatModel, tools: ToolRegistry, max_iterations: int, tracer: Tracer
 ) -> Node:
     """Build the node that asks the model what to do next."""
-    # The tool specs cannot change between requests - the registry is built at
-    # startup - so they are computed once rather than per turn.
+    # The registry is built at startup, so the specs are computed once.
     specs = tools.specs()
 
     async def agent(state: AgentState) -> dict[str, Any]:
@@ -80,20 +78,15 @@ def make_agent_node(
         model_name = str(configurable["model"])
         temperature = float(configurable.get("temperature", 0.0))
 
-        # The last lap gets no tools bound, on purpose: a model that is still
-        # asking for tools when the ceiling is one call away is looping, and
-        # `route_after_agent` would otherwise discard that request and end the
-        # reply on whatever the model streamed alongside it - usually nothing,
-        # since a model asking for a tool rarely also writes a text answer in
-        # the same turn. Taking tools away here forces a text-only completion
-        # instead, so the reply ends with a real answer built from everything
-        # gathered so far rather than a silent cutoff.
+        # The last lap gets no tools bound. A model still asking for tools at the
+        # ceiling is looping, and `route_after_agent` would discard that request
+        # and end the reply on whatever was streamed alongside it - usually
+        # nothing. Taking tools away forces a real text answer instead.
         final_lap = state.iterations >= max_iterations - 1
         turn_specs = () if final_lap else specs
 
-        # The custom stream, not the return value, is what reaches the user
-        # while the model is still talking. Returning the finished text would
-        # make every reply arrive in one lump after the turn completed.
+        # The custom stream, not the return value, is what reaches the user while
+        # the model is still talking.
         writer = get_stream_writer()
 
         parts: list[str] = []
@@ -149,47 +142,32 @@ def make_tool_node(
         writer = get_stream_writer()
         configurable: dict[str, Any] = dict(get_config().get("configurable") or {})
         # Both subscripted, not `.get(...)`: a run config missing either is a
-        # miswiring, and defaulting one would fail quietly in the worst
-        # direction. A default owner means searching somebody's documents - or
-        # everybody's - instead of failing where it broke; a default
-        # `document_scoped` means the routing gate never fires and a private
-        # question goes to the web, with no error and no log line to say so.
+        # miswiring, and a default would fail quietly in the worst direction. A
+        # default owner searches somebody else's documents; a default
+        # `document_scoped` sends a private question to the web with no log line.
         #
-        # `document_scoped` arrives from the run config rather than being
-        # recomputed here from `state.messages`, because the history is not a
-        # dependable record of what was asked: the summarize node can replace
-        # it, and a run that compressed the current user turn away would leave
-        # this node matching on an older question. The question is settled
-        # once, in `GenerateReply`, from the request itself.
+        # `document_scoped` comes from the config rather than being recomputed
+        # from `state.messages`: the summarize node can replace that history, and
+        # a run that compressed the current turn away would match an older
+        # question. It is settled once, in `GenerateReply`.
         #
-        # `prior_tools` genuinely does have to be recomputed every lap - it
-        # grows as the turn does, and a value fixed at the start would hold the
-        # first lap's answer for the whole reply. It is safe to read from the
-        # history for the same reason the other one is not: the summarize node
-        # keeps a suffix, so dropping the current user turn drops every earlier
-        # turn with it and the scan still sees this turn only.
+        # `prior_tools` does have to be recomputed every lap, because it grows as
+        # the turn does. Safe to read from the history because the summarize node
+        # keeps a suffix, so dropping the current turn drops every earlier one too.
         #
-        # Note what this means for two tools requested in the *same* lap: they
-        # run concurrently, so neither has answered yet and a search asked for
-        # alongside a retrieval is held back. That is the intent - the point of
-        # the rule is that the retrieval's answer exists before a search is
-        # worth paying for - not an oversight to "fix" by counting requests
-        # instead of results.
+        # Two tools requested in the same lap run concurrently, so neither has
+        # answered and a search alongside a retrieval is held back. That is the
+        # intent: the retrieval's answer should exist before a search is paid for.
         messages = state.messages
         context = ToolContext(
             owner_id=int(configurable["owner_id"]),
-            # Rides the config next to `owner_id`, and for the same reason:
-            # which thread is asking is a fact about the request, never
-            # something the model may name.
+            # Next to `owner_id`, for the same reason: which thread is asking is a
+            # fact about the request, never something the model may name.
             conversation_id=_optional_int(configurable.get("conversation_id")),
             document_scoped=bool(configurable["document_scoped"]),
-            # `.get`, unlike the two above, and for the reason they are not:
-            # the argument for subscripting is that a missing value would
-            # default in the worst direction, and this one's default is simply
-            # the behaviour that existed before it did - every document lookup
-            # allowed. A missing flag here costs a wasted call, not a leak, and
-            # that is not worth raising into a response the user is already
-            # watching stream.
+            # `.get`, unlike the two above: this one's default is the behaviour that
+            # existed before the flag did, so a missing value costs a wasted call
+            # rather than a leak.
             has_documents=bool(configurable.get("has_documents", True)),
             prior_tools=tools_run_this_turn(messages),
         )
@@ -204,9 +182,8 @@ def make_tool_node(
             # Announced before the call, so the spinner has a reason on it for
             # the whole of a slow fetch rather than after the fact.
             writer({"type": TOOL_START, "name": call.name, "summary": _summarise(call)})
-            # One span per call, not per node: the node runs every call in this
-            # turn concurrently, and lumping them into one span would hide
-            # which one was slow.
+            # One span per call: the node runs them concurrently, and one span would
+            # hide which was slow.
             async with tracer.span(
                 f"tool.{call.name}", kind="span", arguments=call.arguments
             ) as span:

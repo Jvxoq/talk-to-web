@@ -1,16 +1,10 @@
 /**
  * Waiting for a sleeping backend to come back.
  *
- * The API runs on a free Render instance, which is stopped after fifteen
- * minutes with no traffic. The next request pays the container start plus the
- * `alembic upgrade head` that runs from `dockerCommand` on every boot, so the
- * first byte can be thirty to sixty seconds away.
- *
- * Nothing else in the app can tell that apart from being signed out:
- * `AuthProvider` calls `/auth/refresh` on mount and reads any failure as
- * "anonymous", which puts a sign-in form in front of someone whose password
- * would fail too. So the wake happens first, here, before anything that needs
- * the backend is mounted.
+ * The free Render instance stops after fifteen minutes without traffic, and the
+ * next request pays the container start plus `alembic upgrade head`. Nothing
+ * else in the app can tell that apart from being signed out, so the wait
+ * happens here, before anything that needs the backend is mounted.
  */
 
 const HEALTH_URL = '/health'
@@ -42,12 +36,8 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 /**
  * One probe. True only for a real answer from the real backend.
  *
- * The body is checked, not just the status. `/health` is proxied by Vercel and
- * by the Vite dev server, and a missing route falls through to the SPA
- * catch-all, which answers 200 with `index.html` — exactly the trap already
- * documented for `/models` in `vite.config.ts`. A 200 that is not our JSON is
- * a misconfigured proxy, and treating it as awake would hand the user straight
- * back to the failure this module exists to prevent.
+ * The body is checked, not just the status: a `/health` missing from the proxy
+ * list falls through to the SPA catch-all and answers 200 with `index.html`.
  */
 async function probe(signal: AbortSignal): Promise<boolean> {
   try {
@@ -61,9 +51,8 @@ async function probe(signal: AbortSignal): Promise<boolean> {
       (body as Record<string, unknown>).status === 'ok'
     )
   } catch {
-    // A sleeping instance fails as a network error, a timeout, or an HTML body
-    // that will not parse. During a cold start all three are the expected
-    // answer rather than something worth reporting.
+    // A network error, a timeout, or an HTML body that will not parse. During a
+    // cold start all three are the expected answer.
     return false
   }
 }
@@ -71,10 +60,8 @@ async function probe(signal: AbortSignal): Promise<boolean> {
 /**
  * Polls `/health` until the backend answers or the deadline passes.
  *
- * Never throws and never rejects: the caller renders a screen from the result,
- * and a cold start is not an error. An aborted `signal` ends the loop and
- * resolves `'unreachable'`, which the caller ignores because it only aborts on
- * unmount.
+ * Never rejects: the caller renders a screen from the result, and a cold start
+ * is not an error. An aborted signal ends the loop as `'unreachable'`.
  */
 export async function waitForBackend(
   options: { signal?: AbortSignal; onAttempt?: () => void } = {},
@@ -85,9 +72,8 @@ export async function waitForBackend(
   while (!signal?.aborted) {
     onAttempt?.()
 
-    // Two reasons to stop one probe: the caller unmounted, or this attempt hung
-    // past its own budget. `AbortSignal.any` folds them into the single signal
-    // `fetch` accepts, so a hung request cannot outlive its retry.
+    // Two reasons to stop a probe: the caller unmounted, or the attempt hung.
+    // `AbortSignal.any` folds them into the one signal `fetch` accepts.
     const timeout = AbortSignal.timeout(ATTEMPT_TIMEOUT_MS)
     const attemptSignal = signal ? AbortSignal.any([signal, timeout]) : timeout
 

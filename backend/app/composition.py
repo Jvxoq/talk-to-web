@@ -117,23 +117,17 @@ class AppContainer:
     revoke_session: RevokeSession
     identify_request: IdentifyRequest
     check_readiness: CheckReadiness
-    # Not a use case, and here for the same reason as the two below: writing the
-    # refresh cookie is a delivery decision that depends on where this deployment
-    # is served from, and the API may not read settings to find out.
+    # Not a use case: writing the refresh cookie is a delivery decision that
+    # depends on the deployment, and the API may not read settings.
     refresh_cookie: RefreshCookiePolicy
     # Whether the address on the connection came from a proxy this deployment
     # configured, and can therefore be used as a rate-limit key.
     trust_forwarded_client_ip: bool
-    # Not a use case: the list of models this deployment will answer on. It is
-    # here because the API has to reject an unknown model with a 4xx and has to
-    # tell the frontend what to offer, and the API may not read settings. So
-    # settings still enter at exactly one place and arrive everywhere else by
-    # injection.
+    # Not a use case: the API rejects an unknown model with a 4xx and tells the
+    # frontend what to offer, and it may not read settings itself.
     chat_models: tuple[str, ...]
-    # Also not a use case, and here for the same reason: rejecting a WebSocket
-    # handshake from an unknown origin is a delivery concern that happens before
-    # any use case is reached, and `TranscribeStream` must not learn that it is
-    # being driven over a WebSocket at all.
+    # Also not a use case: the handshake is rejected before any use case is
+    # reached, and `TranscribeStream` must not learn it is on a WebSocket.
     websocket_origins: tuple[str, ...]
 
 
@@ -146,24 +140,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.database_url,
         pool_size=settings.database_pool_size,
         max_overflow=settings.database_max_overflow,
-        # Without this, a connection killed by the database or a NAT idle timeout
-        # is handed to a request and fails it. The ping costs a round trip.
+        # Without this a dead connection is handed to a request and fails it.
         pool_pre_ping=True,
-        # Managed Postgres closes idle connections on its own schedule - Neon
-        # both scales a compute to zero and reaps idle pooler connections - so a
-        # long-lived pool fills up with sockets the server has already forgotten.
-        # `pool_pre_ping` catches those and reconnects, at the cost of a failed
-        # ping first; retiring connections before they get that old avoids paying
-        # for the discovery at all.
+        # Neon scales to zero and reaps idle pooler connections, so a
+        # long-lived pool fills with sockets the server has forgotten. Retiring
+        # them early avoids paying for `pool_pre_ping` to discover it.
         pool_recycle=300,
     )
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
-    # No `create_all` here, in any environment. Schema is owned by
-    # `alembic upgrade head`, which every compose file runs as its own service
-    # before the backend starts. Creating tables from application startup means
-    # concurrent replicas racing each other, and a schema that drifts from the
-    # migration history nobody then trusts.
+    # No `create_all`, in any environment. `alembic upgrade head` owns the
+    # schema. Creating tables at startup races concurrent replicas and drifts
+    # from the migration history.
     qdrant_client = AsyncQdrantClient(
         url=settings.qdrant_url,
         api_key=(
@@ -180,10 +168,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     tavily_client = AsyncTavilyClient(api_key=settings.tavily_api_key.get_secret_value())
 
     # --- observability ---
-    # Built before anything that traces, because the condenser and the graph
-    # both take it. Unset keys are the normal case: local runs and the whole
-    # test suite get `NullTracer` and send nothing anywhere, the same way
-    # `configure_sentry` no-ops with no DSN.
+    # Built before anything that traces. Unset keys are the normal case: local
+    # runs and the test suite get `NullTracer` and send nothing.
     tracer: Tracer = NullTracer()
     if settings.langfuse_public_key and settings.langfuse_secret_key:
         candidate = LangfuseTracer(
@@ -193,12 +179,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             capture_content=settings.langfuse_capture_content,
             flush_timeout_seconds=settings.langfuse_flush_timeout_seconds,
         )
-        # Checked once, here, rather than probed on `/ready`. Readiness is
-        # `all(...)` by design, so putting tracing behind it would let a Langfuse
-        # outage return 503 and pull this app out of rotation over a dependency
-        # that is deliberately not on the critical path. A typo in a key is the
-        # only failure this check was ever really for, and one startup log line
-        # catches it.
+        # Checked here, never on `/ready`: a tracing outage must not return
+        # 503. One startup log line catches the only failure that matters, a
+        # typo in a key.
         if await candidate.credentials_valid():
             tracer = candidate
             logger.info("Langfuse tracing enabled")
@@ -216,10 +199,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
 
     # --- adapters ---
-    # The condenser model is added to the same adapter so it shares one HTTP
-    # client, but it is not offered in the UI: `chat_models` below stays the
-    # user-selectable list. Deduplicated in case the condenser model is also a
-    # chat model.
+    # Same adapter, so the condenser shares one HTTP client. Not offered in the
+    # UI: `chat_models` below stays the user-selectable list.
     chat_model = LangChainChatModel(
         provider=settings.llm_provider,
         models=list(dict.fromkeys([*settings.llm_models, settings.agent_condenser_model])),
@@ -270,15 +251,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         ttl_seconds=settings.access_token_ttl_seconds,
     )
     refresh_token_factory = Sha256RefreshTokenFactory()
-    # One limiter shared by register, login and refresh: the keys are namespaced
-    # per route, so a shared instance is one budget per key, not one for all.
+    # Shared by register, login and refresh. Keys are namespaced per route, so
+    # this is one budget per key, not one for all.
     auth_limiter = SlidingWindowRateLimiter(
         max_attempts=settings.auth_rate_limit_attempts,
         window_seconds=settings.auth_rate_limit_window_seconds,
     )
-    # One limiter per budget, not one shared instance with namespaced keys: a
-    # chat request and an upload are counted against different ceilings over
-    # different windows, and a limiter holds exactly one of each.
+    # One limiter per budget: a chat request and an upload have different
+    # ceilings over different windows, and a limiter holds one of each.
     chat_limiter = SlidingWindowRateLimiter(
         max_attempts=settings.chat_rate_limit_requests,
         window_seconds=settings.chat_rate_limit_window_seconds,
@@ -287,11 +267,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         max_attempts=settings.upload_rate_limit_requests,
         window_seconds=settings.upload_rate_limit_window_seconds,
     )
-    # One instance, one key ("global"), shared by every use case that spends
-    # money at a provider - chat replies, uploads, URL ingestion and
-    # transcription alike. Unlike the limiters above, this one is not
-    # namespaced per caller: the whole point is a ceiling nobody's account can
-    # get around by signing up again.
+    # One instance, one key ("global"), shared by everything that spends money
+    # at a provider. Not namespaced per caller, on purpose: the point is a
+    # ceiling signing up again cannot get around.
     daily_budget_limiter = SlidingWindowRateLimiter(
         max_attempts=settings.global_daily_call_budget,
         window_seconds=settings.global_daily_call_budget_window_seconds,
@@ -302,9 +280,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         utterance_end_ms=settings.utterance_end_ms,
     )
 
-    # Probes reuse the engine and the client the requests use, not connections of
-    # their own: a readiness check against a private connection reports "up"
-    # while an exhausted pool fails every real request behind it.
+    # Probes reuse the engine and client requests use. A private connection
+    # would report "up" while an exhausted pool failed every real request.
     check_readiness = CheckReadiness(
         probes=[PostgresProbe(engine), QdrantProbe(qdrant_client)],
         timeout_seconds=settings.readiness_timeout_seconds,
@@ -322,14 +299,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         refresh_ttl_seconds=settings.refresh_token_ttl_seconds,
     )
 
-    # A pool, not `AsyncPostgresSaver.from_conn_string(...)`: that helper opens
-    # exactly one raw connection, so every checkpoint read/write would serialize
-    # on it and a single dropped connection would take the checkpointer down
-    # until restart. `autocommit`/`prepare_threshold=0`/`dict_row` are the same
-    # connection kwargs `from_conn_string` used — `prepare_threshold=0` matters
-    # because `database_url` is Neon's transaction-mode pooler, which prepared
-    # statements do not survive. An exit stack holds the pool open across the
-    # single `yield` below and unwinds it in the right order at shutdown.
+    # A pool, not `AsyncPostgresSaver.from_conn_string(...)`: that opens one
+    # raw connection, so every read serializes on it and one dropped connection
+    # kills the checkpointer until restart. `prepare_threshold=0` matters
+    # because Neon's transaction pooler loses prepared statements.
     async with AsyncExitStack() as stack:
         checkpointer_pool = await stack.enter_async_context(
             AsyncConnectionPool[AsyncConnection[DictRow]](
@@ -338,43 +311,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 max_size=settings.checkpointer_pool_max_size,
                 kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
                 open=False,
-                # Same Neon reality as the SQLAlchemy engine above, and this pool
-                # needs its own defence against it: `check` runs a lightweight
-                # ping on a connection before handing it to a caller, so one
-                # Neon already killed is discovered and replaced here rather
-                # than failing mid-checkpoint-read. `max_lifetime` mirrors
-                # `pool_recycle` - connections are retired before they are old
-                # enough to be reaped, matching the engine's 300 seconds.
+                # Same Neon reality as the engine above. `check` pings before handing a
+                # connection over, and `max_lifetime` mirrors `pool_recycle` so
+                # connections retire before Neon reaps them.
                 check=AsyncConnectionPool.check_connection,
                 max_lifetime=300,
             )
         )
-        # `serde` allow-lists `ChatMessage` for msgpack, the binary format the
-        # checkpointer uses to serialize `AgentState.messages`. Without it,
-        # LangGraph only warns today but a future version refuses to load
-        # checkpoints holding our own type.
+        # `serde` allow-lists `ChatMessage` for msgpack. LangGraph only warns
+        # today, but a future version refuses to load checkpoints holding it.
         checkpointer = AsyncPostgresSaver(
             conn=checkpointer_pool,
             serde=JsonPlusSerializer(allowed_msgpack_modules=(ChatMessage,)),
         )
-        # Deliberately NOT gated on `environment == "local"`, unlike the
-        # `create_all` above. These tables belong to LangGraph, not to us: they
-        # are not in our Alembic history, and `setup()` is the only supported way
-        # to create and migrate them. Gating it would mean a fresh production
-        # database has no checkpoint tables and every chat request fails. It is
-        # safe to run on every boot - it is idempotent, tracks its own schema
-        # version, and uses `CREATE TABLE IF NOT EXISTS`. Replicas racing it can
-        # at worst collide on one deploy; if that ever bites, the fix is to run
-        # `setup()` from the migration step, not to skip it here.
+        # Not gated on the environment. These tables are LangGraph's, not in our
+        # Alembic history, and `setup()` is the only supported way to make them.
+        # It is idempotent and safe on every boot.
         await checkpointer.setup()
 
-        # Compiled exactly once, at startup. Compiling per request would rebuild
-        # every node and re-attach the checkpointer on every message the user
-        # sends.
+        # Compiled once, at startup. Per request it would rebuild every node and
+        # re-attach the checkpointer on every message.
         graph = build_agent_graph(
             model=chat_model,
-            # The one place a capability is added to the agent: a new tool is a
-            # new line here and nothing anywhere else.
+            # The one place a capability is added to the agent.
             tools=ToolRegistry(
                 [
                     RetrieveDocuments(knowledge),
@@ -382,10 +341,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     SearchWeb(searcher, max_results=settings.tavily_max_results),
                 ],
                 guard=tool_output_guard,
-                # Which tool must be tried first, on a question the user framed
-                # as being about their own files. Named here rather than inside
-                # the registry because this is the file that decides which tools
-                # exist at all; the registry only enforces the order.
+                # Which tool must be tried first on a document-scoped question. Named
+                # here because this file decides which tools exist; the registry only
+                # enforces the order.
                 routing=ToolRoutingPolicy(
                     document_tool=RetrieveDocuments.name,
                     web_search_tool=SearchWeb.name,
@@ -402,15 +360,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             tracer=tracer,
         )
 
-        # Built before the container because three of its members take it:
-        # removing a document entirely is one operation, and the alternative -
-        # each caller doing the three steps itself - is how one of them ends up
-        # deleting the row and leaving the vectors behind.
+        # Built before the container because three of its members take it.
+        # Removing a document is one operation, and each caller re-deriving the
+        # three steps is how one of them leaves the vectors behind.
         delete_document = DeleteDocument(uow_factory, index=vector_index, storage=storage)
 
-        # Annotated as the API's Protocol so mypy proves, here at the one place
-        # that knows both sides, that the concrete container provides everything
-        # the routes ask for.
+        # Annotated as the API's Protocol, so mypy proves here that the concrete
+        # container provides everything the routes ask for.
         container: Container = AppContainer(
             generate_reply=GenerateReply(
                 graph=graph,
@@ -421,9 +377,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 guards=input_guard,
                 tracer=tracer,
                 uow_factory=uow_factory,
-                # The same guard instance the tool registry uses. A document
-                # digest is external content by the same definition a fetched
-                # page is, so it gets the same fence.
+                # The same guard the tool registry uses: a digest is external content by
+                # the same definition a fetched page is.
                 tool_output_guard=tool_output_guard,
                 max_digest_documents=settings.chat_digest_max_documents,
                 max_digest_summary_chars=settings.chat_digest_max_summary_chars,

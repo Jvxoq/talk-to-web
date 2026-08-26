@@ -5,12 +5,9 @@ import { easeStandard, springs, timing } from '../lib/motion'
 import { waitForBackend } from '../lib/wake'
 
 /**
- * How long the screen stays hidden while the first probe runs.
- *
- * An awake backend answers `/health` in well under this, so an ordinary load
- * never shows the screen at all. Same reasoning as the held-back `delay` on
- * `.auth-restoring` in `AuthGate`: an indicator that appears and vanishes reads
- * as a glitch.
+ * How long the screen stays hidden while the first probe runs. An awake backend
+ * answers well inside this, and an indicator that appears and vanishes reads as
+ * a glitch.
  */
 const REVEAL_DELAY_MS = 900
 
@@ -19,11 +16,9 @@ type GateStatus = 'checking' | 'awake' | 'unreachable'
 /**
  * Holds the app back until the backend answers.
  *
- * Wrapped around `AuthProvider` rather than inside it, because that provider's
- * mount effect is the first backend call the app makes and a sleeping instance
- * turns it into a sign-in form nobody can get through. Once this gate opens,
- * everything downstream can assume the backend is up, exactly as it did before
- * the free plan started sleeping.
+ * Wraps `AuthProvider` rather than sitting inside it: that provider's mount
+ * effect is the first backend call, and a sleeping instance turns it into a
+ * sign-in form nobody can get through.
  */
 export function BackendGate({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<GateStatus>('checking')
@@ -44,15 +39,12 @@ export function BackendGate({ children }: { children: ReactNode }) {
     const tick = setInterval(() => setElapsed((seconds) => seconds + 1), 1000)
 
     void waitForBackend({ signal: controller.signal }).then((result) => {
-      // Stopped here rather than left to the cleanup below: once the gate
-      // opens this component stays mounted for the life of the app, so timers
-      // only the cleanup clears would keep running, and re-rendering, forever
-      // behind a screen nobody is looking at any more.
+      // Not left to the cleanup: once the gate opens this stays mounted for
+      // the life of the app, so those timers would never stop.
       clearInterval(tick)
       clearTimeout(reveal)
 
-      // Aborted means this effect was cleaned up — under StrictMode's double
-      // mount that is the first run, whose state must not reach the second.
+      // Aborted means this effect was cleaned up, so its state is stale.
       if (controller.signal.aborted) return
       setStatus(result === 'awake' ? 'awake' : 'unreachable')
     })
@@ -75,8 +67,8 @@ export function BackendGate({ children }: { children: ReactNode }) {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: timing.standard, ease: easeStandard }}
-      // `role="alert"` already implies an assertive live region, so spelling
-      // out `aria-live` as well would quietly demote the failure to polite.
+      // `role="alert"` is already assertive, and a stated `aria-live` would
+      // demote the failure to polite.
       role={failed ? 'alert' : undefined}
       aria-live={failed ? undefined : 'polite'}
       aria-busy={!failed}
@@ -106,8 +98,7 @@ export function BackendGate({ children }: { children: ReactNode }) {
           Try again
         </motion.button>
       ) : (
-        // A counter rather than a bar: the wait has no progress to report, and
-        // a bar that cannot honestly fill is worse than a number that climbs.
+        // A counter, not a bar: the wait has no progress to report.
         <p className="backend-gate__elapsed">{elapsed}s</p>
       )}
     </motion.div>

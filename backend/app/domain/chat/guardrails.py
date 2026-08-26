@@ -62,41 +62,24 @@ def _bounded(text: str, max_scan_chars: int) -> str:
 # PII detectors
 # ---------------------------------------------------------------------------
 
-# Ordinary `local@domain.tld` shape. Deliberately does NOT match the full RFC
-# 5322 grammar (quoted locals, comments, IP-literal domains) - those are rare
-# in chat text and chasing them invites the kind of alternation that risks
-# backtracking. A linear, slightly-conservative match beats a precise one that
-# can be made slow.
+# Ordinary `local@domain.tld` shape, not the full RFC 5322 grammar. A
+# linear, conservative match beats a precise one that can be made slow.
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 
-# Phone numbers are kept conservative on purpose: this only matches a run of
-# digit groups separated by spaces or dashes - never dots, which is what a
-# dotted version number ("v10.2024.11") or a decimal-ish string uses, so
-# those never match at all. No lookaround, no nested repetition - a single
-# bounded character class repeated once. The digit-count filter below
-# (`_PHONE_DIGIT_RANGE`) is what tells a phone number apart from a card
-# number: both can be grouped in 4-digit chunks, but a phone number's total
-# digit count tops out well below a 13-19 digit PAN. The leading
-# `(?<![A-Za-z0-9])` is a fixed-width (one char), O(1) negative lookbehind -
-# not the variable-length kind that risks backtracking - that keeps a
-# dash-grouped identifier glued to a letter ("v10-2024-11") from matching at
-# all: a real phone number is never written stuck to the end of a word.
+# Conservative on purpose: a run of digit groups separated by spaces or
+# dashes, never dots, so a version string never matches. The digit-count
+# filter below is what tells a phone number from a card number. The
+# leading lookbehind is fixed-width and O(1), and keeps a dash-grouped
+# identifier glued to a letter from matching at all.
 _PHONE_RE = re.compile(
     r"(?<![A-Za-z0-9])(?:\+\d{1,3}[\s\-]?)?(?:\(\d{2,4}\)[\s\-]?)?\d{2,4}(?:[\s\-]\d{2,4}){2,4}"
 )
 _PHONE_DIGIT_RANGE = range(7, 16)  # E.164 tops out at 15 digits; 7 excludes short local codes.
 
-# An ISO-8601 date ("2024-11-01") is, shape-wise, indistinguishable from a
-# dash-grouped phone number: three digit groups joined by dashes. Documents
-# this app ingests are full of dates (and date ranges, which are just two
-# such matches back to back), so without this check every one of them gets
-# silently redacted as a phone number - corrupting the very content the user
-# uploaded, which is worse than a missed phone number. `_PHONE_RE` itself
-# stays untouched (a phone-shaped grouping requirement would also have to
-# reject legitimate loosely-grouped numbers); instead a matched candidate is
-# checked, after the fact, against this fixed-width literal shape - four
-# digits, dash, two digits, dash, two digits, nothing else - which is O(1)
-# per candidate and cannot backtrack.
+# An ISO-8601 date is shape-wise a dash-grouped phone number, and ingested
+# documents are full of dates. Without this check every one is redacted as
+# a phone number, corrupting the content the user uploaded. Checked after
+# the fact against a fixed-width literal shape, so it cannot backtrack.
 _ISO_DATE_RE = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
 
 
@@ -112,19 +95,17 @@ def _is_iso_date_like(candidate: str) -> bool:
     return 1 <= int(month) <= 12 and 1 <= int(day) <= 31
 
 
-# Candidate card numbers: 13-19 digits, optionally grouped by single spaces or
-# dashes. This is intentionally loose - it is a *candidate* filter, and the
-# Luhn check below is what actually decides "card" vs "any long number".
+# Candidate card numbers: 13-19 digits, loosely grouped. The Luhn check
+# below is what decides card against any long number.
 _CARD_CANDIDATE_RE = re.compile(r"\b(?:\d[ \-]?){13,19}\b")
 
-# Secrets: each provider's key has a fixed, checkable prefix, so these are
-# anchored literal-prefix patterns rather than a generic "looks random" guess,
-# which would false-positive constantly on hashes, UUIDs and git SHAs.
+# Each provider's key has a checkable prefix, so these are anchored
+# literal patterns rather than a "looks random" guess that would
+# false-positive on hashes, UUIDs and git SHAs.
 _SECRET_PATTERNS: tuple[tuple[GuardCategory, re.Pattern[str]], ...] = (
     # OpenAI-shaped keys, still seen pasted from other tooling.
     (GuardCategory.PII_SECRET, re.compile(r"\bsk-[A-Za-z0-9]{20,}\b")),
-    # Groq API keys - a former direct provider, still seen pasted from other
-    # tooling or old configs.
+    # Groq API keys - a former provider, still pasted from old configs.
     (GuardCategory.PII_SECRET, re.compile(r"\bgsk_[A-Za-z0-9]{20,}\b")),
     # Together AI API keys - the provider this app calls directly.
     (GuardCategory.PII_SECRET, re.compile(r"\btgp_v1_[A-Za-z0-9_\-]{20,}\b")),
@@ -133,24 +114,20 @@ _SECRET_PATTERNS: tuple[tuple[GuardCategory, re.Pattern[str]], ...] = (
     (GuardCategory.PII_SECRET, re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b")),
     # AWS access key IDs: fixed 16 trailing uppercase-alnum chars after AKIA.
     (GuardCategory.PII_SECRET, re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
-    # A generic long bearer-token shape: 32+ chars of base64url-ish alphabet
-    # with no other prefix matched above. This is the catch-all for the
-    # provider whose key shape nobody wrote a specific rule for yet - it will
-    # also catch some hashes and session ids, which is the deliberate
+    # A generic bearer-token shape, the catch-all for a provider nobody wrote
+    # a rule for. It also catches some hashes and session ids, which is the
     # trade-off: over-redacting an opaque token costs nothing, an unredacted
-    # key in a trace costs a great deal. A 40-char opaque document ID is a
-    # known, accepted instance of this over-redaction (benign eval case
-    # bn-008) - it is left as-is on purpose, not a bug to chase, because no
-    # regex can tell "random-looking ID" from "random-looking secret" and a
-    # missed API key is the far more expensive mistake.
+    # key in a trace costs a great deal. Benign eval case bn-008 is a known,
+    # accepted instance of that over-redaction.
     (GuardCategory.PII_SECRET, re.compile(r"\b[A-Za-z0-9_\-]{32,}\b")),
 )
 
 
 def _luhn_ok(digits: str) -> bool:
-    """The Luhn checksum. Without this, every 16-digit order or tracking
-    number is flagged as a credit card - the check is what tells a real PAN
-    apart from any other long run of digits."""
+    """The Luhn checksum, which tells a real card number from a long number.
+
+    Without it every 16-digit order or tracking number is flagged.
+    """
     total = 0
     parity = len(digits) % 2
     for index, char in enumerate(digits):
@@ -264,13 +241,9 @@ _REVEAL_PROMPT_RE = re.compile(
 #   - "you are now a/an/the <word>"       (a rogue assistant, an unfiltered AI)
 #   - "you are now in <word> mode"        (developer mode, DAN mode)
 #   - "you are now <ACRONYM>"             (DAN) - a bare word with no article
-# The bare-word shape is the loosest of the three and the one that used to
-# false-positive on ordinary quoted dialogue ("you are now trapped"), so it
-# is captured separately (`acronym`) and validated in `_role_reassign_valid`
-# below: only accepted when the word is upper-cased like a persona name, not
-# lower-case prose. The article and "in ... mode" shapes need no such check -
-# nobody says "you are now a trapped" or "you are now in trapped mode" as
-# plain dialogue.
+# The bare-word shape used to false-positive on quoted dialogue ("you are
+# now trapped"), so it is captured separately and validated in
+# `_role_reassign_valid`: accepted only when upper-cased like a persona.
 _ROLE_REASSIGN_RE = re.compile(
     r"\byou\s+are\s+now\s+"
     r"(?:(?:a|an|the)\s+\w+"
@@ -279,18 +252,16 @@ _ROLE_REASSIGN_RE = re.compile(
     re.IGNORECASE,
 )
 
-# A line that opens with "system:" or a markdown "### system" heading, mimicking
-# a system message inside user-supplied or fetched text. Anchored to the start
-# of a line (re.MULTILINE) so it does not fire on "the system: a summary" mid
-# sentence... except it still would; the trade-off favours recall here because
-# this shape is rare in genuine prose and common in injection payloads.
+# A line opening with "system:" or a markdown "### system" heading, faking
+# a system message inside supplied text. Anchored to a line start. It can
+# still fire mid-sentence, and the trade-off favours recall: the shape is
+# rare in prose and common in payloads.
 _FAKE_SYSTEM_LINE_RE = re.compile(r"^\s*(?:#{1,6}\s*)?system\s*:", re.IGNORECASE | re.MULTILINE)
 
-# Markdown image exfiltration: `![...](http(s)://...?...=<long value>)`. The
-# `=` followed by 20+ non-whitespace, non-paren characters is the signature of
-# a URL smuggling captured text out as a query parameter to an
-# attacker-controlled host. `[^\s)]*` is bounded by "not whitespace or paren",
-# so it cannot backtrack against itself - a single greedy class, no nesting.
+# Markdown image exfiltration: `![...](http(s)://...?...=<long value>)`.
+# The long value after `=` is the signature of a URL smuggling captured
+# text out to an attacker-controlled host. `[^\s)]*` cannot backtrack
+# against itself.
 _IMAGE_EXFIL_RE = re.compile(
     r"!\[[^\]]*\]\(https?://[^\s)]*\?[^\s)]*=[^\s)]{20,}\)",
     re.IGNORECASE,
@@ -310,14 +281,10 @@ def _role_reassign_valid(match: re.Match[str]) -> bool:
     return acronym is None or acronym.isupper()
 
 
-# Note on `injection_override` and quoted attacks (benign eval case bn-004):
-# prose that *quotes* an attack - "the article says 'ignore previous
-# instructions'" - matches `_OVERRIDE_RE` exactly the same as a live attack
-# does. No regex can separate a document *about* prompt injection from a
-# document *containing* one; that is a use/mention distinction, not a shape
-# one. This is left deliberately unfixed - it is one of the reasons
-# `guardrail_block_on_injection` defaults to False, so a quoted mention is
-# logged as a finding but does not block the reply outright.
+# Quoted attacks (benign eval case bn-004) match `_OVERRIDE_RE` exactly as
+# live ones do. No regex separates a document *about* injection from one
+# *containing* it. Left unfixed on purpose, and one of the reasons
+# `guardrail_block_on_injection` defaults to False.
 _InjectionPattern = tuple[GuardCategory, re.Pattern[str], Callable[[re.Match[str]], bool]]
 
 _INJECTION_PATTERNS: tuple[_InjectionPattern, ...] = (

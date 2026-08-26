@@ -37,19 +37,14 @@ from app.observability.metrics import emit_reply_metrics
 
 
 class GenerateReply:
-    """
-    Answer the user, with context if the agent can get it and without if it cannot.
+    """Answer the user, with context if the agent can get it and without if it cannot.
 
-    Context is an enhancement, not a precondition: a scraper timing out or a
-    vector store being down should cost the answer some grounding, never the
-    answer itself. That posture now lives one layer down - every tool returns a
-    readable failure instead of raising, so a dead upstream reaches the model as
-    a sentence it can route around. What is left here is the outer guarantee:
-    once this stream has opened, it ends with `ReplyFailed` or `ReplyCompleted`,
-    never with an exception thrown through a half-written response body.
+    Context is an enhancement, not a precondition. The outer guarantee is that
+    once this stream has opened it ends with `ReplyFailed` or `ReplyCompleted`,
+    never with an exception through a half-written body.
 
     The compiled graph is injected, never built: compiling per request would
-    rebuild the whole agent - and reconnect its checkpointer - on every message.
+    reconnect the checkpointer on every message.
     """
 
     def __init__(
@@ -73,62 +68,39 @@ class GenerateReply:
         self._guards = guards
         self._tracer = tracer
         self._uow_factory = uow_factory
-        # The same fence every tool result gets. A document digest is written
-        # from an uploaded file, so it is external content by the same
-        # definition, and letting it reach the model unfenced would be a hole
-        # straight past the defence `ToolRegistry.invoke` exists to provide.
+        # A digest is written from an uploaded file, so it is external content
+        # and gets the same fence every tool result gets.
         self._tool_output_guard = tool_output_guard
         self._max_digest_documents = max_digest_documents
         self._max_digest_summary_chars = max_digest_summary_chars
-        # A backstop below LangGraph's own default, in the same units the graph
-        # counts in: one lap is now an agent node, a tool node and a summarize
-        # node, and the +3 covers the final answering turn. The router is what
-        # normally stops the loop; this only catches a graph miswired into a
-        # cycle the router cannot see.
+        # A backstop in the graph's own units: three nodes per lap, plus the
+        # final answering turn. The router normally stops the loop.
         self._recursion_limit = 3 * max_iterations + 3
 
     async def __call__(self, data: GenerateReplyInput) -> AsyncIterator[ReplyEvent]:
         """Spend one of this user's requests, then hand back the stream.
 
-        A plain coroutine returning the generator, rather than an async
-        generator itself, because the two do the check at different moments. An
-        async generator body runs nothing until the first `__anext__` - by which
-        point the router has already handed the iterator to `StreamingResponse`,
-        the 200 and the headers are on the wire, and a `RateLimited` raised then
-        can only truncate a response that already claimed to succeed. Awaited
-        here, the refusal happens before a single byte is sent, and the error
-        handler can answer with a real 429.
+        A plain coroutine, not an async generator: a generator body runs nothing
+        until the first `__anext__`, by which point the 200 is on the wire and a
+        refusal could only truncate it. Awaited here, it can still be a 429.
         """
-        # One counter shared with every upload, URL ingestion and transcription
-        # session in the deployment - see `Settings.global_daily_call_budget`.
-        # Checked first: a per-user budget only bounds one account, and
-        # registration has no CAPTCHA to stop someone spending it many times
-        # over with fresh ones.
+        # One counter for the whole deployment. Checked first, because a
+        # per-user budget only bounds one account and registration is open.
         await self._daily_budget.hit("global")
 
-        # Keyed on the account, not the address: this limit exists because every
-        # reply spends tokens at the model provider, and the bill follows the
-        # signed-in user wherever they connect from.
+        # Keyed on the account, not the address: the bill follows the user.
         await self._limiter.hit(f"generate:{data.owner_id}")
 
-        # Inspected here, for the same reason the limits are: this is the last
-        # moment a refusal can still be an HTTP status. Once `_stream` is handed
-        # to `StreamingResponse` the 200 is committed, and a guardrail that
-        # fired then could only truncate a response that already claimed to
-        # succeed.
-        #
-        # It also has to run before anything downstream sees the text. Whatever
-        # this returns is what reaches the model, the checkpointer and the
-        # trace - so a secret the user pasted is redacted once, here, instead of
-        # being archived by three systems that each thought it was somebody
-        # else's problem.
+        # Here for the same reason the limits are: the last moment a refusal
+        # can still be an HTTP status. Also before anything downstream sees the
+        # text, so a pasted secret is redacted once rather than archived by the
+        # model, the checkpointer and the trace.
         verdict = self._guards.inspect(data.user_input)
         if verdict.action == "block":
             raise UnsafeUserMessage(", ".join(verdict.categories()))
         if verdict.findings:
-            # Recorded even when nothing was blocked. With blocking off by
-            # default, this line is the entire dataset for deciding whether it
-            # can ever be turned on.
+            # Recorded even when nothing was blocked. With blocking off, this
+            # line is the dataset for deciding whether it can be turned on.
             logger.info(
                 "Guardrail {} on input for owner {}: {}",
                 verdict.action,
@@ -136,11 +108,9 @@ class GenerateReply:
                 ", ".join(verdict.categories()),
             )
 
-        # Read once, before the stream opens, and used for three things: the
-        # digest the model is shown, the names the routing gate matches on, and
-        # whether the document tool is worth offering at all. One query, not
-        # three, and outside `_stream` so a database hiccup here is still an
-        # HTTP error rather than a truncated reply.
+        # One query for three things: the digest, the names the routing gate
+        # matches on, and whether the document tool is worth offering. Outside
+        # `_stream`, so a database hiccup is still an HTTP error.
         return self._stream(
             data,
             verdict,
@@ -156,28 +126,15 @@ class GenerateReply:
     ) -> list[UploadedDocument] | None:
         """This thread's uploads, newest first, or `None` if they cannot be read.
 
-        Scoped to the conversation, not to the account. The digest is what tells
-        the model which files exist, and listing files attached to a different
-        chat would invite it to retrieve passages this thread cannot reach -
-        the gate would open on a document the search then filters away.
+        Scoped to the conversation, not the account: listing another chat's
+        files would open the gate on documents this thread's search filters away.
 
-        Swallowed on failure for the same reason the tools are: knowing what a
-        user uploaded makes a better answer, and not knowing must never cost
-        them the answer itself.
-
-        `None` rather than `[]` on failure, and the distinction is the whole
-        point of the return type. An empty list used to mean both "this account
-        has uploaded nothing" and "the database did not answer", which was
-        harmless while the only consumer was a digest that would simply go
-        unwritten. It stopped being harmless the moment an empty list started
-        *closing a gate*: collapsed together, one slow query would tell a user
-        with a shelf of documents that they have none, and refuse the retrieval
-        that would have found them. Callers that only want to read the list can
-        still treat the two the same; the gate must not.
+        `None` rather than `[]` on failure, because the two are not the same to
+        the gate. Collapsed together, one slow query would tell a user with a
+        full shelf that they have none, and refuse the retrieval.
         """
-        # A turn with no conversation owns no documents, and that is a fact
-        # rather than a failed read: `[]`, not `None`, so the gate closes and
-        # no retrieval is attempted.
+        # No conversation owns no documents, and that is a fact rather than a
+        # failed read: `[]`, not `None`, so the gate closes.
         if conversation_id is None:
             return []
 
@@ -197,73 +154,46 @@ class GenerateReply:
         verdict: GuardVerdict,
         known: list[UploadedDocument] | None,
     ) -> AsyncIterator[ReplyEvent]:
-        # `None` means the read failed, not that the shelf is empty - see
-        # `_owned_documents`. Everything that only reads the list treats the two
-        # alike; the one thing that closes a gate does not.
+        # `None` means the read failed, not that the shelf is empty.
         documents = known or []
-        # False only when a read that actually succeeded came back empty. An
-        # unknown answer leaves the document tool open, which is what the
-        # deployment did before this gate existed.
+        # False only when a read that succeeded came back empty. Unknown leaves
+        # the document tool open.
         has_documents = known is None or bool(known)
-        # Typed `Any` on purpose. The concrete type is langchain_core's
-        # `RunnableConfig`, and importing it to say so would put LangChain in the
-        # application layer - which the import contract forbids, and for good
-        # reason: LangChain is what the `ChatModel` port exists to keep out.
+        # `Any` on purpose: naming langchain_core's `RunnableConfig` would put
+        # LangChain in the application layer, which the import contract forbids.
         config: Any = {
             "configurable": {
-                # A conversation is the agent's memory key. Without one, every
-                # request is its own thread and nothing is remembered - which is
-                # exactly what a client that never opened a conversation wants.
+                # The agent's memory key. No conversation means every request
+                # is its own thread and nothing is remembered.
                 #
                 # The owner is part of the key, not decoration. A bare
                 # conversation id let anyone resume anyone's thread by guessing
-                # an integer - the checkpointer replays the whole history, so
-                # that handed over every message in it. Namespacing makes the
-                # collision impossible without adding a database round trip to
-                # a use case that has none: a stranger's id simply addresses an
-                # empty thread of their own.
+                # an integer, and the checkpointer replays the whole history.
                 "thread_id": _thread_id(data.owner_id, data.conversation_id),
                 "model": data.model,
                 "temperature": data.temperature,
-                # Read back by the tool node, which passes it to the tools that
-                # search the user's own documents.
+                # Read back by the tool node, for the document tools.
                 "owner_id": data.owner_id,
-                # The thread whose documents a retrieval may read. Passed for
-                # the same reason as `owner_id` and next to it: both narrow the
-                # search to what this request is allowed to see, and neither is
-                # anything the model may name.
+                # The thread whose documents a retrieval may read. Next to
+                # `owner_id` because neither is anything the model may name.
                 "conversation_id": data.conversation_id,
                 # Whether this turn is about files the user supplied - the
                 # input to the tool routing policy.
                 #
-                # Decided here, once, rather than read back out of the
-                # checkpointed history by the tool node. The question does not
-                # change between laps, so nothing is gained by recomputing it,
-                # and the history is not a safe place to look it up: the
-                # summarization node may replace it wholesale, and a run that
-                # compressed the current user turn away would leave the node
-                # matching on an older question - or on nothing - and the gate
-                # simply would not fire. That failure direction is "search
-                # allowed", which is the quiet one: no error, no log line, just
-                # a private question answered off the web. Sent alongside
-                # `owner_id` because it is the same kind of value - written by
-                # us from the request, never by the model.
+                # Decided here once, not read back out of the history: the
+                # summarize node may replace that history, and a gate that
+                # matches on nothing fails open. That direction is the quiet
+                # one - a private question answered off the web, no log line.
                 #
-                # `verdict.text`, not `data.user_input`: the guardrail may have
-                # rewritten the message, and the routing decision must be made
-                # on the text the model is actually going to read.
-                # Every owned document is offered here, not just the few the
-                # digest has room for. The cap on the digest is a token budget,
-                # and names cost no tokens - holding a search back because the
-                # user named their seventh-newest file is exactly as right as
-                # doing it for their first.
+                # `verdict.text`, not `data.user_input`: the decision must be
+                # made on the text the model will actually read.
+                # Every owned document, not just the few the digest fits. That
+                # cap is a token budget, and names cost no tokens.
                 "document_scoped": is_document_scoped(
                     verdict.text, document_names=[document.name for document in documents]
                 ),
-                # Whether the document tool has anything to search. Decided
-                # here for the same reason `document_scoped` is - it is a fact
-                # about the request, read once, and the tool node has no unit
-                # of work to look it up with even if it wanted to.
+                # Whether the document tool has anything to search. Read once
+                # here; the tool node has no unit of work to look it up with.
                 "has_documents": has_documents,
             },
             "recursion_limit": self._recursion_limit,
@@ -370,9 +300,8 @@ class GenerateReply:
     def _total_tokens(self, spend: dict[str, list[int]]) -> tuple[int, int]:
         """Total the tokens every model call this reply made spent.
 
-        Totalled rather than reported per model because the question a client
-        asks is "what did this reply spend", and the split across the
-        answering model and the condenser is a detail for the trace.
+        Totalled, not per model: the split between the answering model and the
+        condenser is a detail for the trace.
         """
         prompt_tokens = sum(tokens[0] for tokens in spend.values())
         completion_tokens = sum(tokens[1] for tokens in spend.values())
@@ -389,9 +318,8 @@ class GenerateReply:
     ) -> list[ChatMessage]:
         """Only what this turn adds - the checkpointer already holds the rest.
 
-        `user_text` rather than `data.user_input`, because by here the guardrail
-        may have rewritten it. Taking it as an argument is what makes it
-        impossible to reach for the unredacted original by habit.
+        `user_text` as an argument, not `data.user_input`: the guardrail may
+        have rewritten it, and this makes the original unreachable by habit.
         """
         message = UserMessage(user_text)
         messages: list[ChatMessage] = []
@@ -413,29 +341,13 @@ class GenerateReply:
     def _documents_note(self, documents: list[UploadedDocument], known_empty: bool) -> str:
         """What to tell the model about this user's shelf, or "" to say nothing.
 
-        The pair to the routing gate in `ToolRoutingPolicy`, and neither half
-        does the job alone. This one informs the choice: a model that can read
-        the list decides for itself whether a retrieval is worth a lap. The
-        gate makes it binding, for the turns where it decides wrongly anyway.
+        The pair to the routing gate in `ToolRoutingPolicy`. This informs the
+        choice; the gate makes it binding when the model chooses wrongly.
 
-        Both branches open with a bracketed tag - `[DOCUMENTS AVAILABLE]` or
-        `[NO DOCUMENTS]` - that the system prompt tells the model by name to
-        look for and treat as decisive. A model guessing from a plain sentence
-        buried in the turn can miss it; a named marker it was told to expect is
-        something to check for, not infer. The two-tier design (a fact the
-        model is told to notice, backed by a gate that does not ask its
-        opinion) is deliberate: the notice is what changes a lucky heuristic
-        into a checked one, and the gate is what still holds when the model
-        does not check it.
-
-        The empty case earns its tokens for the same reason. Silence is not
-        the same message as "there is nothing here" - the system prompt's
-        fallback rule (for the rare turn with no notice at all, see below) is
-        to try a retrieval whenever a question names an entity it does not
-        know, so an absent digest would read as "unknown, try anyway" and get
-        tried regardless. Saying so outright is what stops that call being
-        made at all, leaving the gate to catch only what the model tries
-        despite being told.
+        Both branches open with a bracketed tag the system prompt names, so the
+        model checks for it rather than inferring it. The empty case is written
+        out because silence is not the same message: the prompt's fallback rule
+        reads an absent digest as "unknown, try anyway".
         """
         digest = self._digest(documents)
         if digest:
@@ -465,21 +377,14 @@ class GenerateReply:
     def _digest(self, documents: list[UploadedDocument]) -> str:
         """What the user has uploaded, as one fenced block, or "" if nothing.
 
-        This is the piece that stops the agent guessing. Without it the model
-        knows only that a `retrieve_documents` tool exists, never whether this
-        person has anything in it worth searching - so a question about their
-        own file competes on equal footing with a web search. Naming the files
-        and what each is about turns that guess into a reading of the list.
+        Without it the model knows a retrieval tool exists but never whether
+        this person has anything in it, so their own file competes with a web
+        search on equal terms.
 
-        Fenced with the same guard as tool output, and for the same reason: a
-        summary is written from an uploaded document, which is external content
-        whoever wrote the document controls. Unfenced, a PDF could issue
-        instructions here on every single turn.
-
-        Rides on the user turn rather than the system prompt, exactly like the
-        URL note below. The system prompt is written once per thread, and this
-        changes as the user uploads - a thread that began before an upload would
-        never learn the file existed.
+        Fenced like tool output: a summary is written from an uploaded document,
+        so an unfenced one would let a PDF issue instructions every turn. Rides
+        on the user turn, because the system prompt is written once per thread
+        and uploads arrive between turns.
         """
         if not documents:
             return ""
@@ -517,8 +422,7 @@ class GenerateReply:
 def _thread_id(owner_id: int, conversation_id: int | None) -> str:
     """The checkpointer's key for this turn, scoped to the person asking."""
     if conversation_id is None:
-        # A one-off turn remembers nothing, so it needs a key nothing else can
-        # collide with rather than a key anyone could address.
+        # A one-off turn remembers nothing, so it needs an unaddressable key.
         return uuid4().hex
     return f"{owner_id}:{conversation_id}"
 
@@ -535,11 +439,9 @@ def _user_content(message: UserMessage, documents_note: str = "") -> str:
     if documents_note:
         parts.append(documents_note)
 
-    # Models routinely answer from memory about a URL they were handed instead
-    # of reading it. Naming the addresses back at them, on the turn that carries
-    # them, is what makes `fetch_web_pages` get picked. It rides on the user
-    # turn rather than the system prompt because the system prompt is written
-    # once per thread, and these links belong to this message only.
+    # Models routinely answer from memory about a URL instead of reading it.
+    # Naming the addresses back is what makes `fetch_web_pages` get picked. On
+    # the user turn, because these links belong to this message only.
     urls = message.urls()
     if urls:
         listed = ", ".join(urls)
