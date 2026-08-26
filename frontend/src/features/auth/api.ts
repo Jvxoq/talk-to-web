@@ -1,3 +1,4 @@
+import { clearConversationId } from '../../lib/conversation'
 import { ApiError } from '../../lib/http'
 import {
   authEndpoint,
@@ -47,6 +48,12 @@ export async function signOut(): Promise<void> {
     await fetch(authEndpoint('logout'), { method: 'POST', credentials: 'include' })
   } finally {
     clearAccessToken()
+    // The pinned conversation belongs to the account that just left. Left in
+    // place it outlives the session in `localStorage`, so the next person to
+    // sign in on this browser starts by asking for a thread that is not
+    // theirs. They are refused, but a sign-in should not open with a failed
+    // request for a stranger's conversation in the first place.
+    clearConversationId()
   }
 }
 

@@ -65,11 +65,40 @@ export function useConversations(model: Model, enabled: boolean) {
   }, [conversations])
 
   const bootstrapped = useRef(false)
+  // Bumped on sign-out and nowhere else. A bootstrap that was still in flight
+  // when the account left compares its own number against this before it
+  // writes anything, so a late answer cannot land in the account that arrived.
+  // Bumping on every run of this effect instead would break the ordinary load:
+  // StrictMode runs it twice on mount, and the second run would discard the
+  // first run's fetch while `bootstrapped` stopped it starting another.
+  const generation = useRef(0)
+
   useEffect(() => {
+    if (!enabled) {
+      // Signed out, so everything held here belongs to the account that just
+      // left. The titles, the active id and the preloaded transcript are all
+      // readable text, and without this the next person to sign in on this tab
+      // would read them before a single request of their own answered. The
+      // server does refuse that person a 404, but only once they ask, which is
+      // after the previous account's messages are already on screen.
+      generation.current += 1
+      bootstrapped.current = false
+      setConversations([])
+      setActiveId(null)
+      setPreloaded(null)
+      setError(null)
+      setIsLoading(true)
+      return
+    }
+
     // Waits for `enabled`, then the ref survives StrictMode's remount so
     // exactly one bootstrap runs from that point on.
-    if (!enabled || bootstrapped.current) return
+    if (bootstrapped.current) return
     bootstrapped.current = true
+
+    const run = generation.current
+    /** False once the account this bootstrap belongs to has signed out. */
+    const current = () => run === generation.current
 
     // Read before either request goes out — `localStorage` is synchronous, so
     // the id we are most likely to want costs nothing to know up front.
@@ -84,6 +113,8 @@ export function useConversations(model: Model, enabled: boolean) {
       pinned === null ? Promise.resolve(null) : getConversation(pinned).catch(() => null),
     ])
       .then(async ([items, pinnedConversation]) => {
+        if (!current()) return
+
         if (items.length > 0) {
           const active =
             pinned !== null && items.some((c) => c.id === pinned) ? pinned : items[0].id
@@ -100,6 +131,10 @@ export function useConversations(model: Model, enabled: boolean) {
         }
 
         const created = await createConversation(modelRef.current)
+        // Checked again: the account can change while this request is open,
+        // and the conversation just created belongs to whoever was signed in
+        // when it started, not to whoever is signed in now.
+        if (!current()) return
         storeConversationId(created.id)
         setConversations([created])
         setPreloaded(created)
@@ -109,7 +144,9 @@ export function useConversations(model: Model, enabled: boolean) {
         // Swallowed: an empty sidebar is the worst case, and it is still a
         // usable (if conversation-less) shell rather than a broken page.
       })
-      .finally(() => setIsLoading(false))
+      .finally(() => {
+        if (current()) setIsLoading(false)
+      })
   }, [enabled])
 
   const select = useCallback((id: number) => {
