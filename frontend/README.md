@@ -28,13 +28,13 @@ for each case rather than resetting that state from outside.
 
 ```
 src/
-  app/        shell (App.tsx)
+  app/        shell (App.tsx, BackendGate.tsx)
   features/
     chat/     components/ hooks/ api.ts types.ts index.ts (barrel)
     auth/     same shape
     theme/    same shape
   components/ui/   shared primitives (Button, IconButton, Mark, ErrorBoundary)
-  lib/        http.ts  session.ts  motion.ts  conversation.ts
+  lib/        http.ts  session.ts  motion.ts  conversation.ts  wake.ts
   styles/     globals.css (token contract)
 ```
 
@@ -63,6 +63,7 @@ src/
 | Auth (register/login/session) | `features/auth` (`AuthProvider`, `AuthGate`, `AuthForm`, `useAuth`) | Access token in memory only; see Key decisions |
 | Theme toggle | `features/theme` | Light/dark via `data-theme` |
 | Markdown rendering | `features/chat/markdown.ts` | `react-markdown` + `remark-gfm`, has its own test file |
+| Cold-start gate | `app/BackendGate.tsx`, `lib/wake.ts` | Polls `GET /health` until the sleeping backend answers, and holds the app back until it does. Wraps `AuthProvider`, see below |
 
 ## Operational concerns
 
@@ -83,6 +84,19 @@ src/
   rather than failing the pair. The preload is consumed once per conversation
   id, so switching away and back re-fetches instead of showing a stale
   snapshot.
+- **The app waits for the backend before it mounts anything.** The API runs on
+  a free Render instance, which is stopped after about fifteen minutes without
+  traffic. `BackendGate` wraps `AuthProvider` and polls `GET /health` through
+  `waitForBackend` in `lib/wake.ts` until it answers. It has to sit *above*
+  `AuthProvider`, because that provider's mount effect is the first backend
+  call the app makes, and it reads any failure as "anonymous" — a sleeping
+  backend would put a sign-in form in front of someone whose password would
+  fail too. `waitForBackend` checks the response *body* (`status: "ok"`), not
+  just the status code, because a `/health` missing from the proxy list falls
+  through to the SPA catch-all and answers 200 with `index.html`. The screen
+  stays hidden for the first 900 ms, so an awake backend never shows it; it
+  gives up after 120 s and offers a Retry button. Both proxies now carry
+  `/health`: `vercel.json` and the Vite dev proxy.
 - **`vercel.json` lists every API path prefix, and the list has to be
   complete.** A backend route missing from the rewrites does not error. It
   falls through to the SPA catch-all and returns `index.html` with a 200.
@@ -98,6 +112,10 @@ src/
 
 ## Known limits
 
+- **The cold-start wait is a real wait, not a fix.** `BackendGate` explains the
+  pause and shows a counter, but the first visitor after a quiet spell still
+  waits 30-60 s before the app appears. The only real fix is a paid instance or
+  a scheduled ping, and Render cron jobs need a paid plan.
 - A reload always starts with no access token — `AuthProvider` calls
   `/auth/refresh` on mount to get one back, so there's a brief unauthenticated
   window on every full page load.

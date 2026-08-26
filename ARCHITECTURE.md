@@ -173,12 +173,16 @@ doing a job:
 One more property of the free plan is worth planning around: the service sleeps
 after roughly 15 minutes without traffic, and the next request pays about a
 minute of cold start. `useChat` and the fetch helpers in `lib/http.ts` set no
-client-side timeout, so the request waits rather than failing — but the first
-visitor after a quiet spell sees a long pause.
+client-side timeout, so the request waits rather than failing. The frontend
+handles the wait explicitly: `BackendGate` polls `/health` before anything else
+mounts, which is why `/health` is in the rewrite list too. See
+`frontend/README.md`.
 
 ### 3. Frontend on Vercel
 
-`frontend/vercel.json` rewrites six paths to the backend. Replace the
+`frontend/vercel.json` rewrites seven paths to the backend, `/health` among
+them — the cold-start gate polls it, and a missing rewrite would answer 200
+with `index.html`. Replace the
 `talk-to-web-api.onrender.com` placeholder in all of them with your service's
 domain. Then point Vercel at the `frontend/` directory and set one environment
 variable:
@@ -412,8 +416,11 @@ measuring a gate with nothing behind it.
 - **The free service sleeps.** After roughly 15 minutes without traffic
   Render stops the instance, and the next request pays about a minute of cold
   start while the image boots and `alembic upgrade head` runs. No client-side
-  timeout is set, so the request waits rather than failing, but the first
-  visitor after a quiet spell sees a long pause.
+  timeout is set, so the request waits rather than failing. `BackendGate` in
+  the frontend now names the wait instead of leaving it unexplained: it polls
+  `/health` before `AuthProvider` mounts, so a sleeping backend no longer
+  shows up as a sign-in form that rejects a correct password. The wait itself
+  stays; only a paid instance or a scheduled ping removes it.
 - **No edge rate limit any more.** EC2 had Caddy capping requests per address
   on `/generate*` and `/upload*` before they reached the backend. Render's
   proxy has no equivalent, so `global_daily_call_budget` (200/day) is the only
