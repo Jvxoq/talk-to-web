@@ -40,7 +40,7 @@ interface Session {
  * request goes direct.
  *
  * Unset, it falls back to same-origin, which is correct for `npm run dev`
- * (Vite's proxy forwards the upgrade) and for the nginx parity harness. Note the
+ * (Vite's proxy forwards the upgrade). Note the
  * backend checks the handshake's Origin either way, so the domain serving this
  * page has to be in ALLOWED_WEBSOCKET_ORIGINS.
  *
