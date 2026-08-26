@@ -1,10 +1,11 @@
 # Development: the whole stack on one machine, with hot reload.
 #
-# Unlike `docker-compose.prod.yml`, this one runs its own Postgres and Qdrant -
-# nobody should need a Neon project to check out the repo and send a message.
-# What it does share with production is the shape of startup: migrations run as
-# their own step, and the backend waits for its dependencies instead of racing
-# them.
+# Unlike the deployed backend (`render.yaml`, on Neon and Qdrant Cloud), this
+# one runs its own Postgres and Qdrant - nobody should need a Neon project to
+# check out the repo and send a message. What it does share with production is
+# the shape of startup: migrations run as their own step, and the backend waits
+# for its dependencies instead of racing them. It does not build
+# `backend/Dockerfile`, which only a Render deploy does.
 #
 #   docker compose up --build
 
