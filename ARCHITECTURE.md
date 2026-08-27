@@ -62,7 +62,7 @@ in `frontend/README.md`. This file stays at the whole-picture level.
 
 - **Frontend** talks to the backend over same-origin HTTP/SSE for chat,
   auth and document management, and a direct WebSocket for live
-  transcription (the one call that can't go through a same-origin rewrite).
+  transcription (the one call that can't go through the same-origin hop).
 - **Backend** is layered onion-style: `domain` is pure Python with no
   framework imports; `application` holds use cases behind `Protocol` ports;
   `adapters` implement those ports against Postgres, Qdrant, and the LLM/
@@ -99,19 +99,21 @@ Four pieces, all four managed:
  Vercel (static)                    Render (free web service)
  ┌────────────────┐         ┌──────────────────────────┐     Neon Postgres
  │ built frontend │         │ TLS + proxy (Render's)   │────▶ Qdrant Cloud
- │  vercel.json   │──HTTPS─▶│   └─ backend  :$PORT     │     Together/Gemini/
- │   rewrites     │         │ alembic upgrade on boot  │     Deepgram/Tavily
+ │ middleware.ts  │──HTTPS─▶│   └─ backend  :$PORT     │     Together/Gemini/
+ │  → BACKEND_URL │         │ alembic upgrade on boot  │     Deepgram/Tavily
  └────────┬───────┘         └──────────────────────────┘
           └─── WebSocket, direct to <service>.onrender.com ───┘
 ```
 
 Two things about that diagram are load-bearing:
 
-- **HTTP calls go through Vercel's rewrites**, so the browser still sees them
-  as same-origin. That is not cosmetic: the refresh token is a cookie the
-  browser attributes to whichever host answered, and same-origin is what keeps
-  it first-party.
-- **The WebSocket bypasses Vercel entirely.** Rewrites do not carry an
+- **HTTP calls go through `frontend/middleware.ts`**, so the browser still
+  sees them as same-origin. That is not cosmetic: the refresh token is a cookie
+  the browser attributes to whichever host answered, and same-origin is what
+  keeps it first-party. The middleware forwards to `BACKEND_URL`, read per
+  request, so the backend's domain is a project setting and not a checked-in
+  string.
+- **The WebSocket bypasses Vercel entirely.** That hop does not carry an
   Upgrade handshake, so voice input connects to the backend's own domain, set
   through `VITE_WS_URL`. Being genuinely cross-origin, it is also the one
   route the browser will not protect — hence `ALLOWED_WEBSOCKET_ORIGINS`,
@@ -175,25 +177,24 @@ after roughly 15 minutes without traffic, and the next request pays about a
 minute of cold start. `useChat` and the fetch helpers in `lib/http.ts` set no
 client-side timeout, so the request waits rather than failing. The frontend
 handles the wait explicitly: `BackendGate` polls `/health` before anything else
-mounts, which is why `/health` is in the rewrite list too. See
+mounts, which is why `/health` is in the middleware matcher too. See
 `frontend/README.md`.
 
 ### 3. Frontend on Vercel
 
-`frontend/vercel.json` rewrites seven paths to the backend, `/health` among
-them — the cold-start gate polls it, and a missing rewrite would answer 200
-with `index.html`. Replace the
-`talk-to-web-api.onrender.com` placeholder in all of them with your service's
-domain. Then point Vercel at the `frontend/` directory and set one environment
-variable:
+`frontend/middleware.ts` forwards seven paths to the backend, `/health` among
+them — the cold-start gate polls it, and a missing entry in its `matcher` would
+answer 200 with `index.html`. The destination is not in the repo. Point Vercel
+at the `frontend/` directory and set two environment variables:
 
 ```
+BACKEND_URL=https://<service>.onrender.com
 VITE_WS_URL=wss://<service>.onrender.com/ws/transcribe/
 ```
 
 Leave `VITE_API_URL`, `VITE_UPLOAD_URL`, `VITE_CONVERSATIONS_URL` and
 `VITE_MODELS_URL` unset — they default to relative paths, which is exactly
-what the rewrites need.
+what the middleware needs.
 
 Finally put the Vercel domain into Render under both `CORS_ORIGINS` and
 `ALLOWED_WEBSOCKET_ORIGINS`, as a JSON list, and redeploy.
@@ -215,7 +216,7 @@ docker build -t talk-to-web-backend ./backend
 The old EC2 setup also had a *parity* profile that served the built frontend
 behind nginx. Vercel serves the frontend now, so `frontend/Dockerfile` and
 `frontend/nginx.conf` were deleted rather than left as a route list nothing
-checks. `frontend/vercel.json` is the only proxy list left.
+checks. `frontend/middleware.ts` is the only proxy list left.
 
 
 ## Operational concerns
@@ -388,7 +389,7 @@ measuring a gate with nothing behind it.
   every restart and every deploy. Survivable only because nothing reads a
   stored file after the upload request that indexed it. Any feature that needs
   the original file back needs object storage first.
-- **SSE through Vercel's rewrites** is streamed by Vercel's edge, not
+- **SSE through the middleware** is streamed by Vercel's edge, not
   buffered by a serverless function, but it's worth watching on the first
   long reply. If it ever misbehaves, the fallback is to point
   `VITE_API_URL` straight at `https://<service>.onrender.com/generate/text/`
@@ -426,7 +427,7 @@ measuring a gate with nothing behind it.
   proxy has no equivalent, so `global_daily_call_budget` (200/day) is the only
   ceiling left that a fresh account cannot walk around. Cloudflare in front of
   a custom domain is how to get that layer back.
-- **Nothing checks the `vercel.json` route list.** It is the only proxy list
+- **Nothing checks the `middleware.ts` matcher.** It is the only proxy list
   left, and a backend route missing from it does not error. The request falls
   through to the SPA catch-all and returns `index.html` with a 200. Adding a
   route to the API means adding it there by hand.
@@ -453,9 +454,9 @@ measuring a gate with nothing behind it.
   `lint-imports` rather than convention — a wrong import fails the build
   instead of getting caught in review. See `backend/README.md`.
 - **Same-origin proxying for HTTP, direct connection for WebSocket.** Vercel
-  can rewrite HTTP but not an `Upgrade` handshake, so the two calls take
+  can forward HTTP but not an `Upgrade` handshake, so the two calls take
   different paths to the same backend. This is what drives both the
-  `vercel.json` route list and `ALLOWED_WEBSOCKET_ORIGINS`.
+  `middleware.ts` matcher and `ALLOWED_WEBSOCKET_ORIGINS`.
 - **Refresh tokens as revocable rows, access tokens as stateless JWTs.**
   A 15-minute access token needs no database hit to verify; a 14-day refresh
   token is rotated and can be revoked, with reuse-of-a-revoked-token treated
