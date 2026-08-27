@@ -456,6 +456,24 @@ class TestRetries:
 
         assert provider.calls == 3
 
+    async def test_a_rejected_api_key_is_not_retried(self) -> None:
+        # A wrong key returns the same 401 on every attempt. Retrying it only
+        # spends the backoff wait before failing the way it was always going to.
+        model = scripted(
+            fails=RuntimeError(
+                "Error code: 401 - {'error': {'message': 'Invalid API key provided.', "
+                "'code': 'invalid_api_key'}}"
+            ),
+            retry_attempts=3,
+        )
+        provider = model._models[MODEL]
+        assert isinstance(provider, ScriptedChatModel)
+
+        with pytest.raises(RuntimeError, match="Completion provider failed"):
+            await collect(model.stream(model=MODEL, temperature=0.5, messages=[], tools=[]))
+
+        assert provider.calls == 1
+
     async def test_a_failure_after_text_has_streamed_is_not_retried(self) -> None:
         # A retry here would replay "Once " on an SSE stream a client has
         # already rendered - not safe once any token has reached the caller.

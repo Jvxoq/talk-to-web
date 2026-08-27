@@ -27,6 +27,7 @@ from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait
 from tenacity.wait import wait_base
 
 from app.application.chat.models import ChatMessage, ModelChunk, TokenUsage, ToolCall
+from app.application.chat.provider_errors import is_auth_failure
 from app.application.chat.tools.base import ToolSpec
 
 _DEFAULT_RETRY_WAIT = wait_exponential_jitter(initial=1, max=8)
@@ -132,7 +133,13 @@ class LangChainChatModel:
         # `init_chat_model` resolved.
         started = False
 
-        def _retryable(_: BaseException) -> bool:
+        def _retryable(error: BaseException) -> bool:
+            # A rejected key is the one failure that is certain not to fix
+            # itself. Retrying it spends the backoff wait before returning the
+            # same 401, which turns an instant error into a slow one.
+            if is_auth_failure(str(error)):
+                logger.error(f"Provider rejected our credentials for model {model}")
+                return False
             return not started
 
         try:
