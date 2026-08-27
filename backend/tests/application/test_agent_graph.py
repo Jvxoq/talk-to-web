@@ -869,6 +869,30 @@ class TestFriendlyRateLimit:
         assert "413" not in failures[0].detail
 
 
+class TestFriendlyAuthFailure:
+    async def test_a_rejected_api_key_never_reaches_the_user(self) -> None:
+        # The provider's own message names the key and links to its dashboard.
+        # That is an operator's problem, and nothing a reader can act on.
+        model = FakeChatModel(
+            turns=[[ModelChunk(text="x")]],
+            fail_with=RuntimeError(
+                "Error code: 401 - {'error': {'message': 'Invalid API key provided. "
+                "You can find your API key at https://api.together.ai/settings/api-keys.', "
+                "'code': 'invalid_api_key'}}"
+            ),
+        )
+
+        events = await collect(build_use_case(model))
+
+        failures = [event for event in events if isinstance(event, ReplyFailed)]
+        assert len(failures) == 1
+        assert (
+            failures[0].detail == "The assistant is unavailable right now - please try again later."
+        )
+        assert "api-keys" not in failures[0].detail
+        assert "401" not in failures[0].detail
+
+
 class TestUsageStream:
     async def test_a_final_chunks_usage_reaches_the_custom_stream(self) -> None:
         model = FakeChatModel(

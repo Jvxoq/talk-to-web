@@ -28,6 +28,7 @@ from app.application.chat.guardrails.policy import GuardVerdict, InputGuardPolic
 from app.application.chat.guardrails.tool_output import ToolOutputGuard
 from app.application.chat.models import ChatMessage, Source
 from app.application.chat.ports import RateLimiter, Tracer
+from app.application.chat.provider_errors import is_auth_failure
 from app.application.common.uow import UnitOfWorkFactory
 from app.domain.chat.errors import UnsafeUserMessage
 from app.domain.chat.tool_routing import is_document_scoped
@@ -537,14 +538,18 @@ def _to_event(payload: object) -> ReplyEvent | None:
 
 
 def _friendly_error(detail: str) -> str:
-    """Turn a provider rate-limit failure into a sentence a person can read.
+    """Turn a provider failure into a sentence a person can read.
 
     The raw detail is the provider's JSON, which is noise in front of a user.
     A rate limit is transient - the right message is "try again in a moment",
-    not a dump of the provider's error body. Anything else passes through
+    not a dump of the provider's error body. A rejected API key is worse than
+    noise: the provider's message names the key and links to its dashboard, and
+    the person reading it cannot fix it anyway. Anything else passes through
     unchanged.
     """
     lowered = detail.lower()
     if "rate_limit_exceeded" in lowered or "413" in detail or "429" in detail:
         return "The assistant is busy right now - please try again in a moment."
+    if is_auth_failure(detail):
+        return "The assistant is unavailable right now - please try again later."
     return detail
