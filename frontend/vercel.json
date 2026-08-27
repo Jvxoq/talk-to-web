@@ -3,22 +3,7 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "framework": "vite",
-  "rewrites": [
-    { "source": "/auth/:path*", "destination": "https://talk-to-web-api.onrender.com/auth/:path*" },
-    { "source": "/generate/:path*", "destination": "https://talk-to-web-api.onrender.com/generate/:path*" },
-    { "source": "/upload/:path*", "destination": "https://talk-to-web-api.onrender.com/upload/:path*" },
-    {
-      "source": "/documents/:path*",
-      "destination": "https://talk-to-web-api.onrender.com/documents/:path*"
-    },
-    {
-      "source": "/conversations/:path*",
-      "destination": "https://talk-to-web-api.onrender.com/conversations/:path*"
-    },
-    { "source": "/models/:path*", "destination": "https://talk-to-web-api.onrender.com/models/:path*" },
-    { "source": "/health", "destination": "https://talk-to-web-api.onrender.com/health" },
-    { "source": "/(.*)", "destination": "/index.html" }
-  ],
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
   "headers": [
     {
       "source": "/(.*)",
