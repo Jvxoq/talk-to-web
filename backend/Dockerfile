@@ -39,7 +39,11 @@ EXPOSE 8000
 # touches no dependency, so a database blip cannot cascade into the container
 # being killed. urllib rather than curl because the slim base has no curl and
 # adding one for a healthcheck is a whole package of attack surface.
+# PORT rather than a literal 8000: compose leaves it unset and the default
+# applies, while a platform that assigns the port sets it and the check follows
+# the server instead of probing a closed one. Shell form on purpose, because the
+# exec form does no variable expansion.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+    CMD python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('PORT', '8000') + '/health', timeout=4)"
 
 CMD ["fastapi", "run", "app/main.py", "--host", "0.0.0.0", "--port", "8000"]
