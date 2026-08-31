@@ -1,19 +1,16 @@
 /**
  * Forwards the API routes to the backend, same-origin.
  *
- * The browser only ever talks to this Vercel deployment. Everything under the
- * matched paths is passed on to `BACKEND_URL`, and the answer is streamed back
- * unchanged. That is what keeps the refresh cookie first-party: the browser
- * sees one origin, so it stores the cookie without SameSite=None.
+ * Everything under the matched paths goes to `BACKEND_URL` and the answer is
+ * streamed back unchanged. The browser sees one origin, which is what keeps the
+ * refresh cookie first-party.
  *
- * This used to be a list of `rewrites` in `vercel.json` with the backend host
- * written into every entry. Vercel reads that file before the build, so it
- * cannot take the host from an environment variable. Middleware runs per
- * request, so it can - set `BACKEND_URL` in the Vercel project settings.
+ * This was a list of `rewrites` in `vercel.json` with the backend host in every
+ * entry. Vercel parses that file before the build, so it has no environment
+ * variables. Middleware runs per request and does.
  *
- * The WebSocket is deliberately not here: an Upgrade handshake does not survive
- * this hop either, which is why `useVoiceInput` dials the backend directly
- * through `VITE_WS_URL`.
+ * The WebSocket is not here: an Upgrade handshake does not survive this hop
+ * either, so `useVoiceInput` connects to the backend directly via `VITE_WS_URL`.
  */
 
 export const config = {

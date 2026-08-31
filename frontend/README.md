@@ -96,15 +96,21 @@ src/
   through to the SPA catch-all and answers 200 with `index.html`. The screen
   stays hidden for the first 900 ms, so an awake backend never shows it; it
   gives up after 120 s and offers a Retry button. Both proxies now carry
-  `/health`: `vercel.json` and the Vite dev proxy.
-- **`vercel.json` lists every API path prefix, and the list has to be
-  complete.** A backend route missing from the rewrites does not error. It
-  falls through to the SPA catch-all and returns `index.html` with a 200.
-  It is also the only such list now: `nginx.conf` and the frontend
+  `/health`: the `matcher` in `middleware.ts` and the Vite dev proxy.
+- **`middleware.ts` is the production proxy, and its `matcher` lists every
+  API path prefix.** The file runs on Vercel for each matched request and
+  forwards it to `process.env.BACKEND_URL`, so the backend's host is a project
+  setting rather than a checked-in string. `vercel.json` cannot hold that
+  host: Vercel parses it before the build, where no environment variable
+  exists. That file now carries only the SPA catch-all and the security
+  headers.
+- **The matcher has to be complete.** A backend route missing from it does not
+  error. It falls through to the SPA catch-all and returns `index.html` with a
+  200. It is also the only such list now: `nginx.conf` and the frontend
   `Dockerfile` went with the EC2 deployment, so nothing cross-checks this one.
   Adding a route to the API means adding it here by hand.
 - **The WebSocket is the one call that can't be proxied.** Vercel does not
-  proxy an `Upgrade` handshake, so `useVoiceInput` reads `VITE_WS_URL` and
+  forward an `Upgrade` handshake, so `useVoiceInput` reads `VITE_WS_URL` and
   connects to the backend directly, falling back to same-origin when unset
   (what `npm run dev` uses). This makes it the
   one route the browser's CORS/same-origin model doesn't cover — the backend
@@ -142,14 +148,14 @@ src/
   the access token in `localStorage` would undo that protection for the
   half that's left.
 - **`/auth` proxied same-origin everywhere** — dev (Vite proxy), and
-  production (`vercel.json` rewrites) — so the refresh cookie
+  production (`middleware.ts`) — so the refresh cookie
   stays first-party. A cross-site cookie would need `SameSite=None`, which a
   plain-http dev origin can't accept.
 - **Conversation deletion is a `POST`, not a `DELETE`.** CORS only allows
   GET, POST and OPTIONS here. It was originally POST to support
   `sendBeacon` on unload; that use case went away with accounts (a beacon
   can't carry an `Authorization` header, and an owned conversation should
-  outlive the tab), but the method stayed POST since the rewrite/CORS setup
+  outlive the tab), but the method stayed POST since the proxy/CORS setup
   already depends on it.
 - **No inline transition configs.** Centralizing springs/timings in
   `lib/motion.ts` is what keeps motion consistent across features instead of
