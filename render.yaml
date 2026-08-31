@@ -40,6 +40,12 @@ services:
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
 
+    # Deploy filter, not a path. Render only rebuilds when a commit touches
+    # something under this directory, so a frontend-only commit no longer costs
+    # a backend build. It does not move the two paths above: both stay relative
+    # to the repo root even with this set.
+    rootDir: backend
+
     # Liveness only, matching the endpoint's own contract: /health touches no
     # dependency, so a Neon blip cannot fail a deploy. /ready is the one that
     # probes Postgres and Qdrant, and it is not what a rollout gate wants here.
@@ -53,14 +59,18 @@ services:
     # TRUST_FORWARDED_CLIENT_IP below true rather than a lie - the wildcard is
     # safe because Render's proxy is the only thing that can reach this port.
     # $PORT is assigned by Render and is not always 8000.
+    #
+    # Wrapped in `/bin/sh -c` because Render does not run this field through a
+    # shell on its own: unwrapped, `&&` and `$PORT` reach the process as literal
+    # arguments and it never starts. The shell is also what expands $PORT.
     dockerCommand: >-
-      alembic upgrade head &&
-      uvicorn app.main:app
+      /bin/sh -c "alembic upgrade head &&
+      exec uvicorn app.main:app
       --host 0.0.0.0
       --port $PORT
       --workers 1
       --limit-concurrency 5
-      --forwarded-allow-ips "*"
+      --forwarded-allow-ips '*'"
 
     envVars:
       # Set here rather than left to the dashboard, because forgetting it is not
