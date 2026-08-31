@@ -134,9 +134,8 @@ class LangChainChatModel:
         started = False
 
         def _retryable(error: BaseException) -> bool:
-            # A rejected key is the one failure that is certain not to fix
-            # itself. Retrying it spends the backoff wait before returning the
-            # same 401, which turns an instant error into a slow one.
+            # A rejected key returns the same 401 on every attempt. Retrying
+            # only spends the backoff before failing anyway.
             if is_auth_failure(str(error)):
                 logger.error(f"Provider rejected our credentials for model {model}")
                 return False

@@ -1,13 +1,9 @@
-"""Reading a provider's failure text well enough to decide what to do with it.
+"""Recognising a provider's auth failure from its message text.
 
-Two callers need the same answer and must not drift apart: the adapter, which
-decides whether an attempt is worth retrying, and `GenerateReply`, which decides
-what the user is told. Neither owns the question, so it lives here.
-
-Matching on message text is crude, and it is what is available. `init_chat_model`
+The adapter and `GenerateReply` both need this answer and must not disagree, so
+it lives in neither. There is no exception class to catch: `init_chat_model`
 resolves whichever provider the deployment named, and each SDK raises its own
-exception type, so there is no class to catch that stays true across providers.
-The markers below are the shape every OpenAI-compatible API uses for the case.
+type. The markers are what every OpenAI-compatible API sends for this case.
 """
 
 _AUTH_MARKERS = (
@@ -20,12 +16,11 @@ _AUTH_MARKERS = (
 
 
 def is_auth_failure(detail: str) -> bool:
-    """True when the provider rejected our credentials rather than the request.
+    """True when the provider rejected our credentials, not the request.
 
-    This is an operator mistake - a missing, wrong or revoked key - and it will
-    fail identically for every user until someone fixes the deployment. That
-    makes it both un-retryable and something no user should be shown, since the
-    provider's own message names the key and links to its dashboard.
+    A missing, wrong or revoked key fails the same way for every user until an
+    operator fixes it. Retrying cannot help, and the message names the key and
+    links to the vendor's dashboard, so it is not for a user either.
     """
     lowered = detail.lower()
     return any(marker in lowered for marker in _AUTH_MARKERS)

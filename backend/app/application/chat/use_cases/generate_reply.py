@@ -540,12 +540,10 @@ def _to_event(payload: object) -> ReplyEvent | None:
 def _friendly_error(detail: str) -> str:
     """Turn a provider failure into a sentence a person can read.
 
-    The raw detail is the provider's JSON, which is noise in front of a user.
-    A rate limit is transient - the right message is "try again in a moment",
-    not a dump of the provider's error body. A rejected API key is worse than
-    noise: the provider's message names the key and links to its dashboard, and
-    the person reading it cannot fix it anyway. Anything else passes through
-    unchanged.
+    The raw detail is the provider's JSON, which is noise in front of a user. A
+    rate limit is transient, so it becomes "try again in a moment". A rejected
+    key names the key and links to the vendor's dashboard, and the reader cannot
+    fix it either way. Anything else passes through unchanged.
     """
     lowered = detail.lower()
     if "rate_limit_exceeded" in lowered or "413" in detail or "429" in detail:
