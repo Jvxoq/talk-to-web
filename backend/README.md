@@ -156,6 +156,23 @@ and needs real Postgres/Qdrant — see Commands above.
   is opt-in via `SENTRY_DSN`; `send_default_pii` stays off deliberately (no
   cookies, no `Authorization`, no request bodies — an event can't carry a
   refresh token or a chat).
+- **A failed reply is reported in-band, not as a status code.** By the time a
+  provider fails the SSE response is already open, so raising would truncate a
+  half-written body. `GenerateReply` yields `ReplyFailed` instead and `sse.py`
+  frames it under `error`. `_friendly_error` decides what that says: a rate
+  limit becomes "busy right now", a rejected API key becomes "unavailable right
+  now", and anything else passes through as the provider wrote it. The two
+  named cases are rewritten because the provider's own text is either noise or
+  a leak — a 401 body names the key and links to the vendor's dashboard, which
+  no reader can act on. The real error still goes to the log and the trace
+  span.
+- **A rejected API key fails fast.** `is_auth_failure` in
+  `app/application/chat/provider_errors.py` is a string check both the adapter
+  and the use case read, so they cannot disagree about what an auth failure
+  is. `langchain_chat_model.py` uses it to skip the retry loop, because a wrong
+  key returns the same 401 on every attempt and retrying only spends the
+  backoff first. It logs `Provider rejected our credentials` at error level,
+  which is the line to search for when every chat fails at once.
 - **Housekeeping job.** `refresh_tokens` rows are never deleted on rotation
   or sign-out, only marked `revoked_at` — a row that's gone can't be told
   apart from one that never existed, which is what reuse detection depends
@@ -203,6 +220,13 @@ and needs real Postgres/Qdrant — see Commands above.
   works and the old row, file and vectors stay. The log line is
   `Could not replace document ...`. Nothing in the UI lists such a document, so
   removing it means calling `POST /documents/{id}/delete` by hand.
+- **A schema behind the code is not detected at startup.** Nothing compares the
+  database's `alembic_version` to the code's head, so an instance whose migration
+  never ran serves traffic against missing columns. `_owned_documents` then
+  catches the `UndefinedColumn`, logs `Could not read documents for owner ...`,
+  and returns `None`, so the reply still streams and the request still answers
+  200. The account silently loses every document feature. The log line is the
+  only signal, and nothing alerts on it.
 - **The condenser can fail silently.** It is allowed to, on purpose, but the
   cost is not silent: a thread over the history budget that cannot be
   summarized falls through to dropping older messages, so the conversation
