@@ -140,6 +140,33 @@ Render and never enter the repo or an image layer. `JWT_SECRET` is not
 prompted for at all — `generateValue: true` has Render mint it on first deploy
 and keep it.
 
+**Blueprint, or the file is decoration.** Render reads `render.yaml` only for a
+service it created from that file. A service created through New → Web Service
+keeps its own dashboard settings and ignores the file entirely, with nothing
+anywhere reporting the difference. That is not a theoretical gap: it is how a
+production database sat two migrations behind while `render.yaml` described a
+`dockerCommand` that runs `alembic upgrade head` on every boot. The image's own
+`CMD` ran instead, and it knows nothing about Alembic. Before trusting anything
+in this file, open the service's Settings and confirm the Docker Command,
+Dockerfile Path and Docker Build Context Directory match it. On a
+dashboard-managed service those three fields are:
+
+```
+Root Directory                    (empty)
+Dockerfile Path                   ./backend/Dockerfile
+Docker Build Context Directory    ./backend
+Docker Command                    alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1 --limit-concurrency 5 --forwarded-allow-ips "*"
+```
+
+**Both database URLs must name the same database.** `DATABASE_URL` and
+`DATABASE_MIGRATION_URL` differ only by the `-pooler` in the host.
+`migrations/env.py` prefers the migration URL, so two different hosts means the
+migration lands in one database and the app reads another. Neon makes this easy
+to get wrong: a project's branches have near-identical connection strings, and
+nothing in either URL says which branch it is. After a deploy, confirm the log
+carries `INFO [alembic.runtime.migration] Running upgrade` lines, or that the
+schema was already at head.
+
 ```bash
 curl https://<service>.onrender.com/health   # {"status":"ok"}
 curl https://<service>.onrender.com/ready    # {"status":"ready","checks":{…}}
@@ -384,6 +411,12 @@ measuring a gate with nothing behind it.
 
 ## Known limits
 
+- **Nothing stops the app booting against an old schema.** The composition root
+  does not compare the database's `alembic_version` to the code's head, so a
+  deploy whose migration never ran starts normally and fails one request at a
+  time. `_owned_documents` makes that worse by catching the error and answering
+  200, which is how a broken schema looked healthy for a full day. Both halves
+  need fixing: refuse the boot, and let a schema error propagate.
 - **Uploads are on local disk, and the disk is ephemeral.** Render's free
   plan gives the service no persistent volume, so the filesystem is wiped on
   every restart and every deploy. Survivable only because nothing reads a
