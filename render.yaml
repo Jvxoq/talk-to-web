@@ -60,17 +60,11 @@ services:
     # safe because Render's proxy is the only thing that can reach this port.
     # $PORT is assigned by Render and is not always 8000.
     #
-    # Wrapped in `/bin/sh -c` because Render does not run this field through a
-    # shell on its own: unwrapped, `&&` and `$PORT` reach the process as literal
-    # arguments and it never starts. The shell is also what expands $PORT.
-    dockerCommand: >-
-      /bin/sh -c "alembic upgrade head &&
-      exec uvicorn app.main:app
-      --host 0.0.0.0
-      --port $PORT
-      --workers 1
-      --limit-concurrency 5
-      --forwarded-allow-ips '*'"
+    # `sh start.sh`, not the two commands joined by `&&`. Render does not run
+    # this field through a shell: it expands variables, strips quotes and execs
+    # the argv, so `&&` arrives as an argument to alembic and `'*'` loses its
+    # quotes. `backend/start.sh` holds the real sequence.
+    dockerCommand: sh start.sh
 
     envVars:
       # Set here rather than left to the dashboard, because forgetting it is not
