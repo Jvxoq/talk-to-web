@@ -6,6 +6,7 @@ import { AuthGate, AuthProvider, useAuth } from '../features/auth'
 import {
   ChatLog,
   Composer,
+  ConversationSkeleton,
   FALLBACK_DEFAULT_MODEL,
   Sidebar,
   useChat,
@@ -36,15 +37,19 @@ function Chat({
   conversationId: number
   preloaded: ConversationOut | null
 }) {
-  const { messages, isStreaming, send, cooldownUntil, restoreText, clearRestoreText } = useChat(
-    model,
-    conversationId,
-    preloaded,
-  )
+  const {
+    messages,
+    isLoading,
+    isStreaming,
+    send,
+    cooldownUntil,
+    restoreText,
+    clearRestoreText,
+  } = useChat(model, conversationId, preloaded)
 
   return (
     <main className="main">
-      <ChatLog messages={messages} isStreaming={isStreaming} />
+      <ChatLog messages={messages} isLoading={isLoading} isStreaming={isStreaming} />
       <Composer
         model={model}
         conversationId={conversationId}
@@ -131,9 +136,14 @@ function Shell() {
             />
           ) : (
             // The conversation list is still loading (or opening a first
-            // conversation for a brand new account) - an empty region beats a
-            // composer with nowhere to send a message.
-            <main className="main" />
+            // conversation for a brand new account). Same wait the transcript
+            // itself shows, held here as one shape the two share - an empty
+            // region, and then a composer with nowhere to send a message.
+            <main className="main">
+              <div className="chat">
+                <ConversationSkeleton />
+              </div>
+            </main>
           )}
         </AuthGate>
       </div>

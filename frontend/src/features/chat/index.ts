@@ -1,5 +1,6 @@
 export { ChatLog } from './components/ChatLog'
 export { Composer } from './components/Composer'
+export { ConversationSkeleton } from './components/ConversationSkeleton'
 export { Sidebar } from './components/Sidebar'
 export { useChat } from './hooks/useChat'
 export { useConversations } from './hooks/useConversations'
