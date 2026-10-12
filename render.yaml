@@ -153,6 +153,12 @@ services:
       # here explicitly rather than left to the default.
       - key: GLOBAL_DAILY_CALL_BUDGET
         value: "200"
+      # Per account, on top of the ceiling above. Sized for a reviewer trying
+      # the app quickly, not for open traffic.
+      - key: CHAT_RATE_LIMIT_REQUESTS
+        value: "10"
+      - key: UPLOAD_RATE_LIMIT_REQUESTS
+        value: "5"
 
       # --- Tracing and error reporting --------------------------------------
       # Langfuse is optional and off unless both keys are set - the tracer
