@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, isAbort, messageFrom } from '../../../lib/http'
-import { deleteDocument, uploadPdf } from '../api'
+import { deleteDocument, getAttachedDocument, uploadPdf } from '../api'
 import type { UploadedFile } from '../types'
 
 // Mirrors the backend's `_ACCEPTED` table in
@@ -18,11 +18,12 @@ const ACCEPTED_TYPES = new Set([
 /**
  * Owns the document attachment for one conversation.
  *
- * A document belongs to the thread it was attached to, so this hook takes the
- * conversation id and does two things with it. Every upload names it, and
- * switching threads drops the chip - the file it named is not this thread's
- * attachment, and showing it would claim the model can read something it
- * cannot.
+ * A document belongs to the thread it was attached to and outlives the tab
+ * that uploaded it, so this hook does two things with the conversation id.
+ * Every upload names it. And opening a thread reads what the server still
+ * holds, so the chip shows an attachment made in an earlier session too - a
+ * chip that only remembered this session's uploads would hide a file the
+ * model can still be asked about, and leave nothing to press to remove it.
  */
 export function useFileUpload(conversationId: number) {
   const [file, setFile] = useState<UploadedFile | null>(null)
@@ -95,11 +96,31 @@ export function useFileUpload(conversationId: number) {
     }
   }, [file])
 
-  // Switching threads is not a removal: the document stays attached to the
-  // conversation it was uploaded into, and this only stops showing it here.
+  // Opening a thread loads its attachment. A 404 is folded into "none": the
+  // server answers 404 for a thread id that is not this account's, which a
+  // stale pinned id can name for a moment before the bootstrap replaces it -
+  // noise, not something to report. Other failures leave the chip unset and
+  // say so, because "nothing attached" and "unknown" are different states and
+  // only one of them is safe to show.
   useEffect(() => {
+    let cancelled = false
     setFile(null)
     setError(null)
+    getAttachedDocument(conversationId)
+      .then((attached) => {
+        if (!cancelled) setFile(attached)
+      })
+      .catch((err) => {
+        if (cancelled) return
+        if (err instanceof ApiError && err.status === 404) {
+          setFile(null)
+          return
+        }
+        setError(messageFrom(err, 'Could not check for an attached file.'))
+      })
+    return () => {
+      cancelled = true
+    }
   }, [conversationId])
 
   useEffect(() => () => abortRef.current?.abort(), [])

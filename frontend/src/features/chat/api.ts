@@ -8,6 +8,7 @@ const API_URL = import.meta.env.VITE_API_URL ?? '/generate/text/'
 const UPLOAD_URL = import.meta.env.VITE_UPLOAD_URL ?? '/upload/file/'
 const DOCUMENTS_URL = import.meta.env.VITE_DOCUMENTS_URL ?? '/documents/'
 const MODELS_URL = import.meta.env.VITE_MODELS_URL ?? '/models/'
+const CONVERSATIONS_URL = import.meta.env.VITE_CONVERSATIONS_URL ?? '/conversations/'
 
 /** One parsed frame off the SSE stream. */
 export type StreamEvent =
@@ -191,6 +192,43 @@ export async function uploadPdf(
     throw new ApiError(0, 'Upload: missing "document_id"')
   }
   return { name: file.name, id }
+}
+
+/**
+ * The document attached to one conversation, or `null` when the thread has
+ * none.
+ *
+ * Read when a thread opens. The attachment outlives the tab that uploaded it -
+ * a document belongs to the conversation, not to the session - so the chip
+ * beside the composer has to reflect what the server still holds. A chip that
+ * only remembered this session's uploads would hide a file the model can
+ * still be asked about, and leave nothing to press to remove it.
+ */
+export async function getAttachedDocument(conversationId: number): Promise<UploadedFile | null> {
+  const base = CONVERSATIONS_URL.endsWith('/') ? CONVERSATIONS_URL : `${CONVERSATIONS_URL}/`
+  const response = await authorizedFetch(`${base}${conversationId}/document`)
+
+  if (!response.ok) {
+    throw new ApiError(response.status, `Could not load the attachment for conversation ${conversationId}`)
+  }
+
+  const body: unknown = await response.json()
+  // `null` is the server's "this thread owns no document" - a normal state,
+  // distinct from a failure, which the `!response.ok` branch above already is.
+  if (body === null) return null
+
+  // Narrowed at the boundary like every other response, then trusted: the chip
+  // renders the name and deletes by the id, and that is all it ever needs.
+  if (typeof body !== 'object') {
+    throw new ApiError(0, 'Document: expected an object')
+  }
+  const record = body as Record<string, unknown>
+  const id = record.id
+  const name = record.name
+  if (typeof id !== 'number' || typeof name !== 'string') {
+    throw new ApiError(0, 'Document: missing "id" or "name"')
+  }
+  return { id, name }
 }
 
 /**

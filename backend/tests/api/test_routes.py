@@ -46,7 +46,12 @@ from app.domain.chat.entities import Conversation, Message
 from app.domain.chat.errors import ConversationNotFound
 from app.domain.identity.errors import InvalidToken
 from app.domain.ingestion.entities import UploadedDocument
-from app.domain.ingestion.errors import DocumentNotFound, DocumentTooLarge, UnsupportedDocumentType
+from app.domain.ingestion.errors import (
+    DocumentNotFound,
+    DocumentTooLarge,
+    UnknownConversation,
+    UnsupportedDocumentType,
+)
 from app.domain.usage.errors import RateLimited
 from app.factory import create_app
 from app.settings import Settings
@@ -153,6 +158,7 @@ class StubContainer:
     upload_document: Any = None
     index_document: Any = None
     list_documents: Any = None
+    get_conversation_document: Any = None
     delete_document: Any = None
     transcribe_stream: Any = None
     register_user: Any = None
@@ -654,6 +660,43 @@ class TestConversations:
 
         assert response.status_code == 404
         assert response.json()["type"] == "ConversationNotFound"
+
+    async def test_the_attachment_is_returned_when_the_thread_has_one(self) -> None:
+        attached = UploadedDocument(
+            name="a.pdf", reference="uploads/7/a.pdf", owner_id=7, id=3, chunks_indexed=12
+        )
+        stub = StubUseCase(returns=attached)
+
+        async with client(StubContainer(get_conversation_document=stub)) as http:
+            response = await http.get("/conversations/1/document")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "id": 3,
+            "name": "a.pdf",
+            "chunks_indexed": 12,
+            "created_at": None,
+        }
+        assert stub.calls[0] == (1, USER.user_id)
+
+    async def test_no_attachment_is_null_not_a_404(self) -> None:
+        """An empty attachment is a normal state of an owned thread; the client
+        reads this on every open, and it must not read as an error."""
+        stub = StubUseCase(returns=None)
+        async with client(StubContainer(get_conversation_document=stub)) as http:
+            response = await http.get("/conversations/1/document")
+
+        assert response.status_code == 200
+        assert response.json() is None
+
+    async def test_another_accounts_thread_id_is_a_404(self) -> None:
+        stub = StubUseCase(raises=UnknownConversation(99))
+
+        async with client(StubContainer(get_conversation_document=stub)) as http:
+            response = await http.get("/conversations/99/document")
+
+        assert response.status_code == 404
+        assert response.json()["type"] == "UnknownConversation"
 
     async def test_append_message_returns_201(self) -> None:
         stored = Message(

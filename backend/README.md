@@ -95,6 +95,7 @@ and needs real Postgres/Qdrant — see Commands above.
 | `POST /conversations/` | `StartConversation` | Creates a conversation for the current user; 409 past `MAX_CONVERSATIONS_PER_USER` |
 | `GET /conversations/` | `ListConversations` | Lists the user's conversations |
 | `GET /conversations/{id}` | `GetConversation` | Loads one conversation with its messages |
+| `GET /conversations/{id}/document` | `GetConversationDocument` | The thread's attachment, or `null` when it has none |
 | `POST /conversations/{id}/messages` | `RecordExchange` | Persists a user/assistant message pair |
 | `POST /conversations/{id}/delete` | `DeleteConversation` | Deletes a conversation and every document attached to it (POST, not DELETE — CORS only allows GET/POST/OPTIONS; see frontend README) |
 | `POST /upload/file/` | `UploadDocument` → `IndexDocument` | Names its conversation (404 if the thread is not the caller's), replaces whatever that thread already held, extracts text (PDF/DOCX/plain text), chunks, embeds (Gemini), stores in Qdrant + Postgres, and writes a short digest to `documents.summary` |
