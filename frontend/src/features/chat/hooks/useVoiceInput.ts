@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getAccessToken } from '../../../lib/session'
 
-export type VoiceStatus = 'idle' | 'connecting' | 'listening'
+export type VoiceStatus = 'idle' | 'connecting' | 'listening' | 'stopping'
 
 const WS_PATH = '/ws/transcribe/'
 // Deepgram's recommended rate for speech: enough fidelity, a third of the
@@ -26,6 +26,10 @@ interface Session {
   context: AudioContext
   stream: MediaStream
   node: AudioWorkletNode
+  /** True once `stop()` has fired. Guards double-send and double-release. */
+  stopped: boolean
+  /** True once the mic and audio graph are released. Guards a second release. */
+  audioReleased: boolean
 }
 
 /**
@@ -89,7 +93,10 @@ export function useVoiceInput(onFinalTranscript: (text: string) => void) {
    *  we keep it open a moment longer to receive the final transcript. */
   const releaseAudio = useCallback(() => {
     const session = sessionRef.current
-    if (!session) return
+    // `stop()` releases the audio and then calls `teardown()`, which releases it
+    // again, so this has to be idempotent on its own.
+    if (!session || session.audioReleased) return
+    session.audioReleased = true
     session.node.port.onmessage = null
     session.node.disconnect()
     session.stream.getTracks().forEach((track) => track.stop())
@@ -159,7 +166,7 @@ export function useVoiceInput(onFinalTranscript: (text: string) => void) {
 
     const socket = new WebSocket(socketUrl(), [TOKEN_SUBPROTOCOL, token])
     socket.binaryType = 'arraybuffer'
-    sessionRef.current = { socket, context, stream, node }
+    sessionRef.current = { socket, context, stream, node, stopped: false, audioReleased: false }
 
     socket.onopen = () => {
       // Report the rate the AudioContext actually settled on - browsers do not
@@ -210,12 +217,15 @@ export function useVoiceInput(onFinalTranscript: (text: string) => void) {
 
   const stop = useCallback(() => {
     const session = sessionRef.current
-    if (!session) return
+    if (!session || session.stopped) return
+    session.stopped = true
 
     // Stop capturing immediately so the mic indicator goes away, but leave the
     // socket open: the server still owes us the flushed final transcript, and
-    // will reply "done" once Deepgram has emitted it.
+    // will reply "done" once Deepgram has emitted it. `stopping` drops the
+    // looping ring/dot at once; `teardown()` on `done` returns to `idle`.
     releaseAudio()
+    setStatus('stopping')
     if (session.socket.readyState === WebSocket.OPEN) {
       session.socket.send(JSON.stringify({ type: 'stop' }))
     } else {
@@ -224,8 +234,11 @@ export function useVoiceInput(onFinalTranscript: (text: string) => void) {
   }, [releaseAudio, teardown])
 
   const toggle = useCallback(() => {
-    if (sessionRef.current) stop()
-    else void start()
+    const session = sessionRef.current
+    if (!session) void start()
+    else if (!session.stopped) stop()
+    // Else a flush is pending: ignore the click. `start()` would no-op on the
+    // live session, and a second `stop()` would double-send.
   }, [start, stop])
 
   // Never leave the mic running if the component goes away mid-session.
