@@ -17,9 +17,9 @@ npm run test:watch  # vitest
 npm test -- src/lib/session.test.ts    # one file
 ```
 
-Tests are Vitest, colocated as `src/**/*.test.ts`, and run in the `node`
-environment — no jsdom is installed, so a component test needs both the
-package and `environment: 'jsdom'` in the `test` block of `vite.config.ts`.
+Tests are Vitest, colocated as `src/**/*.test.{ts,tsx}`, and run in the `node`
+environment. A test that needs a DOM opts in per file with
+`// @vitest-environment jsdom` and renders through Testing Library.
 `lib/session.ts` keeps the access token and the in-flight refresh in module
 variables, so its tests call `vi.resetModules()` and re-import the module
 for each case rather than resetting that state from outside.
@@ -125,9 +125,8 @@ src/
 - A reload always starts with no access token — `AuthProvider` calls
   `/auth/refresh` on mount to get one back, so there's a brief unauthenticated
   window on every full page load.
-- No component tests yet — the Vitest setup runs in the `node` environment
-  only; adding one means adding jsdom and the `environment: 'jsdom'` block
-  first.
+- No component tests yet. jsdom and Testing Library are installed, so the
+  first one only needs the `// @vitest-environment jsdom` pragma.
 - **No document list UI.** The attachment chip can remove the file it names
   (`POST /documents/{id}/delete`), and a thread holds one file at a time, so
   the chip is the whole document surface. `GET /documents/` is still served
