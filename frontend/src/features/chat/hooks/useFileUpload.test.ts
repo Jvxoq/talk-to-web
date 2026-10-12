@@ -111,4 +111,77 @@ describe('useFileUpload', () => {
     expect(mockedUpload).toHaveBeenCalledWith(expect.any(File), 1, expect.anything())
     expect(result.current.file).toEqual({ id: 5, name: 'new.pdf' })
   })
+
+  it('a late upload response never lands on the chip of the thread switched to', async () => {
+    let resolveUpload: (value: { id: number; name: string }) => void = () => {}
+    mockedUpload.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveUpload = resolve
+        }),
+    )
+    mockedGet.mockResolvedValue(null)
+    const { result, rerender } = render(1)
+
+    let uploadPromise: Promise<void> = Promise.resolve()
+    act(() => {
+      uploadPromise = result.current.upload(new File(['x'], 'new.pdf', { type: 'application/pdf' }))
+    })
+
+    // Switch away before the upload finishes. The upload named thread 1; its
+    // chip is no longer this hook's business.
+    await act(async () => {
+      rerender(2)
+    })
+    // One read per thread open: the initial render's and the switch's.
+    await waitFor(() => expect(mockedGet).toHaveBeenCalledTimes(2))
+    resolveUpload({ id: 5, name: 'new.pdf' })
+    await act(async () => {
+      await uploadPromise
+    })
+
+    expect(result.current.file).toBeNull()
+    expect(result.current.isUploading).toBe(false)
+  })
+
+  it('an upload that fails after a thread switch is not reported on the new thread', async () => {
+    // Held open until after the switch: a rejection that settled first would
+    // land on thread 1 and say nothing about the guard.
+    let rejectUpload: (reason: unknown) => void = () => {}
+    mockedUpload.mockImplementation(
+      () =>
+        new Promise((_, reject) => {
+          rejectUpload = reject
+        }),
+    )
+    mockedGet.mockResolvedValue(null)
+    const { result, rerender } = render(1)
+
+    let uploadPromise: Promise<void> = Promise.resolve()
+    act(() => {
+      uploadPromise = result.current.upload(new File(['x'], 'new.pdf', { type: 'application/pdf' }))
+    })
+    await act(async () => {
+      rerender(2)
+    })
+    await waitFor(() => expect(mockedGet).toHaveBeenCalledTimes(2))
+    rejectUpload(new ApiError(500, 'backend down'))
+    await act(async () => {
+      await uploadPromise
+    })
+
+    expect(result.current.error).toBeNull()
+  })
+
+  it('an upload that fails on the current thread is reported', async () => {
+    mockedUpload.mockRejectedValue(new ApiError(500, 'backend down'))
+    const { result } = render(1)
+
+    await act(async () => {
+      await result.current.upload(new File(['x'], 'new.pdf', { type: 'application/pdf' }))
+    })
+
+    expect(result.current.error).toBe('backend down')
+    expect(result.current.isUploading).toBe(false)
+  })
 })

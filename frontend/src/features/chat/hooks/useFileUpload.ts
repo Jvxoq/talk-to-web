@@ -19,11 +19,14 @@ const ACCEPTED_TYPES = new Set([
  * Owns the document attachment for one conversation.
  *
  * A document belongs to the thread it was attached to and outlives the tab
- * that uploaded it, so this hook does two things with the conversation id.
- * Every upload names it. And opening a thread reads what the server still
- * holds, so the chip shows an attachment made in an earlier session too - a
- * chip that only remembered this session's uploads would hide a file the
- * model can still be asked about, and leave nothing to press to remove it.
+ * that uploaded it, so this hook does three things with the conversation id.
+ * Every upload names it. Opening a thread reads what the server still holds,
+ * so the chip shows an attachment made in an earlier session too - a chip
+ * that only remembered this session's uploads would hide a file the model
+ * can still be asked about, and leave nothing to press to remove it. And
+ * every late response is checked against the thread it was for, because
+ * switching threads mid-upload must not paste the old thread's chip onto the
+ * new one.
  */
 export function useFileUpload(conversationId: number) {
   const [file, setFile] = useState<UploadedFile | null>(null)
@@ -34,35 +37,60 @@ export function useFileUpload(conversationId: number) {
   // and users meet it.
   const [cooldownUntil, setCooldownUntil] = useState<number | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  // The thread each in-flight step was started for, so a late completion can
+  // be compared against the thread this hook now shows. Updated in an effect,
+  // not at render: a ref written during render goes stale under StrictMode's
+  // double render.
+  const conversationRef = useRef(conversationId)
+  useEffect(() => {
+    conversationRef.current = conversationId
+  }, [conversationId])
 
   // Wraps every upload: abort handling, error and cooldown surfacing, and the
   // attachment chip on success.
-  const run = useCallback(async (task: (signal: AbortSignal) => Promise<UploadedFile>) => {
-    abortRef.current?.abort()
-    const controller = new AbortController()
-    abortRef.current = controller
+  const run = useCallback(
+    async (task: (signal: AbortSignal) => Promise<UploadedFile>, forConversation: number) => {
+      abortRef.current?.abort()
+      const controller = new AbortController()
+      abortRef.current = controller
 
-    setError(null)
-    setIsUploading(true)
+      setError(null)
+      setIsUploading(true)
 
-    try {
-      setFile(await task(controller.signal))
-    } catch (err) {
-      if (isAbort(err)) return
-      // The message is already the server's own sentence; what it cannot do is
-      // stay true as the seconds pass, so the deadline is kept alongside it and
-      // the countdown is rendered from that.
-      if (err instanceof ApiError && err.status === 429) {
-        setCooldownUntil(Date.now() + (err.retryAfterSeconds ?? 60) * 1000)
+      try {
+        const uploaded = await task(controller.signal)
+        // The upload named `forConversation`. If the user has moved to another
+        // thread since, its chip is no longer this hook's business: the
+        // document still belongs to the thread it was uploaded into, and that
+        // thread's own read below will show it when the user returns. The
+        // request itself is left running - aborting it could leave a partial
+        // file behind, and the document would still arrive in the old thread.
+        if (conversationRef.current === forConversation) {
+          setFile(uploaded)
+        }
+      } catch (err) {
+        if (isAbort(err)) return
+        // Same guard as the success path: a failure that lands after the user
+        // has moved on belongs to the thread they left, not the one they are
+        // on. When they go back, the read below will show what the server
+        // actually kept - which, for a failed upload, is nothing.
+        if (conversationRef.current !== forConversation) return
+        // The message is already the server's own sentence; what it cannot do is
+        // stay true as the seconds pass, so the deadline is kept alongside it and
+        // the countdown is rendered from that.
+        if (err instanceof ApiError && err.status === 429) {
+          setCooldownUntil(Date.now() + (err.retryAfterSeconds ?? 60) * 1000)
+        }
+        setError(messageFrom(err, 'Failed to attach that.'))
+      } finally {
+        if (abortRef.current === controller) {
+          abortRef.current = null
+          setIsUploading(false)
+        }
       }
-      setError(messageFrom(err, 'Failed to attach that.'))
-    } finally {
-      if (abortRef.current === controller) {
-        abortRef.current = null
-        setIsUploading(false)
-      }
-    }
-  }, [])
+    },
+    [],
+  )
 
   const upload = useCallback(
     async (selected: File) => {
@@ -70,7 +98,7 @@ export function useFileUpload(conversationId: number) {
         setError('File must be a PDF, text, markdown, or Word (.docx) document.')
         return
       }
-      await run((signal) => uploadPdf(selected, conversationId, signal))
+      await run((signal) => uploadPdf(selected, conversationId, signal), conversationId)
     },
     [run, conversationId],
   )
