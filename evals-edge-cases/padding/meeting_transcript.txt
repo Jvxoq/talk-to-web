@@ -1,0 +1,191 @@
+Weekly product sync, raw transcript. No decisions are final until the notes are sent.
+Farida: Casimir is blocked on the onboarding flow, and team Falcon estimates 19 days for it. We parked the pricing question again.
+Beatrix: Farida signed off on the onboarding flow, and team Heron estimates 8 days for it. We parked the pricing question again.
+Arjun: Beatrix is blocked on password reset, and team Falcon estimates 9 days for it. We parked the pricing question again.
+Beatrix: Ilse is blocked on the onboarding flow, and team Heron estimates 5 days for it. We parked the pricing question again.
+Delphine: Arjun signed off on the dark theme, and team Lynx estimates 3 days for it. We parked the pricing question again.
+Delphine: Arjun wants a spike for search latency, and team Osprey estimates 15 days for it. We parked the pricing question again.
+Casimir: Ilse wants to split the dark theme, and team Osprey estimates 19 days for it. We parked the pricing question again.
+Casimir: Beatrix signed off on the dark theme, and team Marlin estimates 13 days for it. We parked the pricing question again.
+Beatrix: Ilse wants to split the dark theme, and team Falcon estimates 8 days for it. We parked the pricing question again.
+Hiroko: Ilse is blocked on the audit log, and team Lynx estimates 16 days for it. We parked the pricing question again.
+Farida: Emeka found a bug in search latency, and team Marlin estimates 4 days for it. We parked the pricing question again.
+Jovan: Emeka wants a spike for the admin dashboard, and team Osprey estimates 16 days for it. We parked the pricing question again.
+Emeka: Beatrix wants to split email digests, and team Lynx estimates 7 days for it. We parked the pricing question again.
+Farida: Casimir proposed removing password reset, and team Falcon estimates 4 days for it. We parked the pricing question again.
+Ilse: Farida will pair with design on the audit log, and team Heron estimates 17 days for it. We parked the pricing question again.
+Jovan: Hiroko wants to split the billing page, and team Osprey estimates 17 days for it. We parked the pricing question again.
+Beatrix: Arjun asked for numbers on the dark theme, and team Lynx estimates 11 days for it. We parked the pricing question again.
+Gunnar: Farida thinks we should delay the admin dashboard, and team Osprey estimates 7 days for it. We parked the pricing question again.
+Jovan: Beatrix proposed removing the onboarding flow, and team Marlin estimates 11 days for it. We parked the pricing question again.
+Casimir: Delphine is blocked on password reset, and team Lynx estimates 4 days for it. We parked the pricing question again.
+Casimir: Hiroko is blocked on email digests, and team Osprey estimates 6 days for it. We parked the pricing question again.
+Gunnar: Ilse asked for numbers on password reset, and team Osprey estimates 14 days for it. We parked the pricing question again.
+Delphine: Casimir wants to split search latency, and team Marlin estimates 9 days for it. We parked the pricing question again.
+Delphine: Arjun proposed removing the dark theme, and team Marlin estimates 10 days for it. We parked the pricing question again.
+Emeka: Arjun has a draft for password reset, and team Heron estimates 13 days for it. We parked the pricing question again.
+Jovan: Farida has a draft for email digests, and team Heron estimates 3 days for it. We parked the pricing question again.
+Hiroko: Ilse is blocked on password reset, and team Lynx estimates 14 days for it. We parked the pricing question again.
+Beatrix: Hiroko is blocked on the onboarding flow, and team Marlin estimates 4 days for it. We parked the pricing question again.
+Delphine: Hiroko has a draft for the billing page, and team Osprey estimates 3 days for it. We parked the pricing question again.
+Beatrix: Arjun signed off on search latency, and team Heron estimates 5 days for it. We parked the pricing question again.
+Farida: Arjun wants to split the mobile layout, and team Heron estimates 14 days for it. We parked the pricing question again.
+Casimir: Emeka will pair with design on the dark theme, and team Osprey estimates 17 days for it. We parked the pricing question again.
+Beatrix: Jovan proposed removing the admin dashboard, and team Lynx estimates 17 days for it. We parked the pricing question again.
+Emeka: Beatrix has a draft for the billing page, and team Osprey estimates 10 days for it. We parked the pricing question again.
+Hiroko: Casimir wants a spike for the onboarding flow, and team Marlin estimates 18 days for it. We parked the pricing question again.
+Farida: Casimir wants a spike for the onboarding flow, and team Heron estimates 11 days for it. We parked the pricing question again.
+Beatrix: Emeka wants a spike for the audit log, and team Marlin estimates 13 days for it. We parked the pricing question again.
+Delphine: Ilse wants a spike for email digests, and team Osprey estimates 9 days for it. We parked the pricing question again.
+Jovan: Delphine found a bug in password reset, and team Marlin estimates 8 days for it. We parked the pricing question again.
+Ilse: Hiroko will pair with design on the onboarding flow, and team Falcon estimates 10 days for it. We parked the pricing question again.
+Hiroko: Emeka found a bug in the dark theme, and team Osprey estimates 16 days for it. We parked the pricing question again.
+Farida: Jovan wants to split the mobile layout, and team Falcon estimates 9 days for it. We parked the pricing question again.
+Hiroko: Delphine will pair with design on the mobile layout, and team Lynx estimates 2 days for it. We parked the pricing question again.
+Hiroko: Farida wants to split the billing page, and team Lynx estimates 8 days for it. We parked the pricing question again.
+Hiroko: Casimir is blocked on the audit log, and team Falcon estimates 14 days for it. We parked the pricing question again.
+Hiroko: Gunnar wants to split search latency, and team Marlin estimates 6 days for it. We parked the pricing question again.
+Arjun: Casimir signed off on the admin dashboard, and team Marlin estimates 17 days for it. We parked the pricing question again.
+Farida: Casimir wants a spike for email digests, and team Marlin estimates 2 days for it. We parked the pricing question again.
+Arjun: Beatrix wants a spike for search latency, and team Lynx estimates 8 days for it. We parked the pricing question again.
+Delphine: Arjun asked for numbers on the mobile layout, and team Osprey estimates 18 days for it. We parked the pricing question again.
+Delphine: Farida asked for numbers on email digests, and team Lynx estimates 6 days for it. We parked the pricing question again.
+Arjun: Farida proposed removing the dark theme, and team Heron estimates 15 days for it. We parked the pricing question again.
+Ilse: Casimir wants a spike for search latency, and team Heron estimates 18 days for it. We parked the pricing question again.
+Arjun: Hiroko has a draft for the dark theme, and team Falcon estimates 6 days for it. We parked the pricing question again.
+Casimir: Jovan proposed removing the dark theme, and team Falcon estimates 19 days for it. We parked the pricing question again.
+Arjun: Farida wants a spike for email digests, and team Heron estimates 17 days for it. We parked the pricing question again.
+Beatrix: Ilse thinks we should delay the mobile layout, and team Marlin estimates 10 days for it. We parked the pricing question again.
+Arjun: Beatrix wants a spike for the admin dashboard, and team Heron estimates 2 days for it. We parked the pricing question again.
+Beatrix: Hiroko will pair with design on the dark theme, and team Heron estimates 18 days for it. We parked the pricing question again.
+Delphine: Emeka proposed removing email digests, and team Heron estimates 17 days for it. We parked the pricing question again.
+Ilse: Delphine wants a spike for export to CSV, and team Heron estimates 8 days for it. We parked the pricing question again.
+Hiroko: Casimir is blocked on the billing page, and team Lynx estimates 16 days for it. We parked the pricing question again.
+Farida: Beatrix found a bug in password reset, and team Falcon estimates 8 days for it. We parked the pricing question again.
+Emeka: Beatrix has a draft for the audit log, and team Marlin estimates 10 days for it. We parked the pricing question again.
+Casimir: Hiroko found a bug in the billing page, and team Lynx estimates 17 days for it. We parked the pricing question again.
+Casimir: Delphine has a draft for password reset, and team Heron estimates 14 days for it. We parked the pricing question again.
+Farida: Gunnar found a bug in the audit log, and team Osprey estimates 4 days for it. We parked the pricing question again.
+Farida: Arjun will pair with design on email digests, and team Lynx estimates 16 days for it. We parked the pricing question again.
+Arjun: Gunnar will pair with design on email digests, and team Heron estimates 11 days for it. We parked the pricing question again.
+Ilse: Beatrix wants to split the mobile layout, and team Falcon estimates 4 days for it. We parked the pricing question again.
+Emeka: Jovan thinks we should delay search latency, and team Osprey estimates 6 days for it. We parked the pricing question again.
+Gunnar: Emeka is blocked on search latency, and team Heron estimates 18 days for it. We parked the pricing question again.
+Jovan: Hiroko will pair with design on the billing page, and team Osprey estimates 3 days for it. We parked the pricing question again.
+Casimir: Gunnar wants to split export to CSV, and team Falcon estimates 4 days for it. We parked the pricing question again.
+Emeka: Beatrix signed off on the mobile layout, and team Falcon estimates 10 days for it. We parked the pricing question again.
+Beatrix: Hiroko thinks we should delay the audit log, and team Heron estimates 15 days for it. We parked the pricing question again.
+Emeka: Casimir thinks we should delay email digests, and team Marlin estimates 5 days for it. We parked the pricing question again.
+Casimir: Emeka thinks we should delay search latency, and team Marlin estimates 11 days for it. We parked the pricing question again.
+Emeka: Ilse found a bug in export to CSV, and team Lynx estimates 18 days for it. We parked the pricing question again.
+Casimir: Emeka will pair with design on the onboarding flow, and team Osprey estimates 3 days for it. We parked the pricing question again.
+Arjun: Jovan wants a spike for email digests, and team Marlin estimates 18 days for it. We parked the pricing question again.
+Hiroko: Delphine proposed removing the billing page, and team Lynx estimates 17 days for it. We parked the pricing question again.
+Ilse: Gunnar wants a spike for export to CSV, and team Marlin estimates 9 days for it. We parked the pricing question again.
+Farida: Delphine has a draft for password reset, and team Osprey estimates 3 days for it. We parked the pricing question again.
+Casimir: Arjun wants to split export to CSV, and team Lynx estimates 7 days for it. We parked the pricing question again.
+Arjun: Beatrix is blocked on email digests, and team Osprey estimates 9 days for it. We parked the pricing question again.
+Emeka: Arjun proposed removing search latency, and team Marlin estimates 10 days for it. We parked the pricing question again.
+Hiroko: Arjun asked for numbers on the audit log, and team Osprey estimates 19 days for it. We parked the pricing question again.
+Farida: Delphine thinks we should delay export to CSV, and team Marlin estimates 13 days for it. We parked the pricing question again.
+Casimir: Arjun will pair with design on password reset, and team Falcon estimates 17 days for it. We parked the pricing question again.
+Emeka: Ilse found a bug in the mobile layout, and team Heron estimates 2 days for it. We parked the pricing question again.
+Beatrix: Emeka wants to split search latency, and team Lynx estimates 3 days for it. We parked the pricing question again.
+Gunnar: Arjun asked for numbers on export to CSV, and team Marlin estimates 4 days for it. We parked the pricing question again.
+Jovan: Ilse has a draft for the dark theme, and team Lynx estimates 12 days for it. We parked the pricing question again.
+Hiroko: Casimir asked for numbers on the dark theme, and team Marlin estimates 3 days for it. We parked the pricing question again.
+Ilse: Gunnar wants a spike for search latency, and team Heron estimates 18 days for it. We parked the pricing question again.
+Jovan: Arjun signed off on the mobile layout, and team Falcon estimates 2 days for it. We parked the pricing question again.
+Arjun: Casimir will pair with design on the billing page, and team Lynx estimates 16 days for it. We parked the pricing question again.
+Ilse: Arjun thinks we should delay email digests, and team Marlin estimates 17 days for it. We parked the pricing question again.
+Emeka: Arjun proposed removing the billing page, and team Heron estimates 19 days for it. We parked the pricing question again.
+Beatrix: Ilse wants to split the admin dashboard, and team Osprey estimates 4 days for it. We parked the pricing question again.
+Emeka: Delphine found a bug in the mobile layout, and team Lynx estimates 17 days for it. We parked the pricing question again.
+Gunnar: Beatrix proposed removing export to CSV, and team Falcon estimates 8 days for it. We parked the pricing question again.
+Beatrix: Casimir will pair with design on export to CSV, and team Osprey estimates 6 days for it. We parked the pricing question again.
+Arjun: Hiroko thinks we should delay the admin dashboard, and team Osprey estimates 5 days for it. We parked the pricing question again.
+Delphine: Hiroko asked for numbers on email digests, and team Osprey estimates 16 days for it. We parked the pricing question again.
+Hiroko: Jovan wants to split email digests, and team Marlin estimates 11 days for it. We parked the pricing question again.
+Beatrix: Hiroko thinks we should delay export to CSV, and team Lynx estimates 4 days for it. We parked the pricing question again.
+Ilse: Hiroko asked for numbers on password reset, and team Marlin estimates 8 days for it. We parked the pricing question again.
+Beatrix: Jovan has a draft for email digests, and team Osprey estimates 13 days for it. We parked the pricing question again.
+Casimir: Ilse asked for numbers on the billing page, and team Osprey estimates 9 days for it. We parked the pricing question again.
+Hiroko: Jovan is blocked on the onboarding flow, and team Marlin estimates 2 days for it. We parked the pricing question again.
+Hiroko: Jovan is blocked on export to CSV, and team Marlin estimates 15 days for it. We parked the pricing question again.
+Farida: Gunnar will pair with design on the billing page, and team Osprey estimates 2 days for it. We parked the pricing question again.
+Farida: Jovan is blocked on the billing page, and team Marlin estimates 2 days for it. We parked the pricing question again.
+Emeka: Jovan will pair with design on the billing page, and team Lynx estimates 14 days for it. We parked the pricing question again.
+Jovan: Beatrix will pair with design on password reset, and team Osprey estimates 3 days for it. We parked the pricing question again.
+Emeka: Beatrix thinks we should delay export to CSV, and team Marlin estimates 9 days for it. We parked the pricing question again.
+Emeka: Gunnar wants a spike for the audit log, and team Marlin estimates 13 days for it. We parked the pricing question again.
+Gunnar: Arjun is blocked on email digests, and team Heron estimates 8 days for it. We parked the pricing question again.
+Beatrix: Arjun is blocked on the admin dashboard, and team Heron estimates 6 days for it. We parked the pricing question again.
+Emeka: Hiroko thinks we should delay email digests, and team Marlin estimates 7 days for it. We parked the pricing question again.
+Hiroko: Gunnar will pair with design on export to CSV, and team Osprey estimates 10 days for it. We parked the pricing question again.
+Emeka: Gunnar found a bug in export to CSV, and team Lynx estimates 19 days for it. We parked the pricing question again.
+Gunnar: Beatrix has a draft for search latency, and team Falcon estimates 8 days for it. We parked the pricing question again.
+Ilse: Hiroko wants a spike for the mobile layout, and team Lynx estimates 12 days for it. We parked the pricing question again.
+Hiroko: Gunnar has a draft for email digests, and team Marlin estimates 9 days for it. We parked the pricing question again.
+Beatrix: Casimir will pair with design on email digests, and team Falcon estimates 12 days for it. We parked the pricing question again.
+Delphine: Farida asked for numbers on the dark theme, and team Marlin estimates 2 days for it. We parked the pricing question again.
+Gunnar: Jovan is blocked on email digests, and team Marlin estimates 14 days for it. We parked the pricing question again.
+Emeka: Farida thinks we should delay the admin dashboard, and team Osprey estimates 13 days for it. We parked the pricing question again.
+Casimir: Ilse wants a spike for the mobile layout, and team Falcon estimates 10 days for it. We parked the pricing question again.
+Delphine: Gunnar is blocked on the admin dashboard, and team Lynx estimates 11 days for it. We parked the pricing question again.
+Arjun: Casimir thinks we should delay password reset, and team Lynx estimates 17 days for it. We parked the pricing question again.
+Arjun: Beatrix is blocked on email digests, and team Lynx estimates 16 days for it. We parked the pricing question again.
+Delphine: Beatrix found a bug in search latency, and team Marlin estimates 18 days for it. We parked the pricing question again.
+Beatrix: Hiroko wants to split email digests, and team Falcon estimates 2 days for it. We parked the pricing question again.
+Casimir: Delphine signed off on the onboarding flow, and team Osprey estimates 6 days for it. We parked the pricing question again.
+Emeka: Ilse is blocked on the billing page, and team Falcon estimates 4 days for it. We parked the pricing question again.
+Emeka: Ilse signed off on the mobile layout, and team Lynx estimates 10 days for it. We parked the pricing question again.
+Delphine: Arjun thinks we should delay email digests, and team Osprey estimates 16 days for it. We parked the pricing question again.
+Emeka: Farida found a bug in the admin dashboard, and team Heron estimates 9 days for it. We parked the pricing question again.
+Ilse: Delphine thinks we should delay password reset, and team Osprey estimates 3 days for it. We parked the pricing question again.
+Arjun: Delphine proposed removing password reset, and team Falcon estimates 10 days for it. We parked the pricing question again.
+Delphine: Gunnar will pair with design on the mobile layout, and team Lynx estimates 3 days for it. We parked the pricing question again.
+Farida: Gunnar will pair with design on password reset, and team Marlin estimates 2 days for it. We parked the pricing question again.
+Emeka: Ilse wants to split the mobile layout, and team Lynx estimates 8 days for it. We parked the pricing question again.
+Emeka: Delphine found a bug in the admin dashboard, and team Marlin estimates 10 days for it. We parked the pricing question again.
+Emeka: Beatrix signed off on the admin dashboard, and team Heron estimates 7 days for it. We parked the pricing question again.
+Delphine: Hiroko is blocked on the onboarding flow, and team Heron estimates 6 days for it. We parked the pricing question again.
+Gunnar: Arjun found a bug in the onboarding flow, and team Heron estimates 6 days for it. We parked the pricing question again.
+Gunnar: Arjun thinks we should delay search latency, and team Lynx estimates 16 days for it. We parked the pricing question again.
+Farida: Beatrix wants to split search latency, and team Osprey estimates 8 days for it. We parked the pricing question again.
+Casimir: Ilse proposed removing the onboarding flow, and team Osprey estimates 14 days for it. We parked the pricing question again.
+Farida: Jovan proposed removing search latency, and team Falcon estimates 2 days for it. We parked the pricing question again.
+Beatrix: Emeka wants to split the audit log, and team Lynx estimates 5 days for it. We parked the pricing question again.
+Ilse: Delphine is blocked on the audit log, and team Osprey estimates 15 days for it. We parked the pricing question again.
+Beatrix: Arjun proposed removing the mobile layout, and team Osprey estimates 19 days for it. We parked the pricing question again.
+Hiroko: Delphine will pair with design on the audit log, and team Lynx estimates 2 days for it. We parked the pricing question again.
+Gunnar: Delphine is blocked on the onboarding flow, and team Lynx estimates 3 days for it. We parked the pricing question again.
+Hiroko: Beatrix thinks we should delay export to CSV, and team Marlin estimates 4 days for it. We parked the pricing question again.
+Jovan: Farida will pair with design on export to CSV, and team Osprey estimates 3 days for it. We parked the pricing question again.
+Emeka: Farida asked for numbers on export to CSV, and team Falcon estimates 4 days for it. We parked the pricing question again.
+Arjun: Delphine wants to split the admin dashboard, and team Lynx estimates 14 days for it. We parked the pricing question again.
+Emeka: Gunnar proposed removing search latency, and team Lynx estimates 7 days for it. We parked the pricing question again.
+Arjun: Emeka has a draft for the dark theme, and team Marlin estimates 12 days for it. We parked the pricing question again.
+Farida: Hiroko will pair with design on the dark theme, and team Falcon estimates 18 days for it. We parked the pricing question again.
+Delphine: Gunnar has a draft for the mobile layout, and team Lynx estimates 4 days for it. We parked the pricing question again.
+Arjun: Hiroko wants a spike for email digests, and team Osprey estimates 7 days for it. We parked the pricing question again.
+Gunnar: Beatrix wants to split export to CSV, and team Heron estimates 4 days for it. We parked the pricing question again.
+Delphine: Beatrix is blocked on the admin dashboard, and team Lynx estimates 7 days for it. We parked the pricing question again.
+Delphine: Casimir is blocked on the admin dashboard, and team Heron estimates 9 days for it. We parked the pricing question again.
+Ilse: Beatrix asked for numbers on export to CSV, and team Osprey estimates 10 days for it. We parked the pricing question again.
+Farida: Emeka asked for numbers on the mobile layout, and team Lynx estimates 9 days for it. We parked the pricing question again.
+Casimir: Delphine found a bug in search latency, and team Osprey estimates 8 days for it. We parked the pricing question again.
+Farida: Beatrix is blocked on export to CSV, and team Marlin estimates 18 days for it. We parked the pricing question again.
+Ilse: Delphine wants to split the admin dashboard, and team Falcon estimates 5 days for it. We parked the pricing question again.
+Arjun: Hiroko found a bug in the admin dashboard, and team Osprey estimates 3 days for it. We parked the pricing question again.
+Emeka: Delphine wants to split the onboarding flow, and team Marlin estimates 8 days for it. We parked the pricing question again.
+Beatrix: Farida wants a spike for search latency, and team Lynx estimates 10 days for it. We parked the pricing question again.
+Arjun: Beatrix signed off on the dark theme, and team Osprey estimates 8 days for it. We parked the pricing question again.
+Arjun: Farida will pair with design on search latency, and team Falcon estimates 8 days for it. We parked the pricing question again.
+Emeka: Arjun signed off on the mobile layout, and team Falcon estimates 12 days for it. We parked the pricing question again.
+Gunnar: Farida has a draft for the dark theme, and team Osprey estimates 4 days for it. We parked the pricing question again.
+Delphine: Arjun proposed removing email digests, and team Lynx estimates 4 days for it. We parked the pricing question again.
+Gunnar: Beatrix is blocked on email digests, and team Marlin estimates 19 days for it. We parked the pricing question again.
+Beatrix: Casimir is blocked on export to CSV, and team Lynx estimates 11 days for it. We parked the pricing question again.
+Emeka: Gunnar thinks we should delay export to CSV, and team Heron estimates 13 days for it. We parked the pricing question again.
+Gunnar: Jovan thinks we should delay the audit log, and team Marlin estimates 14 days for it. We parked the pricing question again.
+Gunnar: Delphine thinks we should delay password reset, and team Marlin estimates 15 days for it. We parked the pricing question again.

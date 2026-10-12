@@ -1,0 +1,191 @@
+Release changelog export, oldest entry first.
+Release 4.0.0: fixed the billing page for team Falcon, reviewed by Gunnar, rollout reached 78 percent of accounts.
+Release 4.0.1: fixed the audit log for team Lynx, reviewed by Casimir, rollout reached 21 percent of accounts.
+Release 4.0.2: fixed the onboarding flow for team Falcon, reviewed by Ilse, rollout reached 23 percent of accounts.
+Release 4.0.3: fixed password reset for team Falcon, reviewed by Jovan, rollout reached 84 percent of accounts.
+Release 4.0.4: fixed the audit log for team Heron, reviewed by Casimir, rollout reached 23 percent of accounts.
+Release 4.0.5: fixed the audit log for team Osprey, reviewed by Casimir, rollout reached 71 percent of accounts.
+Release 4.0.6: fixed search latency for team Falcon, reviewed by Beatrix, rollout reached 54 percent of accounts.
+Release 4.0.7: fixed the admin dashboard for team Marlin, reviewed by Emeka, rollout reached 21 percent of accounts.
+Release 4.0.8: fixed the onboarding flow for team Lynx, reviewed by Farida, rollout reached 11 percent of accounts.
+Release 4.0.9: fixed the dark theme for team Lynx, reviewed by Beatrix, rollout reached 84 percent of accounts.
+Release 4.1.0: fixed search latency for team Marlin, reviewed by Jovan, rollout reached 56 percent of accounts.
+Release 4.1.1: fixed the dark theme for team Marlin, reviewed by Hiroko, rollout reached 28 percent of accounts.
+Release 4.1.2: fixed the dark theme for team Marlin, reviewed by Arjun, rollout reached 56 percent of accounts.
+Release 4.1.3: fixed email digests for team Marlin, reviewed by Gunnar, rollout reached 50 percent of accounts.
+Release 4.1.4: fixed the billing page for team Marlin, reviewed by Delphine, rollout reached 29 percent of accounts.
+Release 4.1.5: fixed the onboarding flow for team Heron, reviewed by Arjun, rollout reached 90 percent of accounts.
+Release 4.1.6: fixed the audit log for team Falcon, reviewed by Gunnar, rollout reached 81 percent of accounts.
+Release 4.1.7: fixed the admin dashboard for team Heron, reviewed by Emeka, rollout reached 88 percent of accounts.
+Release 4.1.8: fixed password reset for team Osprey, reviewed by Jovan, rollout reached 36 percent of accounts.
+Release 4.1.9: fixed password reset for team Lynx, reviewed by Farida, rollout reached 62 percent of accounts.
+Release 4.2.0: fixed email digests for team Lynx, reviewed by Casimir, rollout reached 7 percent of accounts.
+Release 4.2.1: fixed the onboarding flow for team Heron, reviewed by Hiroko, rollout reached 64 percent of accounts.
+Release 4.2.2: fixed the mobile layout for team Lynx, reviewed by Jovan, rollout reached 63 percent of accounts.
+Release 4.2.3: fixed search latency for team Lynx, reviewed by Gunnar, rollout reached 18 percent of accounts.
+Release 4.2.4: fixed the billing page for team Marlin, reviewed by Farida, rollout reached 60 percent of accounts.
+Release 4.2.5: fixed the audit log for team Falcon, reviewed by Hiroko, rollout reached 69 percent of accounts.
+Release 4.2.6: fixed email digests for team Falcon, reviewed by Arjun, rollout reached 86 percent of accounts.
+Release 4.2.7: fixed search latency for team Falcon, reviewed by Farida, rollout reached 70 percent of accounts.
+Release 4.2.8: fixed the billing page for team Falcon, reviewed by Ilse, rollout reached 53 percent of accounts.
+Release 4.2.9: fixed search latency for team Falcon, reviewed by Beatrix, rollout reached 83 percent of accounts.
+Release 4.3.0: fixed the billing page for team Marlin, reviewed by Casimir, rollout reached 67 percent of accounts.
+Release 4.3.1: fixed export to CSV for team Marlin, reviewed by Delphine, rollout reached 13 percent of accounts.
+Release 4.3.2: fixed the audit log for team Heron, reviewed by Emeka, rollout reached 25 percent of accounts.
+Release 4.3.3: fixed the audit log for team Heron, reviewed by Emeka, rollout reached 63 percent of accounts.
+Release 4.3.4: fixed search latency for team Osprey, reviewed by Ilse, rollout reached 66 percent of accounts.
+Release 4.3.5: fixed the mobile layout for team Heron, reviewed by Emeka, rollout reached 83 percent of accounts.
+Release 4.3.6: fixed email digests for team Marlin, reviewed by Farida, rollout reached 52 percent of accounts.
+Release 4.3.7: fixed the onboarding flow for team Marlin, reviewed by Casimir, rollout reached 56 percent of accounts.
+Release 4.3.8: fixed search latency for team Osprey, reviewed by Farida, rollout reached 53 percent of accounts.
+Release 4.3.9: fixed search latency for team Osprey, reviewed by Beatrix, rollout reached 72 percent of accounts.
+Release 4.4.0: fixed the onboarding flow for team Osprey, reviewed by Hiroko, rollout reached 76 percent of accounts.
+Release 4.4.1: fixed email digests for team Heron, reviewed by Beatrix, rollout reached 37 percent of accounts.
+Release 4.4.2: fixed email digests for team Lynx, reviewed by Farida, rollout reached 38 percent of accounts.
+Release 4.4.3: fixed password reset for team Osprey, reviewed by Jovan, rollout reached 23 percent of accounts.
+Release 4.4.4: fixed the audit log for team Osprey, reviewed by Beatrix, rollout reached 61 percent of accounts.
+Release 4.4.5: fixed the mobile layout for team Marlin, reviewed by Jovan, rollout reached 11 percent of accounts.
+Release 4.4.6: fixed export to CSV for team Heron, reviewed by Emeka, rollout reached 44 percent of accounts.
+Release 4.4.7: fixed the dark theme for team Osprey, reviewed by Arjun, rollout reached 9 percent of accounts.
+Release 4.4.8: fixed the mobile layout for team Marlin, reviewed by Emeka, rollout reached 83 percent of accounts.
+Release 4.4.9: fixed password reset for team Lynx, reviewed by Ilse, rollout reached 51 percent of accounts.
+Release 4.5.0: fixed the onboarding flow for team Marlin, reviewed by Hiroko, rollout reached 34 percent of accounts.
+Release 4.5.1: fixed the dark theme for team Falcon, reviewed by Arjun, rollout reached 11 percent of accounts.
+Release 4.5.2: fixed the onboarding flow for team Heron, reviewed by Farida, rollout reached 43 percent of accounts.
+Release 4.5.3: fixed the billing page for team Heron, reviewed by Farida, rollout reached 73 percent of accounts.
+Release 4.5.4: fixed the mobile layout for team Lynx, reviewed by Jovan, rollout reached 43 percent of accounts.
+Release 4.5.5: fixed the dark theme for team Marlin, reviewed by Delphine, rollout reached 51 percent of accounts.
+Release 4.5.6: fixed the dark theme for team Lynx, reviewed by Casimir, rollout reached 22 percent of accounts.
+Release 4.5.7: fixed the onboarding flow for team Marlin, reviewed by Casimir, rollout reached 62 percent of accounts.
+Release 4.5.8: fixed the billing page for team Falcon, reviewed by Casimir, rollout reached 90 percent of accounts.
+Release 4.5.9: fixed export to CSV for team Lynx, reviewed by Emeka, rollout reached 6 percent of accounts.
+Release 4.6.0: fixed the onboarding flow for team Heron, reviewed by Farida, rollout reached 81 percent of accounts.
+Release 4.6.1: fixed the dark theme for team Lynx, reviewed by Jovan, rollout reached 71 percent of accounts.
+Release 4.6.2: fixed the admin dashboard for team Marlin, reviewed by Casimir, rollout reached 5 percent of accounts.
+Release 4.6.3: fixed the onboarding flow for team Falcon, reviewed by Ilse, rollout reached 8 percent of accounts.
+Release 4.6.4: fixed password reset for team Marlin, reviewed by Delphine, rollout reached 25 percent of accounts.
+Release 4.6.5: fixed the onboarding flow for team Falcon, reviewed by Arjun, rollout reached 83 percent of accounts.
+Release 4.6.6: fixed email digests for team Marlin, reviewed by Casimir, rollout reached 57 percent of accounts.
+Release 4.6.7: fixed the mobile layout for team Heron, reviewed by Jovan, rollout reached 87 percent of accounts.
+Release 4.6.8: fixed email digests for team Lynx, reviewed by Jovan, rollout reached 27 percent of accounts.
+Release 4.6.9: fixed email digests for team Osprey, reviewed by Beatrix, rollout reached 43 percent of accounts.
+Release 4.7.0: fixed the onboarding flow for team Lynx, reviewed by Ilse, rollout reached 5 percent of accounts.
+Release 4.7.1: fixed password reset for team Lynx, reviewed by Hiroko, rollout reached 15 percent of accounts.
+Release 4.7.2: fixed the admin dashboard for team Marlin, reviewed by Delphine, rollout reached 18 percent of accounts.
+Release 4.7.3: fixed export to CSV for team Marlin, reviewed by Arjun, rollout reached 20 percent of accounts.
+Release 4.7.4: fixed the audit log for team Osprey, reviewed by Arjun, rollout reached 39 percent of accounts.
+Release 4.7.5: fixed email digests for team Lynx, reviewed by Ilse, rollout reached 38 percent of accounts.
+Release 4.7.6: fixed export to CSV for team Marlin, reviewed by Beatrix, rollout reached 69 percent of accounts.
+Release 4.7.7: fixed the onboarding flow for team Marlin, reviewed by Emeka, rollout reached 35 percent of accounts.
+Release 4.7.8: fixed the mobile layout for team Marlin, reviewed by Farida, rollout reached 29 percent of accounts.
+Release 4.7.9: fixed password reset for team Osprey, reviewed by Jovan, rollout reached 35 percent of accounts.
+Release 4.8.0: fixed password reset for team Heron, reviewed by Hiroko, rollout reached 65 percent of accounts.
+Release 4.8.1: fixed email digests for team Falcon, reviewed by Arjun, rollout reached 60 percent of accounts.
+Release 4.8.2: fixed the mobile layout for team Heron, reviewed by Emeka, rollout reached 32 percent of accounts.
+Release 4.8.3: fixed password reset for team Heron, reviewed by Jovan, rollout reached 14 percent of accounts.
+Release 4.8.4: fixed the dark theme for team Marlin, reviewed by Casimir, rollout reached 9 percent of accounts.
+Release 4.8.5: fixed the onboarding flow for team Falcon, reviewed by Beatrix, rollout reached 84 percent of accounts.
+Release 4.8.6: fixed search latency for team Osprey, reviewed by Casimir, rollout reached 94 percent of accounts.
+Release 4.8.7: fixed the onboarding flow for team Falcon, reviewed by Arjun, rollout reached 22 percent of accounts.
+Release 4.8.8: fixed the onboarding flow for team Falcon, reviewed by Arjun, rollout reached 13 percent of accounts.
+Release 4.8.9: fixed the dark theme for team Osprey, reviewed by Delphine, rollout reached 73 percent of accounts.
+Release 4.9.0: fixed the billing page for team Lynx, reviewed by Beatrix, rollout reached 36 percent of accounts.
+Release 4.9.1: fixed the mobile layout for team Marlin, reviewed by Beatrix, rollout reached 9 percent of accounts.
+Release 4.9.2: fixed the onboarding flow for team Falcon, reviewed by Emeka, rollout reached 66 percent of accounts.
+Release 4.9.3: fixed the billing page for team Marlin, reviewed by Beatrix, rollout reached 87 percent of accounts.
+Release 4.9.4: fixed the mobile layout for team Osprey, reviewed by Farida, rollout reached 48 percent of accounts.
+Release 4.9.5: fixed password reset for team Osprey, reviewed by Arjun, rollout reached 49 percent of accounts.
+Release 4.9.6: fixed export to CSV for team Osprey, reviewed by Arjun, rollout reached 52 percent of accounts.
+Release 4.9.7: fixed the audit log for team Heron, reviewed by Ilse, rollout reached 65 percent of accounts.
+Release 4.9.8: fixed export to CSV for team Heron, reviewed by Arjun, rollout reached 57 percent of accounts.
+Release 4.9.9: fixed the onboarding flow for team Lynx, reviewed by Ilse, rollout reached 17 percent of accounts.
+Release 4.10.0: fixed the audit log for team Lynx, reviewed by Arjun, rollout reached 73 percent of accounts.
+Release 4.10.1: fixed the dark theme for team Marlin, reviewed by Beatrix, rollout reached 78 percent of accounts.
+Release 4.10.2: fixed export to CSV for team Marlin, reviewed by Gunnar, rollout reached 5 percent of accounts.
+Release 4.10.3: fixed email digests for team Marlin, reviewed by Emeka, rollout reached 11 percent of accounts.
+Release 4.10.4: fixed the onboarding flow for team Osprey, reviewed by Hiroko, rollout reached 17 percent of accounts.
+Release 4.10.5: fixed the admin dashboard for team Marlin, reviewed by Hiroko, rollout reached 80 percent of accounts.
+Release 4.10.6: fixed the audit log for team Heron, reviewed by Emeka, rollout reached 78 percent of accounts.
+Release 4.10.7: fixed search latency for team Osprey, reviewed by Delphine, rollout reached 94 percent of accounts.
+Release 4.10.8: fixed the mobile layout for team Lynx, reviewed by Casimir, rollout reached 19 percent of accounts.
+Release 4.10.9: fixed the billing page for team Lynx, reviewed by Ilse, rollout reached 18 percent of accounts.
+Release 4.11.0: fixed the audit log for team Osprey, reviewed by Beatrix, rollout reached 56 percent of accounts.
+Release 4.11.1: fixed password reset for team Falcon, reviewed by Gunnar, rollout reached 87 percent of accounts.
+Release 4.11.2: fixed the onboarding flow for team Osprey, reviewed by Delphine, rollout reached 43 percent of accounts.
+Release 4.11.3: fixed export to CSV for team Lynx, reviewed by Ilse, rollout reached 69 percent of accounts.
+Release 4.11.4: fixed search latency for team Lynx, reviewed by Delphine, rollout reached 63 percent of accounts.
+Release 4.11.5: fixed search latency for team Heron, reviewed by Jovan, rollout reached 93 percent of accounts.
+Release 4.11.6: fixed the dark theme for team Falcon, reviewed by Farida, rollout reached 79 percent of accounts.
+Release 4.11.7: fixed the audit log for team Heron, reviewed by Casimir, rollout reached 62 percent of accounts.
+Release 4.11.8: fixed email digests for team Osprey, reviewed by Casimir, rollout reached 64 percent of accounts.
+Release 4.11.9: fixed the admin dashboard for team Osprey, reviewed by Jovan, rollout reached 34 percent of accounts.
+Release 4.12.0: fixed search latency for team Osprey, reviewed by Hiroko, rollout reached 87 percent of accounts.
+Release 4.12.1: fixed the mobile layout for team Heron, reviewed by Delphine, rollout reached 39 percent of accounts.
+Release 4.12.2: fixed export to CSV for team Heron, reviewed by Casimir, rollout reached 24 percent of accounts.
+Release 4.12.3: fixed the mobile layout for team Osprey, reviewed by Jovan, rollout reached 71 percent of accounts.
+Release 4.12.4: fixed the audit log for team Marlin, reviewed by Delphine, rollout reached 46 percent of accounts.
+Release 4.12.5: fixed the mobile layout for team Osprey, reviewed by Beatrix, rollout reached 26 percent of accounts.
+Release 4.12.6: fixed the billing page for team Marlin, reviewed by Gunnar, rollout reached 24 percent of accounts.
+Release 4.12.7: fixed search latency for team Osprey, reviewed by Emeka, rollout reached 60 percent of accounts.
+Release 4.12.8: fixed export to CSV for team Marlin, reviewed by Beatrix, rollout reached 86 percent of accounts.
+Release 4.12.9: fixed the billing page for team Osprey, reviewed by Delphine, rollout reached 54 percent of accounts.
+Release 4.13.0: fixed the admin dashboard for team Falcon, reviewed by Arjun, rollout reached 56 percent of accounts.
+Release 4.13.1: fixed password reset for team Marlin, reviewed by Ilse, rollout reached 85 percent of accounts.
+Release 4.13.2: fixed export to CSV for team Lynx, reviewed by Arjun, rollout reached 23 percent of accounts.
+Release 4.13.3: fixed export to CSV for team Heron, reviewed by Gunnar, rollout reached 5 percent of accounts.
+Release 4.13.4: fixed the mobile layout for team Lynx, reviewed by Jovan, rollout reached 80 percent of accounts.
+Release 4.13.5: fixed password reset for team Marlin, reviewed by Jovan, rollout reached 34 percent of accounts.
+Release 4.13.6: fixed search latency for team Falcon, reviewed by Hiroko, rollout reached 60 percent of accounts.
+Release 4.13.7: fixed the audit log for team Osprey, reviewed by Beatrix, rollout reached 58 percent of accounts.
+Release 4.13.8: fixed the mobile layout for team Lynx, reviewed by Casimir, rollout reached 37 percent of accounts.
+Release 4.13.9: fixed password reset for team Lynx, reviewed by Hiroko, rollout reached 7 percent of accounts.
+Release 4.14.0: fixed the dark theme for team Lynx, reviewed by Ilse, rollout reached 91 percent of accounts.
+Release 4.14.1: fixed search latency for team Osprey, reviewed by Arjun, rollout reached 54 percent of accounts.
+Release 4.14.2: fixed the admin dashboard for team Falcon, reviewed by Arjun, rollout reached 37 percent of accounts.
+Release 4.14.3: fixed email digests for team Marlin, reviewed by Casimir, rollout reached 30 percent of accounts.
+Release 4.14.4: fixed email digests for team Osprey, reviewed by Beatrix, rollout reached 78 percent of accounts.
+Release 4.14.5: fixed the admin dashboard for team Heron, reviewed by Delphine, rollout reached 65 percent of accounts.
+Release 4.14.6: fixed email digests for team Falcon, reviewed by Farida, rollout reached 71 percent of accounts.
+Release 4.14.7: fixed the audit log for team Lynx, reviewed by Hiroko, rollout reached 31 percent of accounts.
+Release 4.14.8: fixed search latency for team Lynx, reviewed by Ilse, rollout reached 20 percent of accounts.
+Release 4.14.9: fixed the dark theme for team Osprey, reviewed by Arjun, rollout reached 37 percent of accounts.
+Release 4.15.0: fixed export to CSV for team Lynx, reviewed by Gunnar, rollout reached 12 percent of accounts.
+Release 4.15.1: fixed the onboarding flow for team Falcon, reviewed by Gunnar, rollout reached 58 percent of accounts.
+Release 4.15.2: fixed the audit log for team Heron, reviewed by Emeka, rollout reached 18 percent of accounts.
+Release 4.15.3: fixed the mobile layout for team Osprey, reviewed by Gunnar, rollout reached 72 percent of accounts.
+Release 4.15.4: fixed the mobile layout for team Lynx, reviewed by Hiroko, rollout reached 32 percent of accounts.
+Release 4.15.5: fixed search latency for team Marlin, reviewed by Beatrix, rollout reached 86 percent of accounts.
+Release 4.15.6: fixed the mobile layout for team Lynx, reviewed by Ilse, rollout reached 33 percent of accounts.
+Release 4.15.7: fixed search latency for team Osprey, reviewed by Gunnar, rollout reached 64 percent of accounts.
+Release 4.15.8: fixed export to CSV for team Heron, reviewed by Casimir, rollout reached 65 percent of accounts.
+Release 4.15.9: fixed the audit log for team Marlin, reviewed by Emeka, rollout reached 95 percent of accounts.
+Release 4.16.0: fixed password reset for team Osprey, reviewed by Gunnar, rollout reached 91 percent of accounts.
+Release 4.16.1: fixed search latency for team Lynx, reviewed by Arjun, rollout reached 40 percent of accounts.
+Release 4.16.2: fixed the audit log for team Marlin, reviewed by Emeka, rollout reached 46 percent of accounts.
+Release 4.16.3: fixed the admin dashboard for team Lynx, reviewed by Gunnar, rollout reached 84 percent of accounts.
+Release 4.16.4: fixed the billing page for team Osprey, reviewed by Casimir, rollout reached 43 percent of accounts.
+Release 4.16.5: fixed password reset for team Falcon, reviewed by Beatrix, rollout reached 77 percent of accounts.
+Release 4.16.6: fixed the audit log for team Marlin, reviewed by Ilse, rollout reached 49 percent of accounts.
+Release 4.16.7: fixed the dark theme for team Falcon, reviewed by Arjun, rollout reached 31 percent of accounts.
+Release 4.16.8: fixed the billing page for team Osprey, reviewed by Emeka, rollout reached 82 percent of accounts.
+Release 4.16.9: fixed the billing page for team Heron, reviewed by Casimir, rollout reached 34 percent of accounts.
+Release 4.17.0: fixed search latency for team Lynx, reviewed by Farida, rollout reached 24 percent of accounts.
+Release 4.17.1: fixed the mobile layout for team Lynx, reviewed by Ilse, rollout reached 26 percent of accounts.
+Release 4.17.2: fixed the dark theme for team Heron, reviewed by Beatrix, rollout reached 90 percent of accounts.
+Release 4.17.3: fixed email digests for team Osprey, reviewed by Delphine, rollout reached 68 percent of accounts.
+Release 4.17.4: fixed the mobile layout for team Heron, reviewed by Beatrix, rollout reached 61 percent of accounts.
+Release 4.17.5: fixed the billing page for team Heron, reviewed by Beatrix, rollout reached 38 percent of accounts.
+Release 4.17.6: fixed password reset for team Marlin, reviewed by Casimir, rollout reached 65 percent of accounts.
+Release 4.17.7: fixed the admin dashboard for team Heron, reviewed by Arjun, rollout reached 66 percent of accounts.
+Release 4.17.8: fixed the admin dashboard for team Marlin, reviewed by Hiroko, rollout reached 36 percent of accounts.
+Release 4.17.9: fixed the admin dashboard for team Marlin, reviewed by Ilse, rollout reached 81 percent of accounts.
+Release 4.18.0: fixed the onboarding flow for team Marlin, reviewed by Farida, rollout reached 64 percent of accounts.
+Release 4.18.1: fixed the dark theme for team Lynx, reviewed by Emeka, rollout reached 64 percent of accounts.
+Release 4.18.2: fixed the audit log for team Lynx, reviewed by Gunnar, rollout reached 91 percent of accounts.
+Release 4.18.3: fixed the billing page for team Marlin, reviewed by Farida, rollout reached 86 percent of accounts.
+Release 4.18.4: fixed the onboarding flow for team Falcon, reviewed by Jovan, rollout reached 10 percent of accounts.
+Release 4.18.5: fixed the audit log for team Falcon, reviewed by Ilse, rollout reached 66 percent of accounts.
+Release 4.18.6: fixed the admin dashboard for team Marlin, reviewed by Arjun, rollout reached 32 percent of accounts.
+Release 4.18.7: fixed password reset for team Marlin, reviewed by Farida, rollout reached 17 percent of accounts.
+Release 4.18.8: fixed the audit log for team Osprey, reviewed by Hiroko, rollout reached 72 percent of accounts.
+Release 4.18.9: fixed email digests for team Marlin, reviewed by Emeka, rollout reached 60 percent of accounts.
