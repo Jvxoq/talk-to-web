@@ -1,4 +1,4 @@
-import { ApiError, requireStringFields } from '../../lib/http'
+import { ApiError } from '../../lib/http'
 import { authorizedFetch } from '../../lib/session'
 import { parseSummarizing } from './summarizing'
 import { parseUsage } from './usage'
@@ -180,12 +180,17 @@ export async function uploadPdf(
   }
 
   const body: unknown = await response.json()
-  const parsed = requireStringFields(body, ['file_path'], 'Upload')
+  // `file_path` is not read: nothing below the boundary ever uses it. The chip
+  // renders the name and deletes by the id, and the response's only load-bearing
+  // field is `document_id`, narrowed below.
+  if (typeof body !== 'object' || body === null) {
+    throw new ApiError(0, 'Upload: expected an object')
+  }
   const id = (body as Record<string, unknown>).document_id
   if (typeof id !== 'number') {
     throw new ApiError(0, 'Upload: missing "document_id"')
   }
-  return { name: file.name, path: parsed.file_path, id }
+  return { name: file.name, id }
 }
 
 /**

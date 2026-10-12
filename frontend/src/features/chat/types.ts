@@ -58,7 +58,6 @@ export interface Message {
 
 export interface UploadedFile {
   name: string
-  path: string
   /** The row this upload created. Removing the chip deletes it by this id. */
   id: number
 }
