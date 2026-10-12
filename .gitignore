@@ -67,3 +67,9 @@ Thumbs.db
 # Claude
 .claude/
 CLAUDE.md
+
+# Personal memory
+understanding-memory.md
+
+# Running list of known issues, maintained locally across sessions.
+issues.md
