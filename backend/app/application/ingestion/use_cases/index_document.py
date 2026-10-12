@@ -118,7 +118,7 @@ class IndexDocument:
         # while the row still claimed nothing had been indexed.
         try:
             summary = await self._summarizer.summarize_document(name, content)
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001
             logger.warning("Summarizer raised for {}; indexing it without one: {}", name, error)
             return ""
         if summary is None:

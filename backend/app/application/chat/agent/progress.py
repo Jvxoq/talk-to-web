@@ -40,7 +40,7 @@ def emit_summarizing(
     """
     try:
         writer = get_stream_writer()
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001
         logger.debug(f"No stream writer available to report summarization: {error}")
         return
     writer(

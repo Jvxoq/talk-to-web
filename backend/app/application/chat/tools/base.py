@@ -202,7 +202,9 @@ class BaseTool[ArgsT: BaseModel](ABC):
         try:
             result = await self._run(args, context)  # type: ignore[arg-type]
             return ToolOutcome(content=result.content, sources=result.sources)
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001
+            # Broad on purpose: a tool fails through whatever its client raises,
+            # and the model can only act on a sentence, never on a traceback.
             logger.warning("Tool {} failed: {}", self.name, error)
             return ToolOutcome(content=f"{self.name} is unavailable right now.", ok=False)
 
@@ -309,7 +311,7 @@ class ToolRegistry:
 
         try:
             outcome = await tool.run(call.arguments, context)
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001
             # `BaseTool.run` already catches, so reaching here means a tool that
             # does not extend it. Belt and braces, because one careless tool
             # must not be able to kill an open stream.

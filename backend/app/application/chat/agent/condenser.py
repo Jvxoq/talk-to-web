@@ -113,7 +113,7 @@ class Condenser:
                             completion_tokens=chunk.usage.completion_tokens,
                         )
                 return "".join(parts).strip() or None
-            except Exception as error:
+            except Exception as error:  # noqa: BLE001
                 span.record_error(error)
                 logger.warning(f"Condenser failed on {self._model_name}: {error}")
                 return None

@@ -153,7 +153,7 @@ class UploadDocument:
                 continue
             try:
                 await self._remove_document(document.id, owner_id)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning(f"Could not replace document {document.id}: {exc}")
 
 

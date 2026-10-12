@@ -66,6 +66,7 @@ select = [
     "N",
     "UP",
     "B",
+    "BLE",
     "A",
     "C4",
     "ASYNC",
@@ -92,6 +93,11 @@ max-complexity = 8
 # not for the fact that they are exceptions. The name is part of the ubiquitous
 # language, so N818's "-Error" suffix is declined here and nowhere else.
 "app/domain/*/errors.py" = ["N818"]
+# Tracing is never on the critical path: every call into the Langfuse SDK
+# swallows whatever it raises, so a tracing outage cannot cost a reply. The
+# module docstring says so once, which beats a `noqa` on each of its seven
+# broad `except` blocks.
+"app/adapters/observability/langfuse_tracer.py" = ["BLE001"]
 
 [tool.mypy]
 python_version = "3.13"
