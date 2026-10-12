@@ -195,7 +195,11 @@ def frames(body: str) -> list[dict[str, Any]]:
 
 
 def client(
-    container: StubContainer, *, reraise: bool = True, authenticated: bool = True
+    container: StubContainer,
+    *,
+    reraise: bool = True,
+    authenticated: bool = True,
+    cookies: dict[str, str] | None = None,
 ) -> httpx.AsyncClient:
     """
     Build the real app around a stub container, without running the lifespan.
@@ -215,6 +219,7 @@ def client(
         transport=httpx.ASGITransport(app=app, raise_app_exceptions=reraise),
         base_url="http://test",
         headers=dict(AUTH) if authenticated else {},
+        cookies=cookies,
     )
 
 
