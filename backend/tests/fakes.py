@@ -552,6 +552,37 @@ class FakeEmbedder:
         return [float(len(text))] * self.dimensions
 
 
+class FakeDocumentLock:
+    """Serializes indexing against deletion for real, and records who held.
+
+    Same mechanism as the adapter - one `asyncio.Lock` per document id - so a
+    test proves the use cases' behaviour under mutual exclusion, not under a
+    no-op. The record is for the interleaving tests: a test that starts a
+    delete while an index holds the lock can assert the delete is still
+    waiting, which is the whole guarantee.
+    """
+
+    def __init__(self) -> None:
+        self._locks: dict[int, asyncio.Lock] = {}
+        self._holders: dict[int, int] = {}
+        # (document_id, held_now) per acquire, in order.
+        self.acquired: list[tuple[int, bool]] = []
+
+    @asynccontextmanager
+    async def hold(self, document_id: int) -> AsyncIterator[None]:
+        lock = self._locks.setdefault(document_id, asyncio.Lock())
+        self._holders[document_id] = self._holders.get(document_id, 0) + 1
+        try:
+            async with lock:
+                self.acquired.append((document_id, self._holders[document_id] == 1))
+                yield
+        finally:
+            self._holders[document_id] -= 1
+            if self._holders[document_id] == 0:
+                self._locks.pop(document_id, None)
+                self._holders.pop(document_id, None)
+
+
 class FakeVectorIndex:
     """Passages keyed by owner and by document, so a test can prove one owner
     cannot see another's, and one document's delete cannot touch another's.
