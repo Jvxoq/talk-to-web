@@ -78,19 +78,21 @@ export function useFileUpload(conversationId: number) {
   /**
    * Removes the attachment for good: passages, stored file and row.
    *
-   * The chip disappears first and does not come back if the request fails. The
-   * user asked for this document to be gone, and leaving the chip up to report
-   * a server-side failure would invite them to keep pressing a button that has
-   * already done what it can. The failure is surfaced in its place instead.
+   * The chip only goes when the server agrees. It is no longer optimistic:
+   * it now mirrors what the server holds - it is filled from the server on
+   * thread open - so clearing it before the server has would show a state
+   * that is not true. A failed delete leaves the chip up, which is the
+   * honest rendering of "still attached", and makes pressing again the
+   * obvious retry.
    */
   const clear = useCallback(async () => {
     const attached = file
-    setFile(null)
     setError(null)
     if (attached === null) return
 
     try {
       await deleteDocument(attached.id)
+      setFile(null)
     } catch (err) {
       setError(messageFrom(err, 'Could not remove that file.'))
     }
