@@ -1,15 +1,18 @@
 import { useEffect, useRef } from 'react'
 import { AnimatePresence } from 'motion/react'
 import type { Message } from '../types'
+import { ConversationSkeleton } from './ConversationSkeleton'
 import { EmptyState } from './EmptyState'
 import { MessageBubble } from './MessageBubble'
 
 interface ChatLogProps {
   messages: Message[]
+  /** The transcript is still being fetched — hold a skeleton over the log. */
+  isLoading: boolean
   isStreaming: boolean
 }
 
-export function ChatLog({ messages, isStreaming }: ChatLogProps) {
+export function ChatLog({ messages, isLoading, isStreaming }: ChatLogProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const lastIndex = messages.length - 1
 
@@ -28,8 +31,12 @@ export function ChatLog({ messages, isStreaming }: ChatLogProps) {
     // role="log" carries an implicit polite live region, which is the right
     // semantic for a transcript. No explicit aria-live: token-level updates
     // would otherwise re-announce the assistant turn on every frame.
-    <div className="chat" ref={scrollRef} role="log">
-      {messages.length === 0 && <EmptyState />}
+    // aria-busy holds announcements until the fetch resolves, so switching
+    // conversations reads as one arrival rather than a log of empty bubbles.
+    <div className="chat" ref={scrollRef} role="log" aria-busy={isLoading || undefined}>
+      {/* Skeleton first: it and "no messages yet" both render an empty
+          transcript, and only the first of the two is still on its way. */}
+      {isLoading ? <ConversationSkeleton /> : messages.length === 0 ? <EmptyState /> : null}
 
       <AnimatePresence initial={false}>
         {messages.map((message, i) => (

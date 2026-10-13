@@ -46,10 +46,24 @@ function toMessages(turns: MessageOut[]): Message[] {
   * `preloaded` is a transcript `useConversations` already fetched, which saves
   * a whole round trip on first load. Consumed once: switching away and back
   * refetches, because by then it is a stale snapshot.
+  *
+  * `isLoading` covers that reload and nothing else — not the send, which
+  * `isStreaming` already reports. It exists so the transcript can hold a
+  * skeleton through the gap instead of flashing the welcome state at a
+  * conversation that already has history.
   */
 export function useChat(model: Model, conversationId: number, preloaded?: ConversationOut | null) {
   const [messages, setMessages] = useState<Message[]>([])
   const [isStreaming, setIsStreaming] = useState(false)
+  // Which conversation id is still being fetched, or null once it has landed.
+  // Keyed by id rather than a bare boolean, so a slow reply belonging to the
+  // conversation the user just left cannot clear the flag on the one now on
+  // screen.
+  //
+  // `messages` cannot answer "is the transcript still loading?" on its own: an
+  // empty array is also a brand new conversation and a history that failed to
+  // load, and all three would otherwise render the same welcome state.
+  const [loadingId, setLoadingId] = useState<number | null>(conversationId)
   // An absolute deadline, not a duration: see `useCountdown`. Null when there
   // is no wait, which is the ordinary state. Not reset on a conversation
   // switch - the budget it tracks is per account, not per thread.
@@ -86,11 +100,16 @@ export function useChat(model: Model, conversationId: number, preloaded?: Conver
     abortRef.current = null
     setIsStreaming(false)
     setMessages([])
+    // After the StrictMode guard above: setting it earlier would let the
+    // throwaway remount re-raise the flag for a load that is already running,
+    // with nothing left to clear it.
+    setLoadingId(conversationId)
 
     const ready = preloadedRef.current
     if (ready && ready.id === conversationId && !consumedRef.current.has(conversationId)) {
       consumedRef.current.add(conversationId)
       setMessages(toMessages(ready.messages))
+      setLoadingId(null)
       return
     }
 
@@ -102,6 +121,13 @@ export function useChat(model: Model, conversationId: number, preloaded?: Conver
       .catch(() => {
         // Swallowed: a history that failed to load still leaves a usable,
         // empty composer, which beats blocking the switch entirely.
+      })
+      .finally(() => {
+        // Deliberately not guarded by `cancelled`, unlike the write above: the
+        // skeleton has to clear even when StrictMode's remount has already
+        // stranded this fetch, or the log would sit on it forever. The id check
+        // keeps a late arrival from clearing a newer load's flag.
+        setLoadingId((current) => (current === conversationId ? null : current))
       })
 
     return () => {
@@ -278,5 +304,9 @@ export function useChat(model: Model, conversationId: number, preloaded?: Conver
 
   const clearRestoreText = useCallback(() => setRestoreText(null), [])
 
-  return { messages, isStreaming, send, cooldownUntil, restoreText, clearRestoreText }
+  // Derived rather than held as its own boolean: it has to follow
+  // `conversationId`, which arrives as a prop and can change after mount.
+  const isLoading = loadingId === conversationId
+
+  return { messages, isLoading, isStreaming, send, cooldownUntil, restoreText, clearRestoreText }
 }
