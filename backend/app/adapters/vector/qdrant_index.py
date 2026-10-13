@@ -197,7 +197,7 @@ class QdrantVectorIndex:
                 # a correctness bug on top of the obvious one.
                 query_filter=_owned_by(owner_id, conversation_id),
             )
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001
             # Deliberately broad, preserving the legacy behaviour: a chat request
             # before anything has been uploaded must still answer, just without
             # retrieved context. Qdrant signals "no such collection" through

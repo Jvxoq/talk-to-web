@@ -101,7 +101,7 @@ async def transcribe(
         logger.warning("Rejected transcription session: daily call budget spent")
         with suppress(Exception):
             await transport.error("Service is busy right now - please try again later.")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.opt(exception=exc).warning("Transcription session failed")
         # Best effort only — the socket is quite likely already gone, and a
         # failed send here would replace the real cause in the logs.

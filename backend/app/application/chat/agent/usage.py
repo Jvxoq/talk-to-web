@@ -26,7 +26,7 @@ def emit_usage(*, model: str, usage: TokenUsage) -> None:
     """
     try:
         writer = get_stream_writer()
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001
         logger.debug(f"No stream writer available to report usage for {model}: {error}")
         return
     writer(
