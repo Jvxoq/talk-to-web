@@ -40,7 +40,7 @@ from app.application.chat.guardrails.tool_output import ToolOutputGuard
 from app.application.chat.models import ChatMessage, ModelChunk, TokenUsage, ToolCall
 from app.application.chat.tools.base import AgentTool, ToolRegistry, ToolRoutingPolicy
 from app.application.chat.use_cases.generate_reply import GenerateReply
-from app.domain.ingestion.entities import UploadedDocument
+from app.domain.ingestion.entities import DocumentStatus, UploadedDocument
 from app.domain.usage.errors import RateLimited
 from tests.fakes import (
     FakeAgentTool,
@@ -1513,6 +1513,19 @@ class TestTheModelIsToldWhatWasUploaded:
         await collect(use_case, user_input="what is in it?")
 
         assert "fresh.pdf" in user_turn(model)
+
+    async def test_failed_document_is_not_listed(self) -> None:
+        """Its passages never reached the index, so naming it sends the model to find nothing."""
+        model = FakeChatModel()
+        broken = an_upload("broken.pdf")
+        broken.status = DocumentStatus.FAILED
+        use_case = build_use_case(model, uow_factory=with_documents(broken))
+
+        await collect(use_case, user_input="what is in it?")
+
+        turn = user_turn(model)
+        assert "broken.pdf" not in turn
+        assert "uploaded no documents" in turn
 
     async def test_only_the_newest_documents_are_listed(self) -> None:
         # This rides on every message, so it is a per-turn cost for the whole

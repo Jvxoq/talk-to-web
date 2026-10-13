@@ -33,7 +33,7 @@ from app.application.common.uow import UnitOfWorkFactory
 from app.domain.chat.errors import UnsafeUserMessage
 from app.domain.chat.tool_routing import is_document_scoped
 from app.domain.chat.value_objects import UserMessage
-from app.domain.ingestion.entities import UploadedDocument
+from app.domain.ingestion.entities import DocumentStatus, UploadedDocument
 from app.observability.metrics import emit_reply_metrics
 
 
@@ -141,13 +141,17 @@ class GenerateReply:
 
         try:
             async with self._uow_factory() as uow:
-                return await uow.documents.list_by_conversation(owner_id, conversation_id)
+                documents = await uow.documents.list_by_conversation(owner_id, conversation_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 f"Could not read documents for owner {owner_id} "
                 f"in conversation {conversation_id}: {exc}"
             )
             return None
+        # A document whose indexing failed has nothing in the index, so telling
+        # the model it exists would send it to search for passages that are not
+        # there.
+        return [d for d in documents if d.status is not DocumentStatus.FAILED]
 
     async def _stream(
         self,
