@@ -34,6 +34,7 @@ from app.domain.ingestion.errors import (
     IngestionError,
     UnknownConversation,
     UnsupportedDocumentType,
+    VectorIndexUnavailable,
 )
 from app.domain.transcription.errors import (
     MalformedStartFrame,
@@ -67,6 +68,7 @@ _STATUS: dict[type[Exception], int] = {
     UnsafeUserMessage: status.HTTP_422_UNPROCESSABLE_CONTENT,
     MalformedStartFrame: status.HTTP_400_BAD_REQUEST,
     TranscriptionUnavailable: status.HTTP_503_SERVICE_UNAVAILABLE,
+    VectorIndexUnavailable: status.HTTP_503_SERVICE_UNAVAILABLE,
     # 401 for all three: "who are you" was not answered. A 403 would mean the
     # opposite - we know who you are and the answer is still no.
     InvalidCredentials: status.HTTP_401_UNAUTHORIZED,

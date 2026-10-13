@@ -51,6 +51,7 @@ from app.domain.ingestion.errors import (
     DocumentTooLarge,
     UnknownConversation,
     UnsupportedDocumentType,
+    VectorIndexUnavailable,
 )
 from app.domain.usage.errors import RateLimited
 from app.factory import create_app
@@ -618,6 +619,15 @@ class TestDocuments:
 
         assert response.status_code == 404
         assert response.json()["type"] == "DocumentNotFound"
+
+    async def test_unreachable_vector_store_is_503(self) -> None:
+        """Temporary, so a 503 the client can retry, not a 500 that reads as a bug."""
+        stub = StubUseCase(raises=VectorIndexUnavailable())
+
+        async with client(StubContainer(delete_document=stub)) as http:
+            response = await http.post("/documents/1/delete")
+
+        assert (response.status_code, response.json()["type"]) == (503, "VectorIndexUnavailable")
 
 
 class TestConversations:

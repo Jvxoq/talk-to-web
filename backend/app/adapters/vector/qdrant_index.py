@@ -5,7 +5,11 @@ from uuid import uuid4
 
 from loguru import logger
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.http.exceptions import ApiException, ResponseHandlingException
+from qdrant_client.http.exceptions import (
+    ApiException,
+    ResponseHandlingException,
+    UnexpectedResponse,
+)
 from qdrant_client.models import (
     Distance,
     FieldCondition,
@@ -17,6 +21,7 @@ from qdrant_client.models import (
     VectorParams,
 )
 
+from app.domain.ingestion.errors import VectorIndexUnavailable
 from app.domain.ingestion.value_objects import Chunk
 
 _OWNER_FIELD = "owner_id"
@@ -106,8 +111,8 @@ class QdrantVectorIndex:
                 wait=True,
             )
         except (ApiException, ResponseHandlingException) as error:
-            logger.error(f"Failed to prepare collection {self._collection}: {error}")
-            raise RuntimeError(f"Vector index preparation failed: {error}") from error
+            logger.error(f"Failed to prepare collection {self._collection}: {_describe(error)}")
+            raise _translate(error, "preparation") from error
 
     async def delete_document(self, document_id: int, owner_id: int) -> None:
         """Delete one document's points, leaving the owner's other documents in place."""
@@ -119,9 +124,10 @@ class QdrantVectorIndex:
             )
         except (ApiException, ResponseHandlingException) as error:
             logger.error(
-                f"Failed to delete document {document_id} from {self._collection}: {error}"
+                f"Failed to delete document {document_id} from {self._collection}: "
+                f"{_describe(error)}"
             )
-            raise RuntimeError(f"Vector index delete failed: {error}") from error
+            raise _translate(error, "delete") from error
         logger.debug(f"Deleted document {document_id} (owner {owner_id}) from {self._collection}")
 
     async def upsert(
@@ -162,8 +168,8 @@ class QdrantVectorIndex:
             # into 200 round trips.
             await self._client.upsert(collection_name=self._collection, points=points)
         except (ApiException, ResponseHandlingException) as error:
-            logger.error(f"Failed to upsert into {self._collection}: {error}")
-            raise RuntimeError(f"Vector index upsert failed: {error}") from error
+            logger.error(f"Failed to upsert into {self._collection}: {_describe(error)}")
+            raise _translate(error, "upsert") from error
 
     async def search(
         self,
@@ -209,12 +215,10 @@ class QdrantVectorIndex:
             if await self._collection_missing():
                 logger.info(f"Collection {self._collection} does not exist yet, nothing to search")
                 return []
-            # `repr`, not `str`: a timeout's message is empty, so `str` alone
-            # logged "failed ()" and lost the one fact that mattered.
             logger.opt(exception=error).error(
-                f"Search against {self._collection} failed: {error!r}"
+                f"Search against {self._collection} failed: {_describe(error)}"
             )
-            raise RuntimeError(f"Vector index search failed: {error!r}") from error
+            raise _translate(error, "search") from error
 
         return [
             Chunk(text=str(point.payload["original_text"]), source=str(point.payload["source"]))
@@ -237,6 +241,35 @@ class QdrantVectorIndex:
     async def aclose(self) -> None:
         """Close the Qdrant connection."""
         await self._client.close()
+
+
+def _translate(error: Exception, action: str) -> Exception:
+    """Sort a Qdrant failure into "the store is down" or "we sent something wrong".
+
+    `ResponseHandlingException` is the client's wrapper for every transport
+    failure - refused connection, timeout, dropped socket - and a 5xx is the
+    server failing on its own. Both are an outage, and both clear without a
+    code change. A 4xx is a request this code built wrong, which no retry
+    fixes, so it stays a plain error and surfaces as a 500.
+    """
+    if isinstance(error, ResponseHandlingException) or (
+        isinstance(error, UnexpectedResponse) and (error.status_code or 0) >= 500
+    ):
+        return VectorIndexUnavailable()
+    return RuntimeError(f"Vector index {action} failed: {_describe(error)}")
+
+
+def _describe(error: Exception) -> str:
+    """The error's type and cause in one line, for the log.
+
+    A timeout's `str` is empty, so a plain `{error}` logged "failed ()" and
+    lost the one fact that mattered. The transport wrapper's `repr` names the
+    httpx error inside it. Everything else gets its type and its `str`, which
+    for a Qdrant HTTP error includes the status and a capped slice of the body.
+    """
+    if isinstance(error, ResponseHandlingException):
+        return repr(error)
+    return f"{type(error).__name__}: {error}"
 
 
 def _owned_by(owner_id: int, conversation_id: int) -> Filter:

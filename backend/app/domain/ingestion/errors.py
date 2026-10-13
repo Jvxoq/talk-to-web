@@ -41,3 +41,16 @@ class UnknownConversation(IngestionError):
     def __init__(self, conversation_id: int) -> None:
         self.conversation_id = conversation_id
         super().__init__(f"Conversation {conversation_id} not found")
+
+
+class VectorIndexUnavailable(IngestionError):
+    """The vector store did not answer: a timeout, a refused connection, a 5xx.
+
+    Named apart from a plain failure because the caller can do something about
+    it - try again shortly - and because a 500 says the server has a bug, which
+    this is not. The upstream text stays out of the message on purpose: it
+    goes to the log, never to a reader.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("The document store is unavailable right now")

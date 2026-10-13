@@ -13,16 +13,16 @@ than its indexing, and the `ApiException` translation paths in `ensure`,
 are driven by patching the client's `query_points` instead.
 """
 
-import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING
 
 import httpx
 import pytest
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.http.exceptions import ResponseHandlingException
+from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 
 from app.adapters.vector.qdrant_index import QdrantVectorIndex
+from app.domain.ingestion.errors import VectorIndexUnavailable
 from app.domain.ingestion.value_objects import Chunk
 from tests.conftest import logged
 
@@ -56,6 +56,20 @@ SOUTH = [-1.0, 0.0, 0.0, 0.0]
 # What the HTTP client raises when Qdrant does not answer in time. Its `str` is
 # empty, which is the whole reason the log has to use `repr`.
 TIMEOUT = ResponseHandlingException(httpx.ReadTimeout(""))
+
+# What it raises when the cluster refuses the connection, as a suspended
+# Qdrant Cloud cluster does. Seen in production on a document delete.
+REFUSED = ResponseHandlingException(httpx.ConnectError(""))
+
+
+def http_error(status_code: int) -> UnexpectedResponse:
+    """A Qdrant HTTP error response, built the way the client builds one."""
+    return UnexpectedResponse(
+        status_code=status_code,
+        reason_phrase="Service Unavailable" if status_code == 503 else "Bad Request",
+        content=b'{"status":{"error":"boom"}}',
+        headers=httpx.Headers(),
+    )
 
 
 @pytest.fixture
@@ -262,15 +276,13 @@ class TestSearchFailure:
         assert (found, logged(log_records)) == ([], [])
 
     async def test_timeout_raises(self, index: QdrantVectorIndex, timing_out: None) -> None:
-        with pytest.raises(
-            RuntimeError, match=re.escape("Vector index search failed: " + repr(TIMEOUT))
-        ):
+        with pytest.raises(VectorIndexUnavailable, match="unavailable right now"):
             await texts(index, NORTH, ALICE)
 
     async def test_timeout_logs_type_and_trace(
         self, index: QdrantVectorIndex, timing_out: None, log_records: list["Record"]
     ) -> None:
-        with pytest.raises(RuntimeError):
+        with pytest.raises(VectorIndexUnavailable):
             await texts(index, NORTH, ALICE)
 
         assert logged(log_records) == [
@@ -287,8 +299,81 @@ class TestSearchFailure:
 
         monkeypatch.setattr(AsyncQdrantClient, "collection_exists", unreachable)
 
-        with pytest.raises(RuntimeError, match="Vector index search failed"):
+        with pytest.raises(VectorIndexUnavailable, match="unavailable right now"):
             await texts(index, NORTH, ALICE)
+
+
+class TestWriteFailure:
+    """A store that is down must read as "try again", not as a server bug.
+
+    Production: a delete hit a refused connection, the adapter raised a plain
+    `RuntimeError`, and the user got a 500.
+    """
+
+    @pytest.fixture
+    def failing_with(self, monkeypatch: pytest.MonkeyPatch) -> Callable[[Exception], None]:
+        """Make every Qdrant write raise `error`."""
+
+        def install(error: Exception) -> None:
+            async def fail(*args: object, **kwargs: object) -> None:
+                raise error
+
+            for method in ("delete", "upsert", "get_collections"):
+                monkeypatch.setattr(AsyncQdrantClient, method, fail)
+
+        return install
+
+    @pytest.mark.parametrize(
+        "error",
+        [REFUSED, TIMEOUT, http_error(503)],
+        ids=["refused", "timeout", "server-error"],
+    )
+    @pytest.mark.parametrize("write", ["delete", "upsert", "ensure"])
+    async def test_outage_is_unavailable(
+        self,
+        index: QdrantVectorIndex,
+        failing_with: Callable[[Exception], None],
+        error: Exception,
+        write: str,
+    ) -> None:
+        failing_with(error)
+
+        with pytest.raises(VectorIndexUnavailable, match="unavailable right now"):
+            await _write(index, write)
+
+    async def test_bad_request_stays_runtime_error(
+        self, index: QdrantVectorIndex, failing_with: Callable[[Exception], None]
+    ) -> None:
+        """A 4xx is a request this code built wrong. Retrying it changes nothing."""
+        failing_with(http_error(400))
+
+        with pytest.raises(RuntimeError, match="Vector index delete failed: UnexpectedResponse"):
+            await index.delete_document(DOC_A, ALICE)
+
+    async def test_refused_delete_logs_cause(
+        self,
+        index: QdrantVectorIndex,
+        failing_with: Callable[[Exception], None],
+        log_records: list["Record"],
+    ) -> None:
+        failing_with(REFUSED)
+
+        with pytest.raises(VectorIndexUnavailable):
+            await index.delete_document(DOC_A, ALICE)
+
+        assert logged(log_records) == [
+            ("ERROR", f"Failed to delete document {DOC_A} from {COLLECTION}: {REFUSED!r}", False)
+        ]
+
+
+async def _write(index: QdrantVectorIndex, write: str) -> None:
+    """Run one of the adapter's three writes by name."""
+    if write == "delete":
+        await index.delete_document(DOC_A, ALICE)
+    elif write == "upsert":
+        await index.upsert([chunk("x")], [NORTH], ALICE, DOC_A, THREAD)
+    else:
+        await index.ensure(DIMENSIONS)
 
 
 class TestDeleteDocument:
