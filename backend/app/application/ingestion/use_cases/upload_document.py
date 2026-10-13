@@ -7,7 +7,7 @@ from loguru import logger
 from app.application.common.uow import UnitOfWorkFactory
 from app.application.ingestion.dto import UploadDocumentInput, UploadDocumentResult
 from app.application.ingestion.ports import DocumentRemover, FileStorage, RateLimiter
-from app.domain.ingestion.entities import UploadedDocument
+from app.domain.ingestion.entities import DocumentStatus, UploadedDocument
 from app.domain.ingestion.errors import UnknownConversation, UnsupportedDocumentType
 from app.domain.ingestion.value_objects import DocumentName
 
@@ -128,6 +128,8 @@ class UploadDocument:
             reference=reference,
             owner_id=data.owner_id,
             conversation_id=data.conversation_id,
+            # Stored is not searchable yet. `IndexDocument` moves it on.
+            status=DocumentStatus.INDEXING,
         )
         async with self._uow_factory() as uow:
             stored = await uow.documents.add(record)

@@ -4,7 +4,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
-from app.domain.ingestion.entities import UploadedDocument
+from app.domain.ingestion.entities import DocumentStatus, UploadedDocument
 
 
 class FileUploadResponse(BaseModel):
@@ -22,6 +22,9 @@ class DocumentOut(BaseModel):
     name: str
     chunks_indexed: int
     created_at: datetime | None = None
+    # "indexing", "ready" or "failed". The upload answers before indexing
+    # runs, so this is how the client learns whether the file became searchable.
+    status: DocumentStatus = DocumentStatus.READY
 
     @classmethod
     def from_domain(cls, document: UploadedDocument) -> "DocumentOut":

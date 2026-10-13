@@ -783,6 +783,31 @@ a.source-chip:hover {
   white-space: nowrap;
 }
 
+.attachment-status {
+  flex-shrink: 0;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-tab);
+  color: var(--color-muted);
+}
+
+/* The right padding is sized for the remove button, which only a ready chip has. */
+.attachment-chip:not(.is-ready) {
+  padding-right: var(--space-1);
+}
+
+.attachment-chip.is-failed {
+  border-left: 4px solid var(--color-danger);
+}
+
+.attachment-chip.is-failed .attachment-status {
+  color: var(--color-primary);
+}
+
+.attachment-reason {
+  color: var(--color-muted);
+}
+
 /* 24px of visual chrome, 44px of touch target via the expanded pseudo-element —
    padding the chip out to 44px would bloat the strip. */
 .attachment-remove {

@@ -32,7 +32,7 @@ from app.adapters.persistence.uow import SqlAlchemyUnitOfWork
 from app.domain.chat.entities import Conversation, Message
 from app.domain.identity.entities import RefreshToken, User
 from app.domain.identity.value_objects import Email
-from app.domain.ingestion.entities import UploadedDocument
+from app.domain.ingestion.entities import DocumentStatus, UploadedDocument
 from tests.adapters.conftest import make_user
 
 NOW = datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
@@ -55,8 +55,12 @@ class FailingCommitSession(AsyncSession):
         raise OperationalError("COMMIT", {}, Exception("connection lost"))
 
 
-def a_document(owner_id: int, name: str = "handbook.pdf") -> UploadedDocument:
-    return UploadedDocument(name=name, reference=f"uploads/{owner_id}/{name}", owner_id=owner_id)
+def a_document(
+    owner_id: int, name: str = "handbook.pdf", status: DocumentStatus = DocumentStatus.READY
+) -> UploadedDocument:
+    return UploadedDocument(
+        name=name, reference=f"uploads/{owner_id}/{name}", owner_id=owner_id, status=status
+    )
 
 
 def a_token(user_id: int, fingerprint: str) -> RefreshToken:
@@ -387,6 +391,58 @@ class TestSqlAlchemyDocumentRepository:
         assert loaded is not None
         assert loaded.chunks_indexed == 0
         assert loaded.summary == "", "a stranger must not be able to write a summary either"
+
+    async def test_status_survives_round_trip(
+        self, session: AsyncSession, owner: UserModel
+    ) -> None:
+        repository = SqlAlchemyDocumentRepository(session)
+        stored = await repository.add(a_document(owner.id, status=DocumentStatus.INDEXING))
+        assert stored.id is not None
+        session.expunge_all()
+
+        loaded = await repository.get(stored.id, owner.id)
+
+        assert loaded is not None
+        assert loaded.status is DocumentStatus.INDEXING
+
+    async def test_set_indexed_marks_ready(self, session: AsyncSession, owner: UserModel) -> None:
+        repository = SqlAlchemyDocumentRepository(session)
+        stored = await repository.add(a_document(owner.id, status=DocumentStatus.INDEXING))
+        assert stored.id is not None
+
+        await repository.set_indexed(stored.id, owner.id, 3, "")
+        session.expunge_all()
+
+        loaded = await repository.get(stored.id, owner.id)
+        assert loaded is not None
+        assert loaded.status is DocumentStatus.READY
+
+    async def test_set_failed_marks_failed(self, session: AsyncSession, owner: UserModel) -> None:
+        repository = SqlAlchemyDocumentRepository(session)
+        stored = await repository.add(a_document(owner.id, status=DocumentStatus.INDEXING))
+        assert stored.id is not None
+
+        await repository.set_failed(stored.id, owner.id)
+        session.expunge_all()
+
+        loaded = await repository.get(stored.id, owner.id)
+        assert loaded is not None
+        assert loaded.status is DocumentStatus.FAILED
+
+    async def test_set_failed_cannot_touch_another_owners_document(
+        self, session: AsyncSession, owner: UserModel
+    ) -> None:
+        stranger = await make_user(session, "stranger@example.com")
+        repository = SqlAlchemyDocumentRepository(session)
+        stored = await repository.add(a_document(owner.id))
+        assert stored.id is not None
+
+        await repository.set_failed(stored.id, stranger.id)
+        session.expunge_all()
+
+        loaded = await repository.get(stored.id, owner.id)
+        assert loaded is not None
+        assert loaded.status is DocumentStatus.READY
 
     async def test_delete_removes_the_document(
         self, session: AsyncSession, owner: UserModel

@@ -45,7 +45,7 @@ from app.application.ingestion.dto import (
 from app.domain.chat.entities import Conversation, Message
 from app.domain.chat.errors import ConversationNotFound
 from app.domain.identity.errors import InvalidToken
-from app.domain.ingestion.entities import UploadedDocument
+from app.domain.ingestion.entities import DocumentStatus, UploadedDocument
 from app.domain.ingestion.errors import (
     DocumentNotFound,
     DocumentTooLarge,
@@ -668,7 +668,12 @@ class TestConversations:
 
     async def test_the_attachment_is_returned_when_the_thread_has_one(self) -> None:
         attached = UploadedDocument(
-            name="a.pdf", reference="uploads/7/a.pdf", owner_id=7, id=3, chunks_indexed=12
+            name="a.pdf",
+            reference="uploads/7/a.pdf",
+            owner_id=7,
+            id=3,
+            chunks_indexed=12,
+            status=DocumentStatus.INDEXING,
         )
         stub = StubUseCase(returns=attached)
 
@@ -681,6 +686,7 @@ class TestConversations:
             "name": "a.pdf",
             "chunks_indexed": 12,
             "created_at": None,
+            "status": "indexing",
         }
         assert stub.calls[0] == (1, USER.user_id)
 

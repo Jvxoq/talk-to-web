@@ -10,7 +10,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { ArrowUp, Mic, Paperclip, X } from 'lucide-react'
 import { buttonClass } from '../../../components/ui'
 import { easeStandard, springs, timing } from '../../../lib/motion'
-import { useFileUpload } from '../hooks/useFileUpload'
+import { useFileUpload, type Attachment } from '../hooks/useFileUpload'
 import { useCountdown } from '../hooks/useCountdown'
 import { useModels } from '../hooks/useModels'
 import { isVoiceInputSupported, useVoiceInput } from '../hooks/useVoiceInput'
@@ -36,6 +36,15 @@ const stripMotion = {
   exit: { opacity: 0, height: 0 },
   transition: { duration: timing.standard, ease: easeStandard },
   style: { overflow: 'hidden' as const },
+}
+
+// "Uploading" covers both the request and the indexing behind it: the file is
+// not usable until both are done, so the difference is not the user's concern.
+const ATTACHMENT_LABEL: Record<Attachment['status'], string> = {
+  uploading: 'Uploading…',
+  indexing: 'Uploading…',
+  ready: 'Upload complete',
+  failed: 'Upload failed',
 }
 
 export function Composer({
@@ -112,10 +121,9 @@ export function Composer({
     if (file) void upload.upload(file)
   }
 
-  const showAttachmentStrip = Boolean(
-    upload.file || upload.isUploading || upload.error || sendWait > 0,
-  )
+  const showAttachmentStrip = Boolean(upload.attachment || upload.error || sendWait > 0)
   const showVoiceStrip = isRecording || isFinishing || Boolean(voice.error)
+  const attachment = upload.attachment
 
   return (
     <div className="composer-wrap">
@@ -123,25 +131,27 @@ export function Composer({
         <AnimatePresence initial={false}>
           {showAttachmentStrip && (
             <motion.div className="composer-strip" {...stripMotion}>
-              {upload.isUploading && <span className="status-label">Uploading…</span>}
-
-              {!upload.isUploading && upload.file && (
-                <span className="attachment-chip">
-                  <span className="attachment-name">{upload.file.name}</span>
-                  <button
-                    type="button"
-                    className="attachment-remove"
-                    onClick={() => void upload.clear()}
-                    aria-label="Remove attached file"
-                  >
-                    <X strokeWidth={2} aria-hidden="true" />
-                  </button>
+              {attachment && (
+                <span className={`attachment-chip is-${attachment.status}`} role="status">
+                  <span className="attachment-name">{attachment.name}</span>
+                  <span className="attachment-status">{ATTACHMENT_LABEL[attachment.status]}</span>
+                  {attachment.status === 'failed' && attachment.reason && (
+                    <span className="attachment-reason">{attachment.reason}</span>
+                  )}
+                  {attachment.status === 'ready' && (
+                    <button
+                      type="button"
+                      className="attachment-remove"
+                      onClick={() => void upload.clear()}
+                      aria-label="Remove attached file"
+                    >
+                      <X strokeWidth={2} aria-hidden="true" />
+                    </button>
+                  )}
                 </span>
               )}
 
-              {!upload.isUploading && upload.error && (
-                <span className="status-label is-error">{upload.error}</span>
-              )}
+              {upload.error && <span className="status-label is-error">{upload.error}</span>}
 
               {/* `role="status"` rather than `alert`: this updates every second,
                   and an assertive region would interrupt a screen reader on

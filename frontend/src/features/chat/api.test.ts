@@ -25,13 +25,32 @@ beforeEach(() => {
 describe('getAttachedDocument', () => {
   it('reads the document the server names, narrowed to what the chip needs', async () => {
     mockedFetch.mockResolvedValue(
-      ok({ id: 3, name: 'a.pdf', chunks_indexed: 12, created_at: '2026-08-06T00:00:00Z' }),
+      ok({
+        id: 3,
+        name: 'a.pdf',
+        chunks_indexed: 12,
+        created_at: '2026-08-06T00:00:00Z',
+        status: 'indexing',
+      }),
     )
 
     const attached = await getAttachedDocument(1)
 
     expect(mockedFetch).toHaveBeenCalledWith('/conversations/1/document')
-    expect(attached).toEqual({ id: 3, name: 'a.pdf' })
+    expect(attached).toEqual({ id: 3, name: 'a.pdf', status: 'indexing' })
+  })
+
+  it('reads a missing status as ready', async () => {
+    // A backend older than the field treated every row as searchable.
+    mockedFetch.mockResolvedValue(ok({ id: 3, name: 'a.pdf' }))
+
+    expect(await getAttachedDocument(1)).toEqual({ id: 3, name: 'a.pdf', status: 'ready' })
+  })
+
+  it('refuses a status it does not know', async () => {
+    mockedFetch.mockResolvedValue(ok({ id: 3, name: 'a.pdf', status: 'queued' }))
+
+    await expect(getAttachedDocument(1)).rejects.toThrow('Document: unknown status "queued"')
   })
 
   it('reads a null body as no attachment', async () => {
