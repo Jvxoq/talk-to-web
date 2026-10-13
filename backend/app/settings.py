@@ -230,10 +230,12 @@ class Settings(BaseSettings):
 
     # --- Spend limits ---
     # Not about password guessing, unlike the auth limit. Every reply and upload
-    # spends real money. Counted per signed-in user.
-    chat_rate_limit_requests: int = 3
+    # spends real money. Counted per signed-in user. Sized for someone trying the
+    # app out: tight enough that a script cannot run up a bill, loose enough that
+    # a reviewer testing quickly is not refused in the first minute.
+    chat_rate_limit_requests: int = 10
     chat_rate_limit_window_seconds: int = 60
-    upload_rate_limit_requests: int = 2
+    upload_rate_limit_requests: int = 5
     upload_rate_limit_window_seconds: int = 10 * 60
 
     # One ceiling shared by every account. Registration has no CAPTCHA, so the
