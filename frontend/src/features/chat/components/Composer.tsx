@@ -71,8 +71,13 @@ export function Composer({
   }, [])
 
   const voice = useVoiceInput(appendTranscript)
-  const isRecording = voice.status !== 'idle'
+  // Capturing drives every looping indicator: the mic ring, the voice dot,
+  // and the selected Talk style. `stopping` is the flush wait after Stop —
+  // the mic is already released, so all loops end at once.
+  const isRecording = voice.status === 'connecting' || voice.status === 'listening'
+  const isFinishing = voice.status === 'stopping'
   const voiceSupported = isVoiceInputSupported()
+  const talkDisabled = isStreaming || !voiceSupported || isFinishing
 
   const sendWait = useCountdown(cooldownUntil)
   const uploadWait = useCountdown(upload.cooldownUntil)
@@ -110,7 +115,7 @@ export function Composer({
   const showAttachmentStrip = Boolean(
     upload.file || upload.isUploading || upload.error || sendWait > 0,
   )
-  const showVoiceStrip = isRecording || Boolean(voice.error)
+  const showVoiceStrip = isRecording || isFinishing || Boolean(voice.error)
 
   return (
     <div className="composer-wrap">
@@ -168,6 +173,10 @@ export function Composer({
                   <span className="status-label">Listening…</span>
                   {voice.interim && <span className="voice-interim">{voice.interim}</span>}
                 </>
+              )}
+
+              {voice.status === 'stopping' && (
+                <span className="status-label">Finishing…</span>
               )}
 
               {voice.error && <span className="status-label is-error">{voice.error}</span>}
@@ -239,17 +248,19 @@ export function Composer({
                   className: 'talk-btn',
                 })}
                 onClick={voice.toggle}
-                disabled={isStreaming || !voiceSupported}
-                whileHover={{ x: -2, y: -2 }}
+                disabled={talkDisabled}
+                whileHover={talkDisabled ? undefined : { x: -2, y: -2 }}
                 whileTap={{ x: 0, y: 0 }}
                 transition={springs.press}
                 aria-pressed={isRecording}
                 title={
-                  voiceSupported
-                    ? isRecording
-                      ? 'Stop talking'
-                      : 'Talk to type'
-                    : "Voice input isn't supported in this browser"
+                  !voiceSupported
+                    ? "Voice input isn't supported in this browser"
+                    : isFinishing
+                      ? 'Finishing…'
+                      : isRecording
+                        ? 'Stop talking'
+                        : 'Talk to type'
                 }
               >
                 <Mic strokeWidth={2} aria-hidden="true" />
