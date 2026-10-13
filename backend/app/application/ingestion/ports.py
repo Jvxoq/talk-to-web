@@ -1,6 +1,7 @@
 """What the ingestion use cases need from the outside world."""
 
 from collections.abc import AsyncIterator, Sequence
+from contextlib import AbstractAsyncContextManager
 from typing import Protocol
 
 from app.domain.ingestion.entities import UploadedDocument
@@ -102,6 +103,35 @@ class DocumentRepository(Protocol):
         ...
 
     async def delete(self, document_id: int, owner_id: int) -> None: ...
+
+
+class DocumentLock(Protocol):
+    """Serializes indexing against deletion for one document.
+
+    `IndexDocument` writes a document's vectors at the end of a long run -
+    extraction and embedding take tens of seconds - and `DeleteDocument` can
+    arrive at any moment, including from the user pressing remove while the
+    indexing is still running. Without an ordering between them a delete that
+    lands mid-indexing removes what exists so far and reports success, and the
+    indexer then upserts every point anyway: orphaned vectors, retrievable on
+    every turn, with no row left for any later delete to find them by.
+
+    Both use cases hold this lock around their writes. The delete waits for an
+    indexing that is already writing, then cleans everything up; an indexing
+    that has not reached its writes yet finds the row gone when it re-checks
+    inside the lock and stops before upserting. Re-checking inside the lock is
+    the point of the port: only there is "the row still exists" true all the
+    way through to the upsert.
+    """
+
+    def hold(self, document_id: int) -> AbstractAsyncContextManager[None]:
+        """Hold the lock for one document for the duration of the context.
+
+        Synchronous and returning a context manager, not itself async: the
+        lock is taken when the caller enters the `async with`, which is what
+        keeps both use cases' hold sites readable as plain blocks.
+        """
+        ...
 
 
 class DocumentRemover(Protocol):

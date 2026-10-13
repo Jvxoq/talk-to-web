@@ -128,8 +128,10 @@ class TestRefreshAndLogout:
     async def test_refresh_reads_the_cookie_and_writes_a_new_one(self) -> None:
         stub = StubUseCase(returns=tokens(refresh="rotated-secret"))
 
-        async with client(StubContainer(refresh_session=stub)) as http:
-            response = await http.post("/auth/refresh", cookies={"refresh_token": "old-secret"})
+        async with client(
+            StubContainer(refresh_session=stub), cookies={"refresh_token": "old-secret"}
+        ) as http:
+            response = await http.post("/auth/refresh")
 
         assert response.status_code == 200
         assert stub.calls[0][0].refresh_token == "old-secret"
@@ -149,16 +151,20 @@ class TestRefreshAndLogout:
     async def test_a_rejected_refresh_token_is_a_401(self) -> None:
         stub = StubUseCase(raises=InvalidToken("session was already used"))
 
-        async with client(StubContainer(refresh_session=stub)) as http:
-            response = await http.post("/auth/refresh", cookies={"refresh_token": "stale"})
+        async with client(
+            StubContainer(refresh_session=stub), cookies={"refresh_token": "stale"}
+        ) as http:
+            response = await http.post("/auth/refresh")
 
         assert response.status_code == 401
 
     async def test_logout_revokes_and_clears_the_cookie(self) -> None:
         stub = StubUseCase()
 
-        async with client(StubContainer(revoke_session=stub)) as http:
-            response = await http.post("/auth/logout", cookies={"refresh_token": REFRESH_SECRET})
+        async with client(
+            StubContainer(revoke_session=stub), cookies={"refresh_token": REFRESH_SECRET}
+        ) as http:
+            response = await http.post("/auth/logout")
 
         assert response.status_code == 204
         assert stub.calls == [(REFRESH_SECRET,)]

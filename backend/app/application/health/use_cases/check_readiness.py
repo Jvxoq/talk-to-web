@@ -37,7 +37,7 @@ class CheckReadiness:
         try:
             async with asyncio.timeout(self._timeout_seconds):
                 await probe.check()
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001
             # Broad on purpose: a probe fails through whichever exception its
             # driver happens to raise, and a readiness check that only handles
             # the ones we predicted is a 500 waiting for an unfamiliar outage.

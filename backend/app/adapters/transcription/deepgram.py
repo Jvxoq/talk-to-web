@@ -108,7 +108,7 @@ class _DeepgramSession:
         await self._queue.put(None)
         try:
             await self._connection.send_close_stream()
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001
             # Best effort: the socket is very often already gone by the time we
             # get here, and failing to say goodbye is not worth an exception.
             logger.debug(f"Ignoring Deepgram close failure: {error}")

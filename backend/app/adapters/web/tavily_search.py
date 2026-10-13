@@ -37,7 +37,7 @@ class TavilyWebSearcher:
                 # disagree.
                 include_answer=True,
             )
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001
             # Deliberately broad, matching the posture of the other read paths:
             # search is an enhancement to an answer that is already streaming,
             # so a dead upstream costs grounding, never the reply. The tool

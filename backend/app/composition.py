@@ -22,6 +22,7 @@ from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from tavily import AsyncTavilyClient  # type: ignore[import-untyped]
 
+from app.adapters.concurrency.in_process_lock import InProcessDocumentLock
 from app.adapters.embedding.gemini_embedder import GeminiEmbedder
 from app.adapters.extraction.composite_extractor import CompositeTextExtractor
 from app.adapters.extraction.docx_extractor import DocxTextExtractor
@@ -365,7 +366,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Built before the container because three of its members take it.
         # Removing a document is one operation, and each caller re-deriving the
         # three steps is how one of them leaves the vectors behind.
-        delete_document = DeleteDocument(uow_factory, index=vector_index, storage=storage)
+        #
+        # The lock is what keeps that removal from racing the indexing: a
+        # delete that lands while the indexer is still embedding must not let
+        # the indexer's upsert orphan its own points afterwards. One instance
+        # shared by both use cases is the whole mechanism - two locks would
+        # serialize nothing.
+        document_lock = InProcessDocumentLock()
+        delete_document = DeleteDocument(
+            uow_factory, index=vector_index, storage=storage, lock=document_lock
+        )
 
         # Annotated as the API's Protocol, so mypy proves here that the concrete
         # container provides everything the routes ask for.
@@ -417,6 +427,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 # `DocumentSummarizer` port structurally. One cheap model does
                 # every shortening this app performs.
                 summarizer=condenser,
+                # The same instance `delete_document` holds: indexing against
+                # deletion is serialized per document by sharing one lock.
+                lock=document_lock,
             ),
             list_documents=ListDocuments(uow_factory),
             get_conversation_document=GetConversationDocument(uow_factory),

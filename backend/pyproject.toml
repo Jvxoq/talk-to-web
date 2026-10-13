@@ -43,6 +43,7 @@ dev = [
     "pytest>=8.3.4",
     "pytest-asyncio>=0.25.0",
     "pytest-cov>=6.0.0",
+    "pytest-timeout>=2.4.0",
     "pre-commit>=4.0.0",
     "ruff>=0.9.0",
 ]
@@ -66,6 +67,7 @@ select = [
     "N",
     "UP",
     "B",
+    "BLE",
     "A",
     "C4",
     "ASYNC",
@@ -92,6 +94,11 @@ max-complexity = 8
 # not for the fact that they are exceptions. The name is part of the ubiquitous
 # language, so N818's "-Error" suffix is declined here and nowhere else.
 "app/domain/*/errors.py" = ["N818"]
+# Tracing is never on the critical path: every call into the Langfuse SDK
+# swallows whatever it raises, so a tracing outage cannot cost a reply. The
+# module docstring says so once, which beats a `noqa` on each of its seven
+# broad `except` blocks.
+"app/adapters/observability/langfuse_tracer.py" = ["BLE001"]
 
 [tool.mypy]
 python_version = "3.13"
@@ -113,6 +120,19 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# A hung test fails instead of hanging CI. Needs `pytest-timeout` in dev deps:
+# without it this key is an unknown option and the suite errors at startup.
+timeout = 30
+filterwarnings = [
+    "error",
+    # Raised by Starlette when `fastapi.testclient` loads with `httpx` installed
+    # rather than `httpx2`, which Starlette's own warning names as the
+    # replacement. Not our code. Migration means installing `httpx2`.
+    "ignore::starlette.exceptions.StarletteDeprecationWarning",
+    # Our tests run Qdrant in local mode, where payload indexes are accepted
+    # but have no effect. Production uses server Qdrant, where they apply.
+    "ignore:Payload indexes have no effect in the local Qdrant:UserWarning",
+]
 # `uv run pytest` needs nothing running, and that stays true as the integration
 # suite grows: everything under `tests/integration/` is marked (by that
 # package's `pytest_collection_modifyitems`) and deselected here. Opt in with

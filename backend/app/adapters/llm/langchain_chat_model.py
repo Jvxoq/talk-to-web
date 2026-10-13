@@ -194,7 +194,7 @@ class LangChainChatModel:
                 prompt_tokens=reported.get("input_tokens", 0),
                 completion_tokens=reported.get("output_tokens", 0),
             )
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001
             logger.debug(f"Could not read usage for model {model}: {error}")
             return None
 

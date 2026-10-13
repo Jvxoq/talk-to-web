@@ -1,6 +1,7 @@
 """Ingestion use cases against fakes."""
 
-from collections.abc import AsyncIterator
+import asyncio
+from collections.abc import AsyncIterator, Sequence
 
 import pytest
 
@@ -19,8 +20,10 @@ from app.domain.ingestion.errors import (
     UnknownConversation,
     UnsupportedDocumentType,
 )
+from app.domain.ingestion.value_objects import Chunk
 from app.domain.usage.errors import RateLimited
 from tests.fakes import (
+    FakeDocumentLock,
     FakeDocumentRemover,
     FakeDocumentSummarizer,
     FakeEmbedder,
@@ -415,16 +418,27 @@ class TestIndexDocument:
         index: FakeVectorIndex | None = None,
         factory: UnitOfWorkSpy | None = None,
         summarizer: DocumentSummarizer | None = None,
+        embedder: FakeEmbedder | None = None,
+        lock: FakeDocumentLock | None = None,
+        document_id: int = 1,
+        owner_id: int = OWNER,
     ) -> IndexDocument:
+        factory = factory or UnitOfWorkSpy()
+        # Production always has a committed row by the time indexing runs:
+        # `UploadDocument` commits it before the route schedules this task,
+        # and the re-check inside the lock reads it. Seeded here because it is
+        # a precondition of indexing at all rather than anything under test.
+        factory.documents.rows.setdefault(document_id, existing_document(document_id, owner_id))
         return IndexDocument(
             extractor=FakeTextExtractor(text),
-            embedder=FakeEmbedder(),
+            embedder=embedder or FakeEmbedder(),
             index=index or FakeVectorIndex(),
             chunk_size=100,
             chunk_overlap=20,
             embedding_dimensions=3,
-            uow_factory=factory or UnitOfWorkSpy(),
+            uow_factory=factory,
             summarizer=summarizer or FakeDocumentSummarizer(),
+            lock=lock or FakeDocumentLock(),
         )
 
     async def test_indexes_every_chunk_exactly_once(self) -> None:
@@ -456,6 +470,8 @@ class TestIndexDocument:
         # still get exactly one vector.
         index = FakeVectorIndex()
         embedder = FakeEmbedder()
+        factory = UnitOfWorkSpy()
+        factory.documents.rows[1] = existing_document(1, OWNER)
         use_case = IndexDocument(
             extractor=FakeTextExtractor("x" * 2_000),
             embedder=embedder,
@@ -463,8 +479,9 @@ class TestIndexDocument:
             chunk_size=50,
             chunk_overlap=10,
             embedding_dimensions=3,
-            uow_factory=UnitOfWorkSpy(),
+            uow_factory=factory,
             summarizer=FakeDocumentSummarizer(),
+            lock=FakeDocumentLock(),
         )
 
         result = await use_case("uploads/a.pdf", "a.pdf", 1, OWNER, CONVERSATION)
@@ -486,13 +503,13 @@ class TestIndexDocument:
         removes one - never another upload.
         """
         index = FakeVectorIndex()
-        await self.build("first document text", index)(
+        await self.build("first document text", index, document_id=1)(
             "uploads/a.pdf", "a.pdf", 1, OWNER, CONVERSATION
         )
         first_count = len(index.chunks)
         assert first_count > 0
 
-        await self.build("second document text", index)(
+        await self.build("second document text", index, document_id=2)(
             "uploads/b.pdf", "b.pdf", 2, OWNER, CONVERSATION
         )
 
@@ -501,10 +518,12 @@ class TestIndexDocument:
 
     async def test_one_upload_does_not_wipe_another_account(self) -> None:
         index = FakeVectorIndex()
-        await self.build("owner text", index)("uploads/a.pdf", "a.pdf", 1, OWNER, CONVERSATION)
+        await self.build("owner text", index, document_id=1)(
+            "uploads/a.pdf", "a.pdf", 1, OWNER, CONVERSATION
+        )
         assert index.by_owner[OWNER]
 
-        await self.build("stranger text", index)(
+        await self.build("stranger text", index, document_id=2, owner_id=STRANGER)(
             "uploads/b.pdf", "b.pdf", 2, STRANGER, CONVERSATION
         )
 
@@ -608,6 +627,127 @@ class TestIndexDocument:
         ]
         assert await index.search([0.0], 3, 0.5, STRANGER, CONVERSATION) == []
 
+    async def test_a_delete_that_lands_while_embedding_wins(self) -> None:
+        """The bug this lock exists for.
+
+        Indexing spends tens of seconds embedding before it writes anything.
+        A delete that arrives in that window removes the row and reports
+        success - and without the lock the indexer would then upsert every
+        point anyway, leaving vectors retrievable forever with no row left for
+        any later delete to find them by. The indexer must instead re-check
+        the row and stop.
+        """
+        factory = UnitOfWorkSpy()
+        factory.documents.rows[1] = existing_document(1, OWNER)
+        embedder = GatedEmbedder()
+        index = FakeVectorIndex()
+        # Both use cases hold the *same* lock - that sharing is the mechanism.
+        lock = FakeDocumentLock()
+
+        indexing = asyncio.create_task(
+            self.build("word " * 200, index, factory, embedder=embedder, lock=lock)(
+                "uploads/a.pdf", "a.pdf", 1, OWNER, CONVERSATION
+            )
+        )
+        # The indexer is now suspended inside its first embed call - before it
+        # has taken the lock, exactly like a real mid-embedding delete.
+        await embedder.entered.wait()
+
+        await DeleteDocument(factory, index=index, storage=FakeFileStorage(), lock=lock)(1, OWNER)
+        assert factory.documents.rows == {}, "the delete ran to completion here"
+
+        embedder.release.set()
+        result = await indexing
+
+        assert result.chunks_indexed == 0
+        assert index.chunks == [], "nothing may be upserted for a removed document"
+        assert factory.documents.rows == {}
+
+    async def test_a_delete_that_arrives_while_the_indexer_writes_waits(self) -> None:
+        """The other side of the same lock.
+
+        The indexer is holding the lock and inside its upsert. The delete
+        must wait for it, then remove what was written - not run first,
+        find nothing, and let the upsert orphan its points afterwards.
+        """
+        factory = UnitOfWorkSpy()
+        factory.documents.rows[1] = existing_document(1, OWNER)
+        index = GatedIndex()
+        lock = FakeDocumentLock()
+        indexer = self.build("word " * 200, index, factory, lock=lock)
+
+        indexing = asyncio.create_task(indexer("uploads/a.pdf", "a.pdf", 1, OWNER, CONVERSATION))
+        # The indexer is inside its upsert, holding the lock.
+        await index.entered_upsert.wait()
+
+        deleting = asyncio.create_task(
+            DeleteDocument(factory, index=index, storage=FakeFileStorage(), lock=lock)(1, OWNER)
+        )
+        # One scheduler turn: the fake's awaits never suspend, so an unlocked
+        # delete would now be finished. Waiting on the lock is the only way it
+        # can still be running.
+        await asyncio.sleep(0)
+        assert not deleting.done(), "the delete must wait for the indexer to leave the lock"
+
+        index.release_upsert.set()
+        indexed = await indexing
+        assert indexed.chunks_indexed > 0
+
+        # The delete has now taken the lock and is inside its vector delete -
+        # after its row read, before the row goes. The indexer's writes are
+        # provably complete and visible to it at this moment, which is the
+        # ordering the lock exists to guarantee.
+        await index.entered_delete.wait()
+        assert factory.documents.rows[1].chunks_indexed == indexed.chunks_indexed
+
+        index.release_delete.set()
+        await deleting
+        assert index.chunks == [], "the delete removes what the indexer wrote"
+        assert index.deleted_documents == [(1, OWNER)]
+        assert factory.documents.rows == {}
+
+
+class GatedEmbedder(FakeEmbedder):
+    """Stops inside its first embed call until the test lets it go."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def embed(self, text: str) -> list[float]:
+        self.entered.set()
+        await self.release.wait()
+        return await super().embed(text)
+
+
+class GatedIndex(FakeVectorIndex):
+    """Stops inside its upsert and inside its delete until the test lets go."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered_upsert = asyncio.Event()
+        self.release_upsert = asyncio.Event()
+        self.entered_delete = asyncio.Event()
+        self.release_delete = asyncio.Event()
+
+    async def upsert(
+        self,
+        chunks: Sequence[Chunk],
+        vectors: Sequence[list[float]],
+        owner_id: int,
+        document_id: int,
+        conversation_id: int | None = None,
+    ) -> None:
+        self.entered_upsert.set()
+        await self.release_upsert.wait()
+        await super().upsert(chunks, vectors, owner_id, document_id, conversation_id)
+
+    async def delete_document(self, document_id: int, owner_id: int) -> None:
+        self.entered_delete.set()
+        await self.release_delete.wait()
+        await super().delete_document(document_id, owner_id)
+
 
 class TestListDocuments:
     async def test_lists_only_this_owners_documents(self) -> None:
@@ -621,13 +761,27 @@ class TestListDocuments:
 
 
 class TestDeleteDocument:
+    def build(
+        self,
+        factory: UnitOfWorkSpy,
+        index: FakeVectorIndex | None = None,
+        storage: FakeFileStorage | None = None,
+        lock: FakeDocumentLock | None = None,
+    ) -> DeleteDocument:
+        return DeleteDocument(
+            factory,
+            index=index or FakeVectorIndex(),
+            storage=storage or FakeFileStorage(),
+            lock=lock or FakeDocumentLock(),
+        )
+
     async def test_removes_the_vectors_the_file_and_the_row(self) -> None:
         factory = UnitOfWorkSpy()
         factory.documents.rows[1] = existing_document(1, OWNER)
         index = FakeVectorIndex()
         storage = FakeFileStorage()
 
-        await DeleteDocument(factory, index=index, storage=storage)(1, OWNER)
+        await self.build(factory, index=index, storage=storage)(1, OWNER)
 
         assert factory.documents.rows == {}
         assert index.deleted_documents == [(1, OWNER)]
@@ -647,22 +801,22 @@ class TestDeleteDocument:
         )
         storage = FakeFileStorage()
 
-        await DeleteDocument(factory, index=FakeVectorIndex(), storage=storage)(1, OWNER)
+        await self.build(factory, storage=storage)(1, OWNER)
 
         assert factory.documents.rows == {}
         assert storage.deleted == []
 
     async def test_missing_document_is_reported_not_swallowed(self) -> None:
-        delete = DeleteDocument(UnitOfWorkSpy(), index=FakeVectorIndex(), storage=FakeFileStorage())
+        delete = self.build(UnitOfWorkSpy())
         with pytest.raises(DocumentNotFound):
             await delete(404, OWNER)
 
     async def test_a_stranger_cannot_delete_it(self) -> None:
         factory = UnitOfWorkSpy()
         factory.documents.rows[1] = existing_document(1, OWNER)
-        delete = DeleteDocument(factory, index=FakeVectorIndex(), storage=FakeFileStorage())
+        delete = self.build(factory)
 
-        with pytest.raises(DocumentNotFound):
+        with pytest.raises(DocumentNotFound, match="Document 1 not found"):
             await delete(1, STRANGER)
 
         assert 1 in factory.documents.rows

@@ -41,7 +41,7 @@ class DeleteConversation:
                 continue
             try:
                 await self._remove_document(document.id, owner_id)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 # Logged, not raised. A vector store that will not answer must
                 # not leave the user unable to delete their own conversation;
                 # the cascade still removes the row behind it.

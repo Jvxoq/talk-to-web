@@ -15,7 +15,9 @@ own copy is never patched by anything here.
 """
 
 import re
+import socket
 from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any
 
 import aiohttp
 import pytest
@@ -380,8 +382,18 @@ class TestRefusesPrivateTargets:
             await fetcher._fetch("http://localhost:6333/")
 
     async def test_a_host_that_does_not_resolve_is_refused_rather_than_dialled(
-        self, fetcher: AiohttpWebContentFetcher
+        self, fetcher: AiohttpWebContentFetcher, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # The resolver failure is injected, not observed: the suite never
+        # depends on what a real resolver does with `.invalid`, and the
+        # network gate forbids the question. `gaierror` is what the real
+        # resolver raises, so the mapping under test sees its true input.
+
+        def fail_dns(host: Any, *args: Any, **kwargs: Any) -> Any:
+            raise socket.gaierror(8, "Name or service not known")
+
+        monkeypatch.setattr(socket, "getaddrinfo", fail_dns)
+
         with pytest.raises(UnsafeUrl, match="does not resolve"):
             await fetcher._fetch("http://no-such-host.invalid/")
 

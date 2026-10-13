@@ -142,7 +142,7 @@ class GenerateReply:
         try:
             async with self._uow_factory() as uow:
                 return await uow.documents.list_by_conversation(owner_id, conversation_id)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 f"Could not read documents for owner {owner_id} "
                 f"in conversation {conversation_id}: {exc}"
@@ -252,7 +252,7 @@ class GenerateReply:
                     # graph running for a response nobody is reading.
                     outcome = "cancelled"
                     raise
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     # The HTTP response is already open, so raising here would only
                     # truncate the body. The client is told in-band instead.
                     outcome = "failed"
@@ -412,7 +412,7 @@ class GenerateReply:
             return True
         try:
             snapshot = await self._graph.aget_state(config)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # A checkpointer that cannot be read must not cost the user a reply;
             # the worst case is one duplicated system message.
             logger.warning(f"Could not read agent state, treating thread as new: {exc}")
