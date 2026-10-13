@@ -14,7 +14,7 @@ from app.adapters.persistence.models import (
 from app.domain.chat.entities import Conversation, Message
 from app.domain.identity.entities import RefreshToken, User
 from app.domain.identity.value_objects import Email
-from app.domain.ingestion.entities import UploadedDocument
+from app.domain.ingestion.entities import DocumentStatus, UploadedDocument
 
 
 def message_to_domain(row: MessageModel) -> Message:
@@ -142,6 +142,7 @@ def document_to_domain(row: DocumentModel) -> UploadedDocument:
         chunks_indexed=row.chunks_indexed,
         summary=row.summary,
         created_at=row.created_at,
+        status=DocumentStatus(row.status),
     )
 
 
@@ -154,6 +155,7 @@ def document_to_model(entity: UploadedDocument) -> DocumentModel:
         conversation_id=entity.conversation_id,
         chunks_indexed=entity.chunks_indexed,
         summary=entity.summary,
+        status=entity.status.value,
     )
     if entity.id is not None:
         model.id = entity.id

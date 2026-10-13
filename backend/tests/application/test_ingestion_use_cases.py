@@ -2,6 +2,8 @@
 
 import asyncio
 from collections.abc import AsyncIterator, Sequence
+from datetime import datetime, timedelta
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -13,7 +15,7 @@ from app.application.ingestion.use_cases.index_document import IndexDocument
 from app.application.ingestion.use_cases.list_documents import ListDocuments
 from app.application.ingestion.use_cases.upload_document import UploadDocument
 from app.domain.chat.entities import Conversation
-from app.domain.ingestion.entities import UploadedDocument
+from app.domain.ingestion.entities import DocumentStatus, UploadedDocument
 from app.domain.ingestion.errors import (
     DocumentNotFound,
     DocumentNotIndexable,
@@ -22,9 +24,12 @@ from app.domain.ingestion.errors import (
 )
 from app.domain.ingestion.value_objects import Chunk
 from app.domain.usage.errors import RateLimited
+from tests.conftest import logged
 from tests.fakes import (
+    FakeClock,
     FakeDocumentLock,
     FakeDocumentRemover,
+    FakeDocumentRepository,
     FakeDocumentSummarizer,
     FakeEmbedder,
     FakeFileStorage,
@@ -33,6 +38,9 @@ from tests.fakes import (
     FakeVectorIndex,
     UnitOfWorkSpy,
 )
+
+if TYPE_CHECKING:
+    from loguru import Record
 
 OWNER = 7
 STRANGER = 8
@@ -86,6 +94,15 @@ def seed_conversation(
     )
 
 
+INDEXING_TIMEOUT = timedelta(minutes=10)
+
+
+def get_document(factory: UnitOfWorkSpy, clock: FakeClock | None = None) -> GetConversationDocument:
+    return GetConversationDocument(
+        factory, clock=clock or FakeClock(), indexing_timeout=INDEXING_TIMEOUT
+    )
+
+
 def existing_document(document_id: int, owner_id: int) -> UploadedDocument:
     return UploadedDocument(
         name="a.pdf", reference="uploads/a.pdf", owner_id=owner_id, id=document_id
@@ -125,6 +142,19 @@ class TestUploadDocument:
         assert stored.name == "a.pdf"
         assert stored.owner_id == OWNER
         assert stored.chunks_indexed == 0
+
+    async def test_new_upload_starts_indexing(self) -> None:
+        """Stored is not searchable. The client waits on this status, not the 200."""
+        factory = UnitOfWorkSpy()
+        upload = upload_document(FakeFileStorage(), 1024, FakeRateLimiter(), factory)
+
+        result = await upload(
+            UploadDocumentInput(
+                "a.pdf", "application/pdf", bytes_stream(b"%PDF-1.7"), OWNER, CONVERSATION
+            )
+        )
+
+        assert factory.documents.rows[result.document_id].status is DocumentStatus.INDEXING
 
     async def test_accepts_a_content_type_with_parameters(self) -> None:
         # Browsers append charset and friends; strict equality would reject a
@@ -618,6 +648,55 @@ class TestIndexDocument:
             await self.build("   \n ", index)("uploads/a.pdf", "a.pdf", 1, OWNER, CONVERSATION)
         assert index.chunks == [], "an unindexable document must not write anything"
 
+    async def test_success_marks_document_ready(self) -> None:
+        factory = UnitOfWorkSpy()
+        factory.documents.rows[1] = indexing_document(1)
+
+        await self.build("word " * 200, factory=factory)(
+            "uploads/a.pdf", "a.pdf", 1, OWNER, CONVERSATION
+        )
+
+        assert factory.documents.rows[1].status is DocumentStatus.READY
+
+    async def test_empty_scan_marks_document_failed(self) -> None:
+        """The upload already answered 200, so the row is the only place this can show."""
+        factory = UnitOfWorkSpy()
+        factory.documents.rows[1] = indexing_document(1)
+
+        with pytest.raises(DocumentNotIndexable, match=r"No extractable text in a\.pdf"):
+            await self.build("   \n ", factory=factory)(
+                "uploads/a.pdf", "a.pdf", 1, OWNER, CONVERSATION
+            )
+
+        assert factory.documents.rows[1].status is DocumentStatus.FAILED
+
+    async def test_embedder_outage_marks_document_failed(self) -> None:
+        factory = UnitOfWorkSpy()
+        factory.documents.rows[1] = indexing_document(1)
+
+        with pytest.raises(RuntimeError, match="embedder down"):
+            await self.build("word " * 200, factory=factory, embedder=ExplodingEmbedder())(
+                "uploads/a.pdf", "a.pdf", 1, OWNER, CONVERSATION
+            )
+
+        assert factory.documents.rows[1].status is DocumentStatus.FAILED
+
+    async def test_failed_status_write_keeps_original_error(
+        self, log_records: list["Record"]
+    ) -> None:
+        """A database that cannot record the failure must not hide what failed first."""
+        factory = UnitOfWorkSpy(documents=StatusWriteFails())
+        factory.documents.rows[1] = indexing_document(1)
+
+        with pytest.raises(RuntimeError, match="embedder down"):
+            await self.build("word " * 200, factory=factory, embedder=ExplodingEmbedder())(
+                "uploads/a.pdf", "a.pdf", 1, OWNER, CONVERSATION
+            )
+
+        assert logged(log_records) == [
+            ("WARNING", "Could not mark document 1 as failed: database down", False)
+        ]
+
     async def test_search_never_crosses_owners(self) -> None:
         index = FakeVectorIndex(hits=["a secret passage"])
         await self.build("owner text", index)("uploads/a.pdf", "a.pdf", 1, OWNER, CONVERSATION)
@@ -822,6 +901,22 @@ class TestDeleteDocument:
         assert 1 in factory.documents.rows
 
 
+class ExplodingEmbedder(FakeEmbedder):
+    async def embed(self, text: str) -> list[float]:
+        raise RuntimeError("embedder down")
+
+
+class StatusWriteFails(FakeDocumentRepository):
+    async def set_failed(self, document_id: int, owner_id: int) -> None:
+        raise RuntimeError("database down")
+
+
+def indexing_document(document_id: int) -> UploadedDocument:
+    document = existing_document(document_id, OWNER)
+    document.status = DocumentStatus.INDEXING
+    return document
+
+
 class TestGetConversationDocument:
     async def test_returns_attached_document(self) -> None:
         """The composer chip shows the one file the thread holds."""
@@ -836,7 +931,7 @@ class TestGetConversationDocument:
             )
         )
 
-        result = await GetConversationDocument(factory)(CONVERSATION, OWNER)
+        result = await get_document(factory)(CONVERSATION, OWNER)
 
         assert result == attached
 
@@ -845,11 +940,11 @@ class TestGetConversationDocument:
         factory = UnitOfWorkSpy()
         seed_conversation(factory)
 
-        assert await GetConversationDocument(factory)(CONVERSATION, OWNER) is None
+        assert await get_document(factory)(CONVERSATION, OWNER) is None
 
     async def test_missing_thread_raises_unknown(self) -> None:
         with pytest.raises(UnknownConversation, match="Conversation 404 not found"):
-            await GetConversationDocument(UnitOfWorkSpy())(404, OWNER)
+            await get_document(UnitOfWorkSpy())(404, OWNER)
 
     async def test_stranger_cannot_read_attachment(self) -> None:
         """A stranger's thread id must read as missing, never as another's file."""
@@ -865,4 +960,50 @@ class TestGetConversationDocument:
         )
 
         with pytest.raises(UnknownConversation, match="Conversation 42 not found"):
-            await GetConversationDocument(factory)(CONVERSATION, STRANGER)
+            await get_document(factory)(CONVERSATION, STRANGER)
+
+    async def test_reports_indexing_before_deadline(self) -> None:
+        clock = FakeClock()
+        factory = with_attachment(DocumentStatus.INDEXING, clock.current)
+        clock.advance(INDEXING_TIMEOUT.total_seconds() - 1)
+
+        result = await get_document(factory, clock)(CONVERSATION, OWNER)
+
+        assert result is not None
+        assert result.status is DocumentStatus.INDEXING
+
+    async def test_stale_indexing_reads_as_failed(self) -> None:
+        """A background task that died with its process writes nothing, ever."""
+        clock = FakeClock()
+        factory = with_attachment(DocumentStatus.INDEXING, clock.current)
+        clock.advance(INDEXING_TIMEOUT.total_seconds() + 1)
+
+        result = await get_document(factory, clock)(CONVERSATION, OWNER)
+
+        assert result is not None
+        assert result.status is DocumentStatus.FAILED
+
+    async def test_old_ready_document_stays_ready(self) -> None:
+        clock = FakeClock()
+        factory = with_attachment(DocumentStatus.READY, clock.current)
+        clock.advance(INDEXING_TIMEOUT.total_seconds() * 100)
+
+        result = await get_document(factory, clock)(CONVERSATION, OWNER)
+
+        assert result is not None
+        assert result.status is DocumentStatus.READY
+
+
+def with_attachment(status: DocumentStatus, created_at: datetime) -> UnitOfWorkSpy:
+    factory = UnitOfWorkSpy()
+    seed_conversation(factory)
+    factory.documents.rows[1] = UploadedDocument(
+        name="a.pdf",
+        reference="uploads/7/a.pdf",
+        owner_id=OWNER,
+        conversation_id=CONVERSATION,
+        id=1,
+        created_at=created_at,
+        status=status,
+    )
+    return factory

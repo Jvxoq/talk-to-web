@@ -143,4 +143,8 @@ class DocumentModel(Base):
     # and the domain entity never has to model an absent summary separately
     # from an empty one.
     summary: Mapped[str] = mapped_column(Text, default="", server_default="")
+    # `DocumentStatus` by value. A plain string rather than a Postgres enum, so
+    # adding a state later is a code change and not an `ALTER TYPE`. Existing
+    # rows read as "ready" through the server default.
+    status: Mapped[str] = mapped_column(String(16), default="ready", server_default="ready")
     created_at: Mapped[datetime] = mapped_column(_TIMESTAMP, default=_utc_now)

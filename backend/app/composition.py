@@ -8,6 +8,7 @@ import re
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
+from datetime import timedelta
 
 import aiohttp
 from fastapi import FastAPI
@@ -432,7 +433,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 lock=document_lock,
             ),
             list_documents=ListDocuments(uow_factory),
-            get_conversation_document=GetConversationDocument(uow_factory),
+            get_conversation_document=GetConversationDocument(
+                uow_factory,
+                clock=clock,
+                indexing_timeout=timedelta(seconds=settings.document_indexing_timeout_seconds),
+            ),
             delete_document=delete_document,
             transcribe_stream=TranscribeStream(
                 transcriber=transcriber,

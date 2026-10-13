@@ -251,6 +251,10 @@ class Settings(BaseSettings):
     # two, which is the unit a question is answered from.
     chunk_size: int = 1_400
     chunk_overlap: int = 200
+    # How long an upload may stay "indexing" before it is reported as failed.
+    # Indexing is a background task that dies with the process and then writes
+    # nothing, so without a deadline the client would wait on it forever.
+    document_indexing_timeout_seconds: int = 600
 
     @model_validator(mode="after")
     def _default_websocket_origins_to_cors(self) -> "Settings":

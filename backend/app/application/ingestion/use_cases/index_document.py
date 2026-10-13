@@ -70,7 +70,41 @@ class IndexDocument:
         Returns zero chunks indexed when the document was removed while this
         was embedding: the removal won, and writing the points then would
         orphan them - no row left for any later delete to find them by.
+
+        Any failure marks the document failed before it propagates. This runs
+        after the upload has answered, so the row is the only place the client
+        can learn that the file it was shown never became searchable.
         """
+        try:
+            return await self._index_document(
+                reference, name, document_id, owner_id, conversation_id
+            )
+        except Exception:
+            await self._mark_failed(document_id, owner_id)
+            raise
+
+    async def _mark_failed(self, document_id: int, owner_id: int) -> None:
+        """Record the failure, without letting a second failure hide the first.
+
+        The original exception is the one worth seeing, and it is re-raised by
+        the caller. If the database is what failed, this write fails too, and
+        the indexing deadline in `GetConversationDocument` reports it instead.
+        """
+        try:
+            async with self._uow_factory() as uow:
+                await uow.documents.set_failed(document_id, owner_id)
+                await uow.commit()
+        except Exception as error:  # noqa: BLE001
+            logger.warning("Could not mark document {} as failed: {}", document_id, error)
+
+    async def _index_document(
+        self,
+        reference: str,
+        name: str,
+        document_id: int,
+        owner_id: int,
+        conversation_id: int,
+    ) -> IndexDocumentResult:
         logger.debug("Indexing {} from {} for owner {}", name, reference, owner_id)
 
         content = await self._extractor.extract(reference)

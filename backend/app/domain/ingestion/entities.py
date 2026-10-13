@@ -3,7 +3,8 @@
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
+from enum import StrEnum
 
 from app.domain.ingestion.value_objects import Chunk, DocumentName
 
@@ -59,6 +60,20 @@ class Document:
                 return
 
 
+class DocumentStatus(StrEnum):
+    """Where an upload is on its way to being searchable.
+
+    The upload request answers before indexing runs, so "stored" and
+    "searchable" are two different moments, and the client needs to tell them
+    apart: a chip that showed the file the moment it was stored claimed a
+    document the model could not read, and stayed up when indexing failed.
+    """
+
+    INDEXING = "indexing"
+    READY = "ready"
+    FAILED = "failed"
+
+
 @dataclass(slots=True)
 class UploadedDocument:
     """
@@ -93,3 +108,22 @@ class UploadedDocument:
     # a web search.
     summary: str = ""
     created_at: datetime | None = None
+    # `READY` by default because every row written before this field existed
+    # was indexed or abandoned with no record of which; reading them as ready
+    # is the behaviour they had. A new upload is recorded as `INDEXING`.
+    status: DocumentStatus = DocumentStatus.READY
+
+    def status_at(self, now: datetime, indexing_timeout: timedelta) -> DocumentStatus:
+        """The status, with an indexing run that outlived its deadline read as failed.
+
+        Indexing runs as a background task that dies with the process, and a
+        process that dies writes nothing - so a row can say `INDEXING` forever.
+        Past the deadline, nothing is still working on it.
+        """
+        if (
+            self.status is DocumentStatus.INDEXING
+            and self.created_at is not None
+            and now - self.created_at > indexing_timeout
+        ):
+            return DocumentStatus.FAILED
+        return self.status

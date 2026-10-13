@@ -23,7 +23,7 @@ from app.domain.chat.entities import Conversation, Message
 from app.domain.identity.entities import RefreshToken, User
 from app.domain.identity.errors import InvalidToken
 from app.domain.identity.value_objects import Email
-from app.domain.ingestion.entities import UploadedDocument
+from app.domain.ingestion.entities import DocumentStatus, UploadedDocument
 from app.domain.ingestion.value_objects import Chunk, DocumentName
 from app.domain.transcription.entities import AudioFormat, Transcript
 from app.domain.usage.errors import RateLimited
@@ -251,6 +251,12 @@ class FakeDocumentRepository:
         if row is not None and row.owner_id == owner_id:
             row.chunks_indexed = count
             row.summary = summary
+            row.status = DocumentStatus.READY
+
+    async def set_failed(self, document_id: int, owner_id: int) -> None:
+        row = self.rows.get(document_id)
+        if row is not None and row.owner_id == owner_id:
+            row.status = DocumentStatus.FAILED
 
     async def delete(self, document_id: int, owner_id: int) -> None:
         row = self.rows.get(document_id)

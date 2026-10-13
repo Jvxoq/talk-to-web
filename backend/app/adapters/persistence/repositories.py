@@ -29,7 +29,7 @@ from app.adapters.persistence.models import (
 from app.domain.chat.entities import Conversation, Message
 from app.domain.identity.entities import RefreshToken, User
 from app.domain.identity.value_objects import Email
-from app.domain.ingestion.entities import UploadedDocument
+from app.domain.ingestion.entities import DocumentStatus, UploadedDocument
 
 
 class SqlAlchemyConversationRepository:
@@ -188,6 +188,9 @@ class SqlAlchemyDocumentRepository:
     async def set_indexed(self, document_id: int, owner_id: int, count: int, summary: str) -> None:
         """Record what indexing produced: how many chunks, and what it is about.
 
+        Marks the document ready in the same statement: the chunk count landing
+        is the moment it became searchable.
+
         One statement rather than two, because both values are written at the
         same moment by the same caller and a second round trip would buy
         nothing. Scoped by owner like every other method here.
@@ -195,7 +198,15 @@ class SqlAlchemyDocumentRepository:
         await self._session.execute(
             update(DocumentModel)
             .where(DocumentModel.id == document_id, DocumentModel.owner_id == owner_id)
-            .values(chunks_indexed=count, summary=summary)
+            .values(chunks_indexed=count, summary=summary, status=DocumentStatus.READY.value)
+        )
+
+    async def set_failed(self, document_id: int, owner_id: int) -> None:
+        """Record that indexing gave up, so the client stops waiting for it."""
+        await self._session.execute(
+            update(DocumentModel)
+            .where(DocumentModel.id == document_id, DocumentModel.owner_id == owner_id)
+            .values(status=DocumentStatus.FAILED.value)
         )
 
     async def delete(self, document_id: int, owner_id: int) -> None:
