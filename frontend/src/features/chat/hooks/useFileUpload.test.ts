@@ -100,6 +100,23 @@ describe('useFileUpload', () => {
     expect(result.current.file).toBeNull()
   })
 
+  it('clear keeps the chip when the delete fails, since it still exists', async () => {
+    // The chip mirrors what the server holds - it is filled from the server on
+    // thread open - so clearing it before the server has would show a state
+    // that is not true. Keeping it makes pressing again the obvious retry.
+    mockedGet.mockResolvedValue({ id: 3, name: 'a.pdf' })
+    mockedDelete.mockRejectedValue(new ApiError(500, 'storage refused'))
+    const { result } = render(1)
+    await waitFor(() => expect(result.current.file).not.toBeNull())
+
+    await act(async () => {
+      await result.current.clear()
+    })
+
+    expect(result.current.file).toEqual({ id: 3, name: 'a.pdf' })
+    expect(result.current.error).toBe('storage refused')
+  })
+
   it('an upload lands on the chip for the thread it was uploaded into', async () => {
     mockedUpload.mockResolvedValue({ id: 5, name: 'new.pdf' })
     const { result } = render(1)
