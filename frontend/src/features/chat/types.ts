@@ -56,8 +56,15 @@ export interface Message {
   usage?: Usage
 }
 
+/**
+ * Where a stored document is on its way to being searchable. The upload
+ * answers before indexing runs, so a 200 only means "stored".
+ */
+export type DocumentStatus = 'indexing' | 'ready' | 'failed'
+
 export interface UploadedFile {
   name: string
   /** The row this upload created. Removing the chip deletes it by this id. */
   id: number
+  status: DocumentStatus
 }

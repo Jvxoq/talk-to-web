@@ -2,7 +2,14 @@ import { ApiError } from '../../lib/http'
 import { authorizedFetch } from '../../lib/session'
 import { parseSummarizing } from './summarizing'
 import { parseUsage } from './usage'
-import type { Model, Summarizing, ToolActivity, UploadedFile, Usage } from './types'
+import type {
+  DocumentStatus,
+  Model,
+  Summarizing,
+  ToolActivity,
+  UploadedFile,
+  Usage,
+} from './types'
 
 const API_URL = import.meta.env.VITE_API_URL ?? '/generate/text/'
 const UPLOAD_URL = import.meta.env.VITE_UPLOAD_URL ?? '/upload/file/'
@@ -191,7 +198,8 @@ export async function uploadPdf(
   if (typeof id !== 'number') {
     throw new ApiError(0, 'Upload: missing "document_id"')
   }
-  return { name: file.name, id }
+  // Stored, not yet searchable: indexing runs after this response is sent.
+  return { name: file.name, id, status: 'indexing' }
 }
 
 /**
@@ -228,7 +236,20 @@ export async function getAttachedDocument(conversationId: number): Promise<Uploa
   if (typeof id !== 'number' || typeof name !== 'string') {
     throw new ApiError(0, 'Document: missing "id" or "name"')
   }
-  return { id, name }
+  return { id, name, status: statusOf(record.status) }
+}
+
+const DOCUMENT_STATUSES: readonly DocumentStatus[] = ['indexing', 'ready', 'failed']
+
+// A server older than the status field sends none. It treated every row as
+// searchable, so "ready" is what that absence meant.
+function statusOf(value: unknown): DocumentStatus {
+  if (value === undefined) return 'ready'
+  const status = DOCUMENT_STATUSES.find((known) => known === value)
+  if (status === undefined) {
+    throw new ApiError(0, `Document: unknown status ${JSON.stringify(value)}`)
+  }
+  return status
 }
 
 /**
