@@ -197,22 +197,42 @@ class QdrantVectorIndex:
                 # a correctness bug on top of the obvious one.
                 query_filter=_owned_by(owner_id, conversation_id),
             )
-        except Exception as error:  # noqa: BLE001
-            # Deliberately broad, preserving the legacy behaviour: a chat request
-            # before anything has been uploaded must still answer, just without
-            # retrieved context. Qdrant signals "no such collection" through
-            # several different exception types depending on transport, so
-            # narrowing here would reintroduce a 500 on an empty knowledge base.
-            logger.warning(
-                f"Search against {self._collection} failed ({error}), returning empty results"
+        except Exception as error:
+            # Broad because Qdrant reports a missing collection through a
+            # different exception type per transport. Nothing is swallowed by
+            # it: only a collection that is confirmed absent answers empty,
+            # which is what a chat before the first upload needs. Anything
+            # else - a timeout, a dropped connection, a suspended cluster -
+            # raises, because an empty result would tell the model the
+            # user's document holds nothing relevant, and the user would get
+            # a confident wrong answer instead of an error.
+            if await self._collection_missing():
+                logger.info(f"Collection {self._collection} does not exist yet, nothing to search")
+                return []
+            # `repr`, not `str`: a timeout's message is empty, so `str` alone
+            # logged "failed ()" and lost the one fact that mattered.
+            logger.opt(exception=error).error(
+                f"Search against {self._collection} failed: {error!r}"
             )
-            return []
+            raise RuntimeError(f"Vector index search failed: {error!r}") from error
 
         return [
             Chunk(text=str(point.payload["original_text"]), source=str(point.payload["source"]))
             for point in response.points
             if point.payload
         ]
+
+    async def _collection_missing(self) -> bool:
+        """Whether the collection is confirmed absent.
+
+        `False` when the check itself fails: a store that cannot answer this
+        cannot answer a search either, and that is an outage, not an empty
+        knowledge base.
+        """
+        try:
+            return not await self._client.collection_exists(self._collection)
+        except Exception:  # noqa: BLE001 - any failure here means "unknown", never "missing"
+            return False
 
     async def aclose(self) -> None:
         """Close the Qdrant connection."""
