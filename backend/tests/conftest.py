@@ -2,9 +2,13 @@ import socket
 import sys
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import pytest
+from loguru import logger
+
+if TYPE_CHECKING:
+    from loguru import Record
 
 # Make `app` and `tests` importable when pytest is run from anywhere.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -70,3 +74,21 @@ def no_real_network(
     monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
     yield
     assert attempts == [], f"a test reached the real network: {attempts}"
+
+
+@pytest.fixture
+def log_records() -> Iterator[list["Record"]]:
+    """Every loguru record the test produces, for asserting what an `except` logged."""
+    records: list[Record] = []
+    sink = logger.add(lambda message: records.append(message.record), level="DEBUG")
+    yield records
+    logger.remove(sink)
+
+
+def logged(records: list["Record"], min_level: int = 30) -> list[tuple[str, str, bool]]:
+    """Level name, message and whether a traceback is attached, WARNING and above."""
+    return [
+        (record["level"].name, record["message"], record["exception"] is not None)
+        for record in records
+        if record["level"].no >= min_level
+    ]

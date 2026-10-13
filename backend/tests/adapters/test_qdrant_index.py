@@ -8,17 +8,26 @@ production, not against a dictionary that filters in Python.
 
 Not covered, because local mode does not implement them: payload index creation
 is a no-op here, so `ensure` is exercised for its collection handling rather
-than its indexing, and the `ApiException` translation paths need a server that
-can fail.
+than its indexing, and the `ApiException` translation paths in `ensure`,
+`upsert` and `delete_document` need a server that can fail. `search` failures
+are driven by patching the client's `query_points` instead.
 """
 
+import re
 from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
+import httpx
 import pytest
 from qdrant_client import AsyncQdrantClient
+from qdrant_client.http.exceptions import ResponseHandlingException
 
 from app.adapters.vector.qdrant_index import QdrantVectorIndex
 from app.domain.ingestion.value_objects import Chunk
+from tests.conftest import logged
+
+if TYPE_CHECKING:
+    from loguru import Record
 
 COLLECTION = "documents"
 DIMENSIONS = 4
@@ -44,6 +53,10 @@ NORTH = [1.0, 0.0, 0.0, 0.0]
 EAST = [0.0, 1.0, 0.0, 0.0]
 SOUTH = [-1.0, 0.0, 0.0, 0.0]
 
+# What the HTTP client raises when Qdrant does not answer in time. Its `str` is
+# empty, which is the whole reason the log has to use `repr`.
+TIMEOUT = ResponseHandlingException(httpx.ReadTimeout(""))
+
 
 @pytest.fixture
 async def index() -> AsyncIterator[QdrantVectorIndex]:
@@ -54,6 +67,16 @@ async def index() -> AsyncIterator[QdrantVectorIndex]:
         yield index
     finally:
         await index.aclose()
+
+
+@pytest.fixture
+def timing_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every search times out; the collection itself still exists."""
+
+    async def query_points(*args: object, **kwargs: object) -> None:
+        raise TIMEOUT
+
+    monkeypatch.setattr(AsyncQdrantClient, "query_points", query_points)
 
 
 def chunk(text: str, source: str = "doc.pdf") -> Chunk:
@@ -217,21 +240,55 @@ class TestSearch:
 
         assert found == ["alice"]
 
-    async def test_a_search_against_a_collection_that_does_not_exist_answers_empty(self) -> None:
-        # A chat request before anything has been uploaded must still answer,
-        # just without retrieved context. This is the reason the `except` in
-        # `search` is deliberately broad.
+
+class TestSearchFailure:
+    """An outage must surface as an error, never as "your document says nothing".
+
+    Production logged `Search against knowledge_base failed ()` twice and the
+    model answered as if the upload held nothing relevant: a timeout's `str`
+    is empty, and the broad `except` turned it into `[]`.
+    """
+
+    async def test_missing_collection_answers_empty(self, log_records: list["Record"]) -> None:
+        """A chat before the first upload must still answer, without a warning."""
         client = AsyncQdrantClient(location=":memory:")
         index = QdrantVectorIndex(client, "never-created")
 
-        assert (
-            await index.search(
-                NORTH, limit=3, score_threshold=0.0, owner_id=ALICE, conversation_id=THREAD
-            )
-            == []
+        found = await index.search(
+            NORTH, limit=3, score_threshold=0.0, owner_id=ALICE, conversation_id=THREAD
         )
-
         await index.aclose()
+
+        assert (found, logged(log_records)) == ([], [])
+
+    async def test_timeout_raises(self, index: QdrantVectorIndex, timing_out: None) -> None:
+        with pytest.raises(
+            RuntimeError, match=re.escape("Vector index search failed: " + repr(TIMEOUT))
+        ):
+            await texts(index, NORTH, ALICE)
+
+    async def test_timeout_logs_type_and_trace(
+        self, index: QdrantVectorIndex, timing_out: None, log_records: list["Record"]
+    ) -> None:
+        with pytest.raises(RuntimeError):
+            await texts(index, NORTH, ALICE)
+
+        assert logged(log_records) == [
+            ("ERROR", f"Search against {COLLECTION} failed: {TIMEOUT!r}", True)
+        ]
+
+    async def test_unreachable_store_raises(
+        self, index: QdrantVectorIndex, timing_out: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the existence check fails too, the store is down, not empty."""
+
+        async def unreachable(*args: object, **kwargs: object) -> bool:
+            raise ResponseHandlingException(httpx.ConnectError(""))
+
+        monkeypatch.setattr(AsyncQdrantClient, "collection_exists", unreachable)
+
+        with pytest.raises(RuntimeError, match="Vector index search failed"):
+            await texts(index, NORTH, ALICE)
 
 
 class TestDeleteDocument:
