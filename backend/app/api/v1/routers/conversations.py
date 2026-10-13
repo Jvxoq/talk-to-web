@@ -6,6 +6,7 @@ from app.api.dependencies import (
     CurrentUserDep,
     DeleteConversationDep,
     GetConversationDep,
+    GetConversationDocumentDep,
     ListConversationsDep,
     RecordExchangeDep,
     StartConversationDep,
@@ -17,6 +18,7 @@ from app.api.v1.schemas.conversations import (
     MessageCreate,
     MessageOut,
 )
+from app.api.v1.schemas.ingestion import DocumentOut
 from app.application.chat.dto import RecordExchangeInput, StartConversationInput
 
 router = APIRouter(tags=["conversations"])
@@ -51,6 +53,23 @@ async def read_conversation(
 ) -> ConversationDetailOut:
     conversation = await use_case(conversation_id, user.user_id)
     return ConversationDetailOut.from_domain(conversation)
+
+
+@router.get("/conversations/{conversation_id}/document")
+async def read_conversation_document(
+    conversation_id: int,
+    use_case: GetConversationDocumentDep,
+    user: CurrentUserDep,
+) -> DocumentOut | None:
+    """The attachment this thread currently holds, or `null` for none.
+
+    `null` rather than 404 for "no attachment": the client polls this when it
+    opens a thread, and an empty attachment is a normal state of a thread it
+    owns, not an error. A thread id that belongs to someone else is 404 - the
+    use case raises `UnknownConversation`, already mapped in `errors.py`.
+    """
+    document = await use_case(conversation_id, user.user_id)
+    return DocumentOut.from_domain(document) if document is not None else None
 
 
 @router.post("/conversations/{conversation_id}/messages", status_code=status.HTTP_201_CREATED)

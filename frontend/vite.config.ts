@@ -35,10 +35,11 @@ export default defineConfig({
       '/ws': { target: backendUrl, ws: true },
     },
   },
-  // Both units under test are plain modules — no DOM, so no jsdom dependency.
-  // A component test added later needs `environment: 'jsdom'` and the package.
+  // Plain modules run in node. A test that needs a DOM (a hook or a
+  // component) opts in per file with `// @vitest-environment jsdom`, so the
+  // rest of the suite does not pay for one.
   test: {
     environment: 'node',
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.{ts,tsx}'],
   },
 })

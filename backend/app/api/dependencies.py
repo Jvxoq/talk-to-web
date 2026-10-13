@@ -32,6 +32,7 @@ from app.application.identity.use_cases.refresh_session import RefreshSession
 from app.application.identity.use_cases.register_user import RegisterUser
 from app.application.identity.use_cases.revoke_session import RevokeSession
 from app.application.ingestion.use_cases.delete_document import DeleteDocument
+from app.application.ingestion.use_cases.get_conversation_document import GetConversationDocument
 from app.application.ingestion.use_cases.index_document import IndexDocument
 from app.application.ingestion.use_cases.list_documents import ListDocuments
 from app.application.ingestion.use_cases.upload_document import UploadDocument
@@ -82,6 +83,9 @@ class Container(Protocol):
 
     @property
     def list_documents(self) -> ListDocuments: ...
+
+    @property
+    def get_conversation_document(self) -> GetConversationDocument: ...
 
     @property
     def delete_document(self) -> DeleteDocument: ...
@@ -202,6 +206,10 @@ def get_list_documents(container: ContainerDep) -> ListDocuments:
     return container.list_documents
 
 
+def get_get_conversation_document(container: ContainerDep) -> GetConversationDocument:
+    return container.get_conversation_document
+
+
 def get_delete_document(container: ContainerDep) -> DeleteDocument:
     return container.delete_document
 
@@ -259,6 +267,9 @@ DeleteConversationDep = Annotated[DeleteConversation, Depends(get_delete_convers
 UploadDocumentDep = Annotated[UploadDocument, Depends(get_upload_document)]
 IndexDocumentDep = Annotated[IndexDocument, Depends(get_index_document)]
 ListDocumentsDep = Annotated[ListDocuments, Depends(get_list_documents)]
+GetConversationDocumentDep = Annotated[
+    GetConversationDocument, Depends(get_get_conversation_document)
+]
 DeleteDocumentDep = Annotated[DeleteDocument, Depends(get_delete_document)]
 TranscribeStreamDep = Annotated[TranscribeStream, Depends(get_transcribe_stream)]
 ChatModelsDep = Annotated[Sequence[str], Depends(get_chat_models)]

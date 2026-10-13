@@ -8,6 +8,7 @@ import pytest
 from app.application.ingestion.dto import UploadDocumentInput
 from app.application.ingestion.ports import DocumentSummarizer
 from app.application.ingestion.use_cases.delete_document import DeleteDocument
+from app.application.ingestion.use_cases.get_conversation_document import GetConversationDocument
 from app.application.ingestion.use_cases.index_document import IndexDocument
 from app.application.ingestion.use_cases.list_documents import ListDocuments
 from app.application.ingestion.use_cases.upload_document import UploadDocument
@@ -819,3 +820,49 @@ class TestDeleteDocument:
             await delete(1, STRANGER)
 
         assert 1 in factory.documents.rows
+
+
+class TestGetConversationDocument:
+    async def test_returns_attached_document(self) -> None:
+        """The composer chip shows the one file the thread holds."""
+        factory = UnitOfWorkSpy()
+        seed_conversation(factory)
+        attached = await factory.documents.add(
+            UploadedDocument(
+                name="a.pdf",
+                reference="uploads/7/a.pdf",
+                owner_id=OWNER,
+                conversation_id=CONVERSATION,
+            )
+        )
+
+        result = await GetConversationDocument(factory)(CONVERSATION, OWNER)
+
+        assert result == attached
+
+    async def test_empty_thread_returns_none(self) -> None:
+        """An empty attachment is a normal state, not an error."""
+        factory = UnitOfWorkSpy()
+        seed_conversation(factory)
+
+        assert await GetConversationDocument(factory)(CONVERSATION, OWNER) is None
+
+    async def test_missing_thread_raises_unknown(self) -> None:
+        with pytest.raises(UnknownConversation, match="Conversation 404 not found"):
+            await GetConversationDocument(UnitOfWorkSpy())(404, OWNER)
+
+    async def test_stranger_cannot_read_attachment(self) -> None:
+        """A stranger's thread id must read as missing, never as another's file."""
+        factory = UnitOfWorkSpy()
+        seed_conversation(factory)
+        await factory.documents.add(
+            UploadedDocument(
+                name="a.pdf",
+                reference="uploads/7/a.pdf",
+                owner_id=OWNER,
+                conversation_id=CONVERSATION,
+            )
+        )
+
+        with pytest.raises(UnknownConversation, match="Conversation 42 not found"):
+            await GetConversationDocument(factory)(CONVERSATION, STRANGER)

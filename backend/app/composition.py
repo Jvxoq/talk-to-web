@@ -72,6 +72,7 @@ from app.application.identity.use_cases.refresh_session import RefreshSession
 from app.application.identity.use_cases.register_user import RegisterUser
 from app.application.identity.use_cases.revoke_session import RevokeSession
 from app.application.ingestion.use_cases.delete_document import DeleteDocument
+from app.application.ingestion.use_cases.get_conversation_document import GetConversationDocument
 from app.application.ingestion.use_cases.index_document import IndexDocument
 from app.application.ingestion.use_cases.list_documents import ListDocuments
 from app.application.ingestion.use_cases.upload_document import UploadDocument
@@ -110,6 +111,7 @@ class AppContainer:
     upload_document: UploadDocument
     index_document: IndexDocument
     list_documents: ListDocuments
+    get_conversation_document: GetConversationDocument
     delete_document: DeleteDocument
     transcribe_stream: TranscribeStream
     register_user: RegisterUser
@@ -430,6 +432,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 lock=document_lock,
             ),
             list_documents=ListDocuments(uow_factory),
+            get_conversation_document=GetConversationDocument(uow_factory),
             delete_document=delete_document,
             transcribe_stream=TranscribeStream(
                 transcriber=transcriber,
