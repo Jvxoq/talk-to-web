@@ -7,6 +7,7 @@ from loguru import logger
 from app.application.common.uow import UnitOfWorkFactory
 from app.application.ingestion.dto import IndexDocumentResult
 from app.application.ingestion.ports import (
+    DocumentLock,
     DocumentSummarizer,
     Embedder,
     TextExtractor,
@@ -44,6 +45,7 @@ class IndexDocument:
         embedding_dimensions: int,
         uow_factory: UnitOfWorkFactory,
         summarizer: DocumentSummarizer,
+        lock: DocumentLock,
     ) -> None:
         self._extractor = extractor
         self._embedder = embedder
@@ -53,6 +55,7 @@ class IndexDocument:
         self._embedding_dimensions = embedding_dimensions
         self._uow_factory = uow_factory
         self._summarizer = summarizer
+        self._lock = lock
 
     async def __call__(
         self,
@@ -62,7 +65,12 @@ class IndexDocument:
         owner_id: int,
         conversation_id: int,
     ) -> IndexDocumentResult:
-        """`reference` is a `TextExtractor`-readable location of the stored file."""
+        """`reference` is a `TextExtractor`-readable location of the stored file.
+
+        Returns zero chunks indexed when the document was removed while this
+        was embedding: the removal won, and writing the points then would
+        orphan them - no row left for any later delete to find them by.
+        """
         logger.debug("Indexing {} from {} for owner {}", name, reference, owner_id)
 
         content = await self._extractor.extract(reference)
@@ -84,13 +92,31 @@ class IndexDocument:
 
         # The conversation is written onto every point, because it is what
         # every search filters on. A point without it is retrievable by nobody.
-        await self._index.upsert(chunks, vectors, owner_id, document_id, conversation_id)
+        #
+        # The expensive part - extraction, chunking, embedding - is behind us;
+        # everything from here on is what a concurrent delete must not
+        # interleave with, so the lock is held around the writes only. The row
+        # is re-read inside the lock, because only there can "the document
+        # still exists" be trusted through to the upsert: a delete that ran
+        # first has already taken the row, and writing the points then would
+        # leave them retrievable forever with nothing to delete them by.
+        async with self._lock.hold(document_id):
+            async with self._uow_factory() as uow:
+                if await uow.documents.get(document_id, owner_id) is None:
+                    logger.info(
+                        "Document {} was removed while {} was being indexed; not indexing it",
+                        document_id,
+                        name,
+                    )
+                    return IndexDocumentResult(chunks_indexed=0)
 
-        summary = await self._digest(name, document.content)
+            await self._index.upsert(chunks, vectors, owner_id, document_id, conversation_id)
 
-        async with self._uow_factory() as uow:
-            await uow.documents.set_indexed(document_id, owner_id, len(chunks), summary)
-            await uow.commit()
+            summary = await self._digest(name, document.content)
+
+            async with self._uow_factory() as uow:
+                await uow.documents.set_indexed(document_id, owner_id, len(chunks), summary)
+                await uow.commit()
 
         logger.debug("Indexed {} chunk(s) from {}", len(chunks), name)
         return IndexDocumentResult(chunks_indexed=len(chunks))
