@@ -16,6 +16,7 @@ import pytest
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from sqlalchemy import create_engine, pool, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.adapters.persistence.models import Base
@@ -207,9 +208,14 @@ def test_the_migration_url_is_the_one_that_is_used(scratch_database: str) -> Non
         env={
             **os.environ,
             **DUMMY_SECRETS,
-            # Unreachable on purpose: if this one were used, the command would
-            # fail to connect, and the assertion below would never be reached.
-            "DATABASE_URL": "postgresql+psycopg://nobody:nobody@127.0.0.1:1/nowhere",
+            # Same database, but a role that does not exist: if this one were
+            # used, the command would fail to log in, and the assertion below
+            # would never be reached. The host, port and database must match
+            # `DATABASE_MIGRATION_URL`, because settings refuse a pair that
+            # names two databases.
+            "DATABASE_URL": make_url(scratch_database)
+            .set(username="nobody", password="nobody")
+            .render_as_string(hide_password=False),
             "DATABASE_MIGRATION_URL": scratch_database,
         },
         capture_output=True,
