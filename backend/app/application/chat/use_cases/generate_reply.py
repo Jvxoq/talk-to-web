@@ -547,11 +547,12 @@ def _friendly_error(detail: str) -> str:
     The raw detail is the provider's JSON, which is noise in front of a user. A
     rate limit is transient, so it becomes "try again in a moment". A rejected
     key names the key and links to the vendor's dashboard, and the reader cannot
-    fix it either way. Anything else passes through unchanged.
+    fix it either way. Anything else gets a generic sentence of ours: the raw
+    text belongs in the log and the trace span, never in front of a reader.
     """
     lowered = detail.lower()
     if "rate_limit_exceeded" in lowered or "413" in detail or "429" in detail:
         return "The assistant is busy right now - please try again in a moment."
     if is_auth_failure(detail):
         return "The assistant is unavailable right now - please try again later."
-    return detail
+    return "Something went wrong while generating the reply - please try again."
