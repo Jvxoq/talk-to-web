@@ -2,9 +2,44 @@
 
 from functools import lru_cache
 from pathlib import Path
+from typing import NamedTuple
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_POSTGRES_DEFAULT_PORT = 5432
+_POOLER_SUFFIX = "-pooler"
+
+
+class _Endpoint(NamedTuple):
+    """Which database a URL names. The user and password are left out on purpose."""
+
+    host: str
+    port: int
+    database: str
+
+    def __str__(self) -> str:
+        return f"{self.host}:{self.port}/{self.database}"
+
+
+def _endpoint(url: str, *, variable: str) -> _Endpoint:
+    """Read host, port and database from a URL, never quoting the URL itself."""
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        port = parts.port or _POSTGRES_DEFAULT_PORT
+    except ValueError:
+        # `urlsplit` quotes the bad input in its message, and the input holds a password.
+        raise ValueError(f"{variable} is not a valid database URL") from None
+    return _Endpoint(host, port, parts.path.lstrip("/"))
+
+
+def _without_pooler(endpoint: _Endpoint) -> _Endpoint:
+    """Neon serves one database on `ep-x-pooler.…` and on `ep-x.…`; they are one."""
+    label, dot, rest = endpoint.host.partition(".")
+    label = label.removesuffix(_POOLER_SUFFIX)
+    return endpoint._replace(host=f"{label}{dot}{rest}")
 
 
 class Settings(BaseSettings):
@@ -261,6 +296,29 @@ class Settings(BaseSettings):
         """Fall back to the CORS list, so one variable configures both."""
         if not self.allowed_websocket_origins:
             self.allowed_websocket_origins = list(self.cors_origins)
+        return self
+
+    @model_validator(mode="after")
+    def _database_urls_name_one_database(self) -> "Settings":
+        """Refuse a migration URL that points at another database.
+
+        `migrations/env.py` prefers `DATABASE_MIGRATION_URL`, so two different
+        databases means migrating one and serving the other, with no error.
+        The pooled and direct hosts of one Neon endpoint differ only by
+        `-pooler`, so that is the one difference allowed. The user is not
+        compared: a deployment may migrate as the role that owns the tables.
+        """
+        if self.database_migration_url is None:
+            return self
+        served = _endpoint(self.database_url, variable="DATABASE_URL")
+        migrated = _endpoint(self.database_migration_url, variable="DATABASE_MIGRATION_URL")
+        if _without_pooler(served) != _without_pooler(migrated):
+            raise ValueError(
+                f"DATABASE_URL names {served} but DATABASE_MIGRATION_URL names {migrated}. "
+                f"They must be the same database, differing only by '{_POOLER_SUFFIX}' "
+                "in the host. Otherwise migrations run on one database and the app "
+                "serves another."
+            )
         return self
 
     @property
