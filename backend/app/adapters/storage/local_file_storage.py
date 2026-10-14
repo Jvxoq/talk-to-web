@@ -1,7 +1,9 @@
 """Stores uploads on the local filesystem."""
 
 from collections.abc import AsyncIterator
+from contextlib import suppress
 from pathlib import Path
+from uuid import uuid4
 
 import aiofiles
 import aiofiles.os
@@ -22,6 +24,12 @@ class LocalFileStorage:
     One flat directory would have every account sharing a namespace it does not
     control the keys to: two people uploading `report.pdf` overwrite each other,
     and the second one's chat answers from the first one's document.
+
+    The same holds for one owner: every save also gets a directory of its own.
+    Replacing an attachment stores the new file before the old document is
+    removed, so a re-upload of `report.pdf` shares a name with the file about
+    to be deleted. Under a name-only path the two were one file, and removing
+    the old document deleted the new upload before it could be indexed.
     """
 
     def __init__(self, directory: Path) -> None:
@@ -69,7 +77,7 @@ class LocalFileStorage:
         # from a request, so it cannot itself contain a separator. The check
         # below is still made against the *base* directory rather than the
         # owner's, so a traversal cannot land in someone else's folder either.
-        destination = (directory / str(owner_id) / name.value).resolve()
+        destination = (directory / str(owner_id) / uuid4().hex / name.value).resolve()
         # `DocumentName` already sanitizes, but path traversal is cheap to check
         # and expensive to get wrong, so it is verified again at the syscall edge.
         if not destination.is_relative_to(directory):
@@ -93,3 +101,9 @@ class LocalFileStorage:
             pass
         except OSError as error:
             logger.warning(f"Could not remove partial upload {destination}: {error}")
+            return
+        # The per-save directory goes with its file. `rmdir` refuses a
+        # directory that still holds anything, so this cannot remove more than
+        # an empty folder.
+        with suppress(OSError):
+            await aiofiles.os.rmdir(destination.parent)
