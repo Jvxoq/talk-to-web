@@ -34,6 +34,7 @@ from app.adapters.llm.langchain_chat_model import LangChainChatModel
 from app.adapters.observability.langfuse_tracer import LangfuseTracer
 from app.adapters.observability.null_tracer import NullTracer
 from app.adapters.persistence.readiness import PostgresProbe
+from app.adapters.persistence.schema_version import verify_schema
 from app.adapters.persistence.uow import SqlAlchemyUnitOfWork
 from app.adapters.security.argon2_hasher import Argon2PasswordHasher
 from app.adapters.security.jwt_codec import JwtAccessTokenCodec
@@ -152,6 +153,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         pool_recycle=300,
     )
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    # Before any other client is built. A schema older than the code is a
+    # deployment fault, and it must stop the boot here rather than surface as a
+    # missing column on some later request.
+    try:
+        await verify_schema(engine)
+    except BaseException:
+        await engine.dispose()
+        raise
 
     # No `create_all`, in any environment. `alembic upgrade head` owns the
     # schema. Creating tables at startup races concurrent replicas and drifts
