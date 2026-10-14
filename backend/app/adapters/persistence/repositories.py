@@ -4,6 +4,8 @@ from datetime import datetime
 
 from loguru import logger
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import DisconnectionError, InterfaceError, OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -30,6 +32,18 @@ from app.domain.chat.entities import Conversation, Message
 from app.domain.identity.entities import RefreshToken, User
 from app.domain.identity.value_objects import Email
 from app.domain.ingestion.entities import DocumentStatus, UploadedDocument
+from app.domain.ingestion.errors import DocumentStoreUnavailable
+
+# A connection that dropped, a pool with no free slot, a server that did not
+# answer. Each can pass on the next try. Nothing that means the SQL itself is
+# wrong belongs here: `ProgrammingError` (undefined column, undefined table) and
+# `IntegrityError` must stay uncaught.
+_TRANSIENT_DATABASE_ERRORS = (
+    OperationalError,
+    InterfaceError,
+    DisconnectionError,
+    PoolTimeoutError,
+)
 
 
 class SqlAlchemyConversationRepository:
@@ -175,7 +189,13 @@ class SqlAlchemyDocumentRepository:
             )
             .order_by(DocumentModel.created_at.desc())
         )
-        rows = (await self._session.execute(statement)).scalars().all()
+        try:
+            rows = (await self._session.execute(statement)).scalars().all()
+        except _TRANSIENT_DATABASE_ERRORS as exc:
+            # Only the "try again" family. `ProgrammingError` - which is what
+            # a missing column or table arrives as - is deliberately not here,
+            # so a broken deploy propagates instead of reading as no documents.
+            raise DocumentStoreUnavailable from exc
         return [document_to_domain(row) for row in rows]
 
     async def add(self, document: UploadedDocument) -> UploadedDocument:

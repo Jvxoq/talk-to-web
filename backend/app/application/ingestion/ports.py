@@ -93,7 +93,11 @@ class DocumentRepository(Protocol):
     async def list_by_conversation(
         self, owner_id: int, conversation_id: int
     ) -> list[UploadedDocument]:
-        """This owner's documents attached to one conversation, newest first."""
+        """This owner's documents attached to one conversation, newest first.
+
+        Raises `DocumentStoreUnavailable` when the store cannot answer right
+        now. Any other failure, a schema fault above all, is not translated.
+        """
         ...
 
     async def add(self, document: UploadedDocument) -> UploadedDocument: ...

@@ -41,3 +41,15 @@ class UnknownConversation(IngestionError):
     def __init__(self, conversation_id: int) -> None:
         self.conversation_id = conversation_id
         super().__init__(f"Conversation {conversation_id} not found")
+
+
+class DocumentStoreUnavailable(IngestionError):
+    """The documents could not be read right now, and asking again may work.
+
+    Raised by the persistence adapter for a lost connection, a timeout or an
+    exhausted pool. Never for a schema failure such as a missing column: that is
+    a broken deploy, not a hiccup, and it has to reach the caller as an error.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("Documents are temporarily unavailable")
