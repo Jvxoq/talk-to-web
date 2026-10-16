@@ -70,7 +70,8 @@ class _DeepgramSession:
 
     async def _handle_error(self, error: Any) -> None:
         logger.warning(f"Deepgram stream error: {error}")
-        await self._on_error(str(error))
+        # The log has the provider's text; the client gets a sentence of ours.
+        await self._on_error("Transcription failed")
 
     async def transcripts(self) -> AsyncIterator[Transcript]:
         """Yield transcripts as they arrive, until the session is torn down."""
