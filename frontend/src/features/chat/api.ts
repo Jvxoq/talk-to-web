@@ -1,4 +1,4 @@
-import { ApiError, requireStringFields } from '../../lib/http'
+import { ApiError } from '../../lib/http'
 import { authorizedFetch } from '../../lib/session'
 import { parseSummarizing } from './summarizing'
 import { parseUsage } from './usage'
@@ -8,6 +8,7 @@ const API_URL = import.meta.env.VITE_API_URL ?? '/generate/text/'
 const UPLOAD_URL = import.meta.env.VITE_UPLOAD_URL ?? '/upload/file/'
 const DOCUMENTS_URL = import.meta.env.VITE_DOCUMENTS_URL ?? '/documents/'
 const MODELS_URL = import.meta.env.VITE_MODELS_URL ?? '/models/'
+const CONVERSATIONS_URL = import.meta.env.VITE_CONVERSATIONS_URL ?? '/conversations/'
 
 /** One parsed frame off the SSE stream. */
 export type StreamEvent =
@@ -38,13 +39,9 @@ interface StreamFrame {
 }
 
 /**
- * The backend's account of a failure: its own sentence, and — on a 429 — the
- * number of seconds it wants us to wait.
+ * The backend's failure message and, on a 429, the seconds to wait.
  *
- * The wait is read from the body rather than the `Retry-After` header because a
- * browser cannot see that header unless the server exposes it, and this app is
- * not always same-origin with its API. Narrowed here, at the boundary, then
- * trusted downstream.
+ * The wait comes from the body, since cross-origin JS may not read `Retry-After`.
  */
 async function failureOf(
   response: Response,
@@ -68,11 +65,8 @@ async function failureOf(
 /**
  * Opens the chat stream and yields one event per SSE frame.
  *
- * Frames carry a JSON object rather than bare text, because a token can contain
- * the newlines that markdown structure is made of and a raw newline would end
- * the frame early. Failures are reported in-band as `{ error }` — so an error
- * can arrive after a 200, and the happy path alone isn't enough to know it
- * worked.
+ * Each frame is JSON, so newlines in tokens are safe. Errors arrive in-band as
+ * `{ error }`, even after a 200.
  */
 export async function* streamChat({
   model,
@@ -93,10 +87,7 @@ export async function* streamChat({
   })
 
   if (!response.ok || !response.body) {
-    // The body is read for its `detail`, not discarded: a refusal that arrives
-    // before the stream opens - a spent rate-limit budget is the one that
-    // actually happens - carries the only sentence that tells the user how long
-    // to wait. "Request failed with status 429" tells them nothing.
+    // Read the body: a 429's `detail` tells the user how long to wait.
     const failure = await failureOf(response)
     throw new ApiError(response.status, failure.detail, failure.retryAfterSeconds)
   }
@@ -121,14 +112,11 @@ export async function* streamChat({
         try {
           parsed = JSON.parse(frame.slice('data: '.length)) as StreamFrame
         } catch {
-          // A frame we can't read is one token's worth of text; dropping it
-          // beats tearing down a stream that is otherwise fine.
+          // Drop an unreadable frame rather than end the stream.
           continue
         }
 
-        // Order matters: error and done are terminal, tool must land before
-        // delta so a frame carrying both `tool` and no `delta` doesn't fall
-        // through silently. Unknown frames keep falling through harmlessly.
+        // Order matters: error and done end the stream. Unknown frames are ignored.
         if (parsed.error !== undefined) {
           yield { type: 'error', message: parsed.error }
           return
@@ -142,9 +130,7 @@ export async function* streamChat({
           if (summarizing) yield { type: 'summarizing', summarizing }
         }
         if (parsed.usage !== undefined) {
-          // A frame this build doesn't yet know the shape of is dropped, the
-          // same way an unparsable frame is dropped above — not a reason to
-          // tear down an otherwise-working stream.
+          // A malformed usage frame is dropped, not fatal.
           const usage = parseUsage(parsed.usage)
           if (usage) yield { type: 'usage', usage }
         }
@@ -164,8 +150,7 @@ export async function uploadPdf(
 ): Promise<UploadedFile> {
   const formData = new FormData()
   formData.append('file', file)
-  // The thread the file is attached to. A document belongs to one conversation
-  // and is only searchable from that one, so there is no upload without it.
+  // Every upload belongs to one conversation.
   formData.append('conversation_id', String(conversationId))
 
   const response = await authorizedFetch(UPLOAD_URL, {
@@ -180,20 +165,48 @@ export async function uploadPdf(
   }
 
   const body: unknown = await response.json()
-  const parsed = requireStringFields(body, ['file_path'], 'Upload')
+  // Only `document_id` is needed. `file_path` is ignored.
   const id = (body as Record<string, unknown>).document_id
   if (typeof id !== 'number') {
     throw new ApiError(0, 'Upload: missing "document_id"')
   }
-  return { name: file.name, path: parsed.file_path, id }
+  return { name: file.name, id }
 }
 
 /**
- * Detaches a document: its passages, its stored file and its row all go.
+ * The document attached to a conversation, or `null`.
  *
- * A POST rather than a DELETE for the same reason conversation deletion is one:
- * this app's CORS policy allows GET, POST and OPTIONS across origins, nothing
- * else. A 404 means it is already gone, which is the outcome the caller wanted.
+ * Read when a thread opens, since the attachment outlives the tab.
+ */
+export async function getAttachedDocument(conversationId: number): Promise<UploadedFile | null> {
+  const base = CONVERSATIONS_URL.endsWith('/') ? CONVERSATIONS_URL : `${CONVERSATIONS_URL}/`
+  const response = await authorizedFetch(`${base}${conversationId}/document`)
+
+  if (!response.ok) {
+    throw new ApiError(response.status, `Could not load the attachment for conversation ${conversationId}`)
+  }
+
+  const body: unknown = await response.json()
+  // `null` means no document, which is normal.
+  if (body === null) return null
+
+  // Narrowed here, then trusted. The chip needs only the name and id.
+  if (typeof body !== 'object') {
+    throw new ApiError(0, 'Document: expected an object')
+  }
+  const record = body as Record<string, unknown>
+  const id = record.id
+  const name = record.name
+  if (typeof id !== 'number' || typeof name !== 'string') {
+    throw new ApiError(0, 'Document: missing "id" or "name"')
+  }
+  return { id, name }
+}
+
+/**
+ * Deletes a document: passages, stored file and row.
+ *
+ * POST, because CORS allows only GET, POST and OPTIONS. A 404 means already gone.
  */
 export async function deleteDocument(documentId: number): Promise<void> {
   const base = DOCUMENTS_URL.endsWith('/') ? DOCUMENTS_URL : `${DOCUMENTS_URL}/`

@@ -1,5 +1,4 @@
-// Model identifiers are opaque strings the backend owns — fetched from
-// `GET /models/` via `useModels`, never hardcoded here (see hooks/useModels.ts).
+// Opaque model ids from `GET /models/` (see hooks/useModels.ts).
 export type Model = string
 
 /** Where a piece of grounding came from — a document name, or a page with a link. */
@@ -20,10 +19,9 @@ export interface ToolActivity {
 }
 
 /**
- * The agent shortening a long thread so it still fits the model's budget.
+ * The agent shortening a long thread, from the `summarizing` SSE frame.
  *
- * Reported by the `summarizing` SSE frame. It is a whole model call the user
- * waits through with no text arriving, which is why it is on screen at all.
+ * Shown because no text arrives while it runs.
  */
 export interface Summarizing {
   status: 'start' | 'done'
@@ -58,7 +56,6 @@ export interface Message {
 
 export interface UploadedFile {
   name: string
-  path: string
   /** The row this upload created. Removing the chip deletes it by this id. */
   id: number
 }
