@@ -1,97 +1,64 @@
-# Render Blueprint: the backend half of the deployment, and nothing else.
+# Render Blueprint: the backend half of the deployment only.
 #
-#   frontend  -> Vercel (static build, see frontend/vercel.json)
+#   frontend  -> Vercel
 #   backend   -> here, on Render
 #   Postgres  -> Neon
 #   Qdrant    -> Qdrant Cloud
 #
-# Replaces the previous EC2 setup. Three things went away with it and are worth
-# knowing, because each one was doing a job:
+# Three things from the old EC2 setup are gone:
 #
-#   1. Caddy. Render terminates TLS itself and issues the certificate for the
-#      service's own domain, so there is no Caddyfile, no ACME volume to keep,
-#      and no port 80/443 to open. What went with it is the edge rate limit on
-#      /generate* and /upload*; `global_daily_call_budget` is now the only
-#      thing standing between a script and the provider bills.
-#   2. The `migrate` service. Render's pre-deploy hook, which is where
-#      `alembic upgrade head` belongs, needs a paid instance type. On `free` it
-#      runs from `dockerCommand` below instead, on every boot. Alembic is
-#      idempotent, so a boot with nothing to migrate costs one query.
-#   3. The `uploads` volume. A free service has no disk and its filesystem is
-#      wiped on every restart. That is survivable here and only here:
-#      `LocalFileStorage` writes a file, `PdfTextExtractor` reads it once during
-#      the same upload request, and after indexing the vectors live in Qdrant
-#      and the row in Postgres. Nothing ever opens the file again. Attach a
-#      disk before that stops being true.
+#   1. Caddy. Render terminates TLS. The edge rate limit went with it, so
+#      `global_daily_call_budget` is the only cap on provider bills.
+#   2. The `migrate` service. Render's pre-deploy hook needs a paid plan, so
+#      `alembic upgrade head` runs on every boot via `dockerCommand`.
+#   3. The `uploads` volume. A free service has no disk. That is fine only
+#      because nothing reads a stored file after its upload request. Attach a
+#      disk if that changes.
 #
-# Deploy: point Render at this repo as a Blueprint. Every `sync: false` variable
-# below is prompted for once in the dashboard and stored there - secrets never
-# enter this file, the repo, or an image layer.
+# Deploy as a Blueprint. Each `sync: false` variable is entered once in the
+# dashboard, so secrets never enter the repo.
 
 services:
   - type: web
     name: talk-to-web-api
     runtime: docker
     plan: free
-    # Match the region your Neon project and Qdrant cluster are already in.
-    # Every chat turn makes several round trips to both, so a cross-region
-    # service pays that latency on each one.
+    # Same region as Neon and Qdrant, since each chat turn calls both often.
     region: ohio
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
 
-    # Deploy filter, not a path. Render only rebuilds when a commit touches
-    # something under this directory, so a frontend-only commit no longer costs
-    # a backend build. It does not move the two paths above: both stay relative
-    # to the repo root even with this set.
+    # A deploy filter: only rebuild on changes under backend/. The paths above
+    # stay relative to the repo root.
     rootDir: backend
 
-    # Liveness only, matching the endpoint's own contract: /health touches no
-    # dependency, so a Neon blip cannot fail a deploy. /ready is the one that
-    # probes Postgres and Qdrant, and it is not what a rollout gate wants here.
+    # Liveness only, so a Neon blip cannot fail a deploy.
     healthCheckPath: /health
 
-    # Overrides the image's `fastapi run` for two reasons. `fastapi run` has no
-    # `--limit-concurrency`, and this plan has 512 MB: one worker refusing the
-    # sixth simultaneous connection outright beats five streamed replies and a
-    # queue racing the memory limit. `--forwarded-allow-ips` makes uvicorn
-    # rewrite the client address from `X-Forwarded-For`, which is what makes
-    # TRUST_FORWARDED_CLIENT_IP below true rather than a lie - the wildcard is
-    # safe because Render's proxy is the only thing that can reach this port.
-    # $PORT is assigned by Render and is not always 8000.
-    #
-    # `sh start.sh`, not the two commands joined by `&&`. Render does not run
-    # this field through a shell: it expands variables, strips quotes and execs
-    # the argv, so `&&` arrives as an argument to alembic and `'*'` loses its
-    # quotes. `backend/start.sh` holds the real sequence.
+    # `backend/start.sh` migrates, then runs uvicorn with `--limit-concurrency`
+    # (512 MB plan) and `--forwarded-allow-ips` (safe: only Render's proxy can
+    # reach the port). A script, because Render does not run this through a
+    # shell, so `&&` and quotes would break.
     dockerCommand: sh start.sh
 
     envVars:
-      # Set here rather than left to the dashboard, because forgetting it is not
-      # a visible failure: `ENVIRONMENT` defaults to "local", and it is what
-      # switches logging to JSON.
+      # Set here, since the "local" default silently skips JSON logging.
       - key: ENVIRONMENT
         value: production
 
-      # Only true because `--forwarded-allow-ips` is set above. The two belong
-      # together: left false, `client_ip` in `app/api/dependencies.py` returns
-      # None and every /auth rate limit is skipped, so password guessing on
-      # /auth/login is unbounded.
+      # Pairs with `--forwarded-allow-ips`. Left false, the per-IP auth limits
+      # are skipped.
       - key: TRUST_FORWARDED_CLIENT_IP
         value: "true"
 
-      # DEBUG logs every prompt and tool result at volume, and the JSON
-      # formatter this environment turns on makes them expensive to ship too.
+      # DEBUG would log every prompt and tool result.
       - key: LOG_LEVEL
         value: INFO
 
       # --- Postgres (Neon) -------------------------------------------------
-      # Two endpoints for one database. DATABASE_URL is the POOLED endpoint,
-      # the host with `-pooler` in it. DATABASE_MIGRATION_URL is the DIRECT
-      # one, the same host without it: `alembic upgrade head` runs DDL, and a
-      # transaction pooler may hand the connection to another client between
-      # statements, losing session state the migration depends on.
-      # `?sslmode=require` is not optional; Neon refuses plaintext.
+      # DATABASE_URL is the pooled host (with `-pooler`). DATABASE_MIGRATION_URL
+      # is the same host without it, since DDL needs a direct connection. Both
+      # need `?sslmode=require`.
       - key: DATABASE_URL
         sync: false
       - key: DATABASE_MIGRATION_URL
@@ -106,31 +73,22 @@ services:
         value: knowledge_base
 
       # --- Origins ---------------------------------------------------------
-      # The Vercel domain serving the frontend, as a JSON list. Ordinary API
-      # calls arrive same-origin as far as the browser is concerned, because
-      # `frontend/vercel.json` rewrites them here, so this is a backstop.
-      # The WebSocket is the exception: it bypasses Vercel and connects to this
-      # service directly, so its handshake really is cross-origin, and CORS
-      # middleware never runs on a handshake. That list is checked by the route
-      # itself. Unset it mirrors CORS_ORIGINS, which is usually right.
+      # The Vercel domain, as a JSON list. API calls come through
+      # `frontend/middleware.ts`, so CORS is a backstop. The WebSocket connects
+      # directly, and its route checks ALLOWED_WEBSOCKET_ORIGINS (unset, it
+      # copies CORS_ORIGINS).
       - key: CORS_ORIGINS
         sync: false
       - key: ALLOWED_WEBSOCKET_ORIGINS
         sync: false
 
       # --- Authentication --------------------------------------------------
-      # Signs every access token. Anyone holding it can mint a token for any
-      # account. Render generates one on first deploy and keeps it; rotating it
-      # signs everybody out, which is the correct response to a leak.
+      # Generated once by Render. Rotating it signs everyone out.
       - key: JWT_SECRET
         generateValue: true
 
-      # The frontend is on Vercel and this API is on onrender.com, so the
-      # refresh cookie is cross-site: it is only sent at all with
-      # `SameSite=None`, and browsers refuse `SameSite=None` without `Secure`.
-      # Both are the defaults; they are spelled out because getting either
-      # wrong presents as "sign-in works, then the user is signed out on
-      # reload".
+      # Cross-site cookie: needs `SameSite=None` and `Secure`. Spelled out,
+      # since a mistake looks like being signed out on reload.
       - key: REFRESH_COOKIE_SECURE
         value: "true"
       - key: REFRESH_COOKIE_SAMESITE
@@ -147,30 +105,25 @@ services:
         sync: false
 
       # --- Spend ceiling ---------------------------------------------------
-      # One counter for the whole deployment, hit by every chat reply, upload
-      # and transcription session regardless of which account made it. With
-      # Caddy gone this is the only edge-independent budget left, so it is set
-      # here explicitly rather than left to the default.
+      # One daily counter for the whole deployment. Set explicitly.
       - key: GLOBAL_DAILY_CALL_BUDGET
         value: "200"
+      # Per account, sized for a quick tester.
+      - key: CHAT_RATE_LIMIT_REQUESTS
+        value: "10"
+      - key: UPLOAD_RATE_LIMIT_REQUESTS
+        value: "5"
 
       # --- Tracing and error reporting --------------------------------------
-      # Langfuse is optional and off unless both keys are set - the tracer
-      # falls back to NullTracer and nothing leaves the process. Add
-      # LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY on Render's environment
-      # page to turn it on. They are not listed here because a `sync: false`
-      # entry prompts for a value this deployment does not need.
+      # Langfuse is off unless both keys are added in the dashboard. Not listed
+      # here, so Render does not prompt for them.
       #
-      # Unset means Sentry is never initialized and nothing is sent. Fill it in
-      # from the dashboard to turn reporting on.
+      # Unset SENTRY_DSN means no error reporting.
       - key: SENTRY_DSN
         sync: false
 
-# Housekeeping. `app/cleanup_expired_refresh_tokens.py` deletes refresh_tokens
-# rows that expired longer ago than REFRESH_TOKEN_CLEANUP_RETENTION_SECONDS.
-# Render cron jobs need a paid plan, so on `free` this does not run and the
-# table grows slowly. Uncomment once there is a paid plan, or run the module by
-# hand from a shell every so often.
+# Deletes old refresh_tokens rows. Cron needs a paid plan, so this is off.
+# Uncomment on a paid plan, or run the module by hand now and then.
 #
 #  - type: cron
 #    name: talk-to-web-cleanup-refresh-tokens
