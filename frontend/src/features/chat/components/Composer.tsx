@@ -55,32 +55,30 @@ export function Composer({
   const { models, defaultModel } = useModels()
   const upload = useFileUpload(conversationId)
 
-  // The caller seeds `model` with a hardcoded fallback before this list can
-  // possibly have loaded. Once the real list lands, swap to its default if
-  // the current value isn't (or is no longer) one of the real options.
+  // Swap the fallback model for the real default once the list loads.
   useEffect(() => {
     if (models.length > 0 && !models.includes(model)) {
       onModelChange(defaultModel)
     }
   }, [models, defaultModel, model, onModelChange])
 
-  // Each finalised utterance is appended to whatever is already in the composer,
-  // so dictation adds to typed text rather than replacing it.
+  // Dictation appends to typed text instead of replacing it.
   const appendTranscript = useCallback((text: string) => {
     setInput((prev) => (prev ? `${prev.trimEnd()} ${text}` : text))
   }, [])
 
   const voice = useVoiceInput(appendTranscript)
-  const isRecording = voice.status !== 'idle'
+  // Drives the looping indicators. They stop at once during `stopping`.
+  const isRecording = voice.status === 'connecting' || voice.status === 'listening'
+  const isFinishing = voice.status === 'stopping'
   const voiceSupported = isVoiceInputSupported()
+  const talkDisabled = isStreaming || !voiceSupported || isFinishing
 
   const sendWait = useCountdown(cooldownUntil)
   const uploadWait = useCountdown(upload.cooldownUntil)
   const canSend = !isStreaming && sendWait === 0 && input.trim().length > 0
 
-  // A refused send hands the text back rather than swallowing it: the limits
-  // are tight enough to meet in normal use, and losing a typed message to one
-  // would be the app's fault, not the user's.
+  // A refused send gives the text back, so the user does not lose it.
   useEffect(() => {
     if (restoreText === null) return
     setInput(restoreText)
@@ -110,7 +108,7 @@ export function Composer({
   const showAttachmentStrip = Boolean(
     upload.file || upload.isUploading || upload.error || sendWait > 0,
   )
-  const showVoiceStrip = isRecording || Boolean(voice.error)
+  const showVoiceStrip = isRecording || isFinishing || Boolean(voice.error)
 
   return (
     <div className="composer-wrap">
@@ -168,6 +166,10 @@ export function Composer({
                   <span className="status-label">Listening…</span>
                   {voice.interim && <span className="voice-interim">{voice.interim}</span>}
                 </>
+              )}
+
+              {voice.status === 'stopping' && (
+                <span className="status-label">Finishing…</span>
               )}
 
               {voice.error && <span className="status-label is-error">{voice.error}</span>}
@@ -239,17 +241,19 @@ export function Composer({
                   className: 'talk-btn',
                 })}
                 onClick={voice.toggle}
-                disabled={isStreaming || !voiceSupported}
-                whileHover={{ x: -2, y: -2 }}
+                disabled={talkDisabled}
+                whileHover={talkDisabled ? undefined : { x: -2, y: -2 }}
                 whileTap={{ x: 0, y: 0 }}
                 transition={springs.press}
                 aria-pressed={isRecording}
                 title={
-                  voiceSupported
-                    ? isRecording
-                      ? 'Stop talking'
-                      : 'Talk to type'
-                    : "Voice input isn't supported in this browser"
+                  !voiceSupported
+                    ? "Voice input isn't supported in this browser"
+                    : isFinishing
+                      ? 'Finishing…'
+                      : isRecording
+                        ? 'Stop talking'
+                        : 'Talk to type'
                 }
               >
                 <Mic strokeWidth={2} aria-hidden="true" />

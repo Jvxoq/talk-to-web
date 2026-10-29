@@ -1,15 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getAccessToken } from '../../../lib/session'
 
-export type VoiceStatus = 'idle' | 'connecting' | 'listening'
+export type VoiceStatus = 'idle' | 'connecting' | 'listening' | 'stopping'
 
 const WS_PATH = '/ws/transcribe/'
-// Deepgram's recommended rate for speech: enough fidelity, a third of the
-// bandwidth of 48kHz. The browser resamples the mic stream to match.
+// Deepgram's recommended speech rate. The browser resamples to it.
 const TARGET_SAMPLE_RATE = 16000
 
-// Sent as the first offered subprotocol, ahead of the token itself - see
-// `socketUrl` below and `_token_from_subprotocols` in the backend router.
+// The fixed first subprotocol, before the token. See `socketUrl`.
 const TOKEN_SUBPROTOCOL = 'access_token'
 
 interface ServerMessage {
@@ -26,31 +24,21 @@ interface Session {
   context: AudioContext
   stream: MediaStream
   node: AudioWorkletNode
+  /** True once `stop()` has fired. Guards double-send and double-release. */
+  stopped: boolean
+  /** True once the mic and audio graph are released. Guards a second release. */
+  audioReleased: boolean
 }
 
 /**
  * Where to open the transcription socket.
  *
- * Every other call this app makes is same-origin, because a rewrite in front of
- * the static host forwards it to the backend. A WebSocket cannot be one of them:
- * Vercel's rewrites do not carry an Upgrade handshake, so on a Vercel-hosted
- * frontend a same-origin `wss://` resolves to the Vercel domain and the
- * connection is refused. `VITE_WS_URL` is the escape hatch - set it to the
- * backend's own domain (`wss://api.example.com/ws/transcribe/`) and this one
- * request goes direct.
+ * Vercel's proxy cannot carry a WebSocket upgrade, so `VITE_WS_URL` points
+ * straight at the backend. Unset, it uses same-origin, which works with the
+ * Vite dev proxy. This page's origin must be in ALLOWED_WEBSOCKET_ORIGINS.
  *
- * Unset, it falls back to same-origin, which is correct for `npm run dev`
- * (Vite's proxy forwards the upgrade). Note the
- * backend checks the handshake's Origin either way, so the domain serving this
- * page has to be in ALLOWED_WEBSOCKET_ORIGINS.
- *
- * The access token rides in the offered subprotocols rather than the query
- * string: browsers offer no way to set an `Authorization` header on a WebSocket
- * handshake, but the `protocols` argument to the `WebSocket` constructor is a
- * real one, and it never lands in a server access log or the browser's own
- * history the way a URL does. `TOKEN_SUBPROTOCOL` rides alongside it as a fixed
- * marker the backend accepts with, so the token is never echoed back into a
- * response header either.
+ * The token goes in the subprotocols, not the URL, so it stays out of logs.
+ * The backend accepts with `TOKEN_SUBPROTOCOL`, never echoing the token.
  */
 function socketUrl(): string {
   return (
@@ -65,13 +53,10 @@ export const isVoiceInputSupported = () =>
   typeof window.AudioWorkletNode !== 'undefined'
 
 /**
- * Streams microphone audio to the backend over a WebSocket and surfaces the
- * transcripts coming back.
+ * Streams mic audio to the backend and returns transcripts.
  *
- * Deepgram returns two kinds of result. Interim results are guesses that get
- * revised, so they live in `interim` and are meant to be rendered as a preview.
- * Final results are committed text and are handed to `onFinalTranscript` to be
- * appended to the composer.
+ * Interim results go in `interim` as a preview. Final results go to
+ * `onFinalTranscript`.
  */
 export function useVoiceInput(onFinalTranscript: (text: string) => void) {
   const [status, setStatus] = useState<VoiceStatus>('idle')
@@ -89,7 +74,9 @@ export function useVoiceInput(onFinalTranscript: (text: string) => void) {
    *  we keep it open a moment longer to receive the final transcript. */
   const releaseAudio = useCallback(() => {
     const session = sessionRef.current
-    if (!session) return
+    // Called twice on stop, so it must be idempotent.
+    if (!session || session.audioReleased) return
+    session.audioReleased = true
     session.node.port.onmessage = null
     session.node.disconnect()
     session.stream.getTracks().forEach((track) => track.stop())
@@ -109,9 +96,7 @@ export function useVoiceInput(onFinalTranscript: (text: string) => void) {
   const start = useCallback(async () => {
     if (sessionRef.current) return
 
-    // Checked before the microphone is touched: the handshake would be refused
-    // anyway, and asking someone for mic permission only to drop the connection
-    // is the worst order to do these two things in.
+    // Check the token before asking for mic permission.
     const token = getAccessToken()
     if (token === null) {
       setError('Your session has expired. Please sign in again.')
@@ -135,14 +120,12 @@ export function useVoiceInput(onFinalTranscript: (text: string) => void) {
         },
       })
 
-      // Asking for 16kHz here makes the browser resample for us, so the
-      // worklet only has to handle the float32 -> int16 conversion.
+      // The browser resamples, so the worklet only converts float32 to int16.
       context = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE })
       await context.audioWorklet.addModule('/pcm-worklet.js')
       node = new AudioWorkletNode(context, 'pcm-encoder')
 
-      // An AudioWorkletNode is only pulled if it reaches the destination, so
-      // route it through a muted gain node - we want the samples, not playback.
+      // A worklet only runs if connected, so route it through a muted gain.
       const mute = context.createGain()
       mute.gain.value = 0
       context.createMediaStreamSource(stream).connect(node)
@@ -159,11 +142,10 @@ export function useVoiceInput(onFinalTranscript: (text: string) => void) {
 
     const socket = new WebSocket(socketUrl(), [TOKEN_SUBPROTOCOL, token])
     socket.binaryType = 'arraybuffer'
-    sessionRef.current = { socket, context, stream, node }
+    sessionRef.current = { socket, context, stream, node, stopped: false, audioReleased: false }
 
     socket.onopen = () => {
-      // Report the rate the AudioContext actually settled on - browsers do not
-      // always honour the requested one, and a mismatch silently garbles pitch.
+      // Send the actual rate, since browsers may not honour the request.
       socket.send(
         JSON.stringify({ type: 'start', sample_rate: context.sampleRate }),
       )
@@ -210,12 +192,13 @@ export function useVoiceInput(onFinalTranscript: (text: string) => void) {
 
   const stop = useCallback(() => {
     const session = sessionRef.current
-    if (!session) return
+    if (!session || session.stopped) return
+    session.stopped = true
 
-    // Stop capturing immediately so the mic indicator goes away, but leave the
-    // socket open: the server still owes us the flushed final transcript, and
-    // will reply "done" once Deepgram has emitted it.
+    // Release the mic now, but keep the socket open for the final transcript.
+    // The server sends "done", then `teardown()` returns to `idle`.
     releaseAudio()
+    setStatus('stopping')
     if (session.socket.readyState === WebSocket.OPEN) {
       session.socket.send(JSON.stringify({ type: 'stop' }))
     } else {
@@ -224,8 +207,10 @@ export function useVoiceInput(onFinalTranscript: (text: string) => void) {
   }, [releaseAudio, teardown])
 
   const toggle = useCallback(() => {
-    if (sessionRef.current) stop()
-    else void start()
+    const session = sessionRef.current
+    if (!session) void start()
+    else if (!session.stopped) stop()
+    // A flush is pending, so ignore the click.
   }, [start, stop])
 
   // Never leave the mic running if the component goes away mid-session.
