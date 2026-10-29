@@ -1,7 +1,6 @@
-"""Auth routes and the gate in front of everything else.
+"""Auth routes and the auth gate: status codes, cookies, anonymous refusal.
 
-Status codes, cookie attributes and the refusal of anonymous callers — not
-business rules, which live in `tests/application/test_identity_use_cases.py`.
+Business rules are in `tests/application/test_identity_use_cases.py`.
 """
 
 from typing import Any, ClassVar
@@ -52,12 +51,7 @@ class TestRegisterAndLogin:
         assert response.cookies.get("refresh_token") == REFRESH_SECRET
 
     async def test_the_refresh_token_is_never_in_the_body(self) -> None:
-        """The whole reason the pair is split across two channels.
-
-        A script that manages to run on this origin can read the JSON. If the
-        refresh token were in it, an XSS would buy a fortnight of session rather
-        than the access token's few minutes.
-        """
+        """The refresh token is never in the JSON, so XSS cannot read it."""
         async with client(StubContainer(authenticate_user=StubUseCase(returns=tokens()))) as http:
             response = await http.post(
                 "/auth/login", json={"email": "owner@example.com", "password": "x" * 12}
@@ -72,8 +66,7 @@ class TestRegisterAndLogin:
             )
 
         header = response.headers["set-cookie"].lower()
-        # HttpOnly is what puts the token out of JavaScript's reach; the path is
-        # what keeps it off every chat request and upload.
+        # HttpOnly hides it from JS. The path keeps it off other requests.
         assert "httponly" in header
         assert "path=/auth" in header
 
@@ -86,8 +79,7 @@ class TestRegisterAndLogin:
             )
 
         assert response.status_code == 401
-        # RFC 9110 requires it, and a client cannot tell "sign in" from
-        # "you may not" without it.
+        # Required on a 401 by RFC 9110.
         assert response.headers["www-authenticate"] == "Bearer"
 
     async def test_too_many_attempts_is_a_429_that_says_for_how_long(self) -> None:
@@ -112,9 +104,7 @@ class TestRegisterAndLogin:
         ids=["no-password", "no-email", "extra-field", "empty-password"],
     )
     async def test_malformed_bodies_never_reach_the_use_case(self, body: dict[str, str]) -> None:
-        # `extra="forbid"` is what makes the third case a 422: a request that
-        # tries to set a field the schema does not have is rejected outright
-        # rather than quietly ignored.
+        # `extra="forbid"` makes unknown fields a 422.
         stub = StubUseCase(returns=tokens())
 
         async with client(StubContainer(authenticate_user=stub)) as http:
@@ -128,16 +118,17 @@ class TestRefreshAndLogout:
     async def test_refresh_reads_the_cookie_and_writes_a_new_one(self) -> None:
         stub = StubUseCase(returns=tokens(refresh="rotated-secret"))
 
-        async with client(StubContainer(refresh_session=stub)) as http:
-            response = await http.post("/auth/refresh", cookies={"refresh_token": "old-secret"})
+        async with client(
+            StubContainer(refresh_session=stub), cookies={"refresh_token": "old-secret"}
+        ) as http:
+            response = await http.post("/auth/refresh")
 
         assert response.status_code == 200
         assert stub.calls[0][0].refresh_token == "old-secret"
         assert response.cookies.get("refresh_token") == "rotated-secret"
 
     async def test_refresh_without_a_cookie_is_a_401_not_a_500(self) -> None:
-        # This is the ordinary state of a first visit, and the frontend calls it
-        # on every page load to find out whether it has a session.
+        # Normal on a first visit. The frontend calls this on every load.
         stub = StubUseCase(returns=tokens())
 
         async with client(StubContainer(refresh_session=stub)) as http:
@@ -149,21 +140,24 @@ class TestRefreshAndLogout:
     async def test_a_rejected_refresh_token_is_a_401(self) -> None:
         stub = StubUseCase(raises=InvalidToken("session was already used"))
 
-        async with client(StubContainer(refresh_session=stub)) as http:
-            response = await http.post("/auth/refresh", cookies={"refresh_token": "stale"})
+        async with client(
+            StubContainer(refresh_session=stub), cookies={"refresh_token": "stale"}
+        ) as http:
+            response = await http.post("/auth/refresh")
 
         assert response.status_code == 401
 
     async def test_logout_revokes_and_clears_the_cookie(self) -> None:
         stub = StubUseCase()
 
-        async with client(StubContainer(revoke_session=stub)) as http:
-            response = await http.post("/auth/logout", cookies={"refresh_token": REFRESH_SECRET})
+        async with client(
+            StubContainer(revoke_session=stub), cookies={"refresh_token": REFRESH_SECRET}
+        ) as http:
+            response = await http.post("/auth/logout")
 
         assert response.status_code == 204
         assert stub.calls == [(REFRESH_SECRET,)]
-        # Cleared with the same path it was written with - a mismatch leaves the
-        # cookie in place and "signs out" into a session that still works.
+        # Cleared with the same path, or the browser keeps it.
         assert "path=/auth" in response.headers["set-cookie"].lower()
 
     async def test_logout_without_a_cookie_still_succeeds(self) -> None:
@@ -192,12 +186,7 @@ class TestMe:
 
 
 class TestEveryOtherRouteIsGated:
-    """No route that touches a user's data may be reached anonymously.
-
-    Parametrised over every one of them rather than spot-checked: the failure
-    this guards against is a new route being added without the dependency, and
-    only an exhaustive list notices that.
-    """
+    """No route touching user data is reachable anonymously. Lists every route."""
 
     REQUESTS: ClassVar[list[tuple[str, str, dict[str, Any]]]] = [
         ("POST", "/generate/text/", {"json": {"model": "m", "user_input": "hi"}}),
@@ -254,12 +243,7 @@ class TestEveryOtherRouteIsGated:
         assert stub.calls == []
 
     async def test_the_verified_user_is_what_reaches_the_use_case(self) -> None:
-        """The client cannot choose whose conversations it reads.
-
-        There is no owner field on the wire at all - it comes from the token - so
-        this asserts the only thing that could go wrong: that the id threaded
-        down is the token's.
-        """
+        """The owner passed down is the token's user. The client cannot choose it."""
         stub = StubUseCase(returns=conversation())
 
         async with client(StubContainer(get_conversation=stub)) as http:
@@ -269,12 +253,7 @@ class TestEveryOtherRouteIsGated:
 
 
 class TestTranscriptionSocketRequiresAToken:
-    """The socket is authenticated before it is accepted.
-
-    Every accepted socket opens a billed Deepgram session, so a caller who
-    cannot prove who they are must be turned away at the handshake rather than
-    after it.
-    """
+    """The socket is authenticated before accept, since each one costs a Deepgram session."""
 
     class StubTranscribe:
         def __init__(self) -> None:

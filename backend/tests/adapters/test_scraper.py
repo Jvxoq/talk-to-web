@@ -1,21 +1,13 @@
-"""The aiohttp scraper against a real HTTP server.
+"""The aiohttp scraper against a real local HTTP server.
 
-Every test below makes an actual request over an actual socket to an actual
-`aiohttp.web` application, and parses the result with actual BeautifulSoup and
-lxml. Redirect following, the byte ceiling, charset handling and content-type
-refusal are all things that only behave the way the code assumes when a real
-server is on the other end, so none of them are stubbed.
-
-The one thing that is: `is_blocked_address`, as the adapter sees it. The test
-server necessarily lives on loopback, which the SSRF guard exists to refuse.
-`treat_local_as_public` relaxes that one predicate on the adapter's module, and
-only for the tests that need to reach the server. `TestRefusesPrivateTargets`
-runs with the real predicate and is what proves the guard refuses; the domain's
-own copy is never patched by anything here.
+Only `is_blocked_address` is relaxed, on the adapter's module, so tests can
+reach loopback. `TestRefusesPrivateTargets` uses the real predicate.
 """
 
 import re
+import socket
 from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any
 
 import aiohttp
 import pytest
@@ -38,12 +30,7 @@ Serve = Callable[[web.Application], Awaitable[str]]
 
 @pytest.fixture
 def treat_local_as_public(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Let the guard accept 127.0.0.1, so the test server is reachable.
-
-    Patched on the scraper's module rather than at the domain, so the domain
-    rule itself is never redefined - only this adapter's view of it, for the
-    duration of one test.
-    """
+    """Let the adapter accept 127.0.0.1. The domain rule is not patched."""
     monkeypatch.setattr(
         "app.adapters.web.aiohttp_scraper.is_blocked_address",
         lambda address: False,
@@ -64,11 +51,7 @@ async def serve() -> AsyncIterator[Serve]:
         await site.start()
         sites.append(site)
         port = next(iter(runner.addresses))[1]
-        # A hostname, not `127.0.0.1`. A literal address is judged by the domain
-        # in `FetchableUrl.parse`, before the adapter is involved at all, and
-        # relaxing a domain rule from a test would be relaxing the wrong thing.
-        # A name reaches the adapter's DNS check, which is what
-        # `treat_local_as_public` speaks to.
+        # A hostname, so the adapter's DNS check runs instead of the domain's IP check.
         return f"http://localhost:{port}"
 
     try:
@@ -115,10 +98,7 @@ class TestParsesRealPages:
             ("<div id='bodyContent'>Wikipedia body</div>", "Wikipedia body"),
             ("<main>Main element</main>", "Main element"),
             ("<article>Article element</article>", "Article element"),
-            # No container at all: the fallback is the whole document, which is
-            # what stops a plain page silently producing an empty string. The
-            # legacy parser only looked for `div#bodyContent`, so every site but
-            # Wikipedia returned nothing.
+            # No main element: fall back to the whole document.
             ("<p>Just a paragraph</p>", "Just a paragraph"),
         ],
     )
@@ -154,8 +134,7 @@ class TestParsesRealPages:
         serve: Serve,
         treat_local_as_public: None,
     ) -> None:
-        # One enormous document must not eat the model's whole context window,
-        # nor the prompt budget belonging to the other URLs in the message.
+        # One huge page must not fill the context window.
         body = "x" * (MAX_PAGE_CHARS + 5_000)
         application = web.Application()
         application.router.add_get("/", page(f"<html><body><main>{body}</main></body></html>"))
@@ -188,8 +167,7 @@ class TestParsesRealPages:
         serve: Serve,
         treat_local_as_public: None,
     ) -> None:
-        # A server is free to name any charset it likes. Raising `LookupError`
-        # out of a fetch would lose the page over a header nobody controls.
+        # An unknown charset must not lose the page.
         async def handler(_request: web.Request) -> web.Response:
             response = web.Response(body=b"<html><body><main>ok</main></body></html>")
             response.headers["Content-Type"] = "text/html; charset=invented-9"
@@ -209,10 +187,7 @@ class TestBoundsWhatItReads:
         serve: Serve,
         treat_local_as_public: None,
     ) -> None:
-        # `response.text()` reads until the server stops sending, so a link to a
-        # disk image is enough to exhaust memory. This server would happily send
-        # far more than the ceiling; the test passing at all is the proof that
-        # the fetcher stopped asking.
+        # The server sends past the ceiling. Passing proves the fetcher stopped.
         sent = 0
 
         async def handler(request: web.Request) -> web.StreamResponse:
@@ -221,8 +196,7 @@ class TestBoundsWhatItReads:
             await response.prepare(request)
             block = b"<p>" + b"y" * 60_000 + b"</p>"
             try:
-                # Comfortably past the ceiling, and bounded so a fetcher that
-                # never stopped fails the test instead of hanging the suite.
+                # Past the ceiling, but bounded so a bug fails instead of hanging.
                 for _ in range(MAX_PAGE_BYTES // len(block) + 20):
                     await response.write(block)
                     sent += len(block)
@@ -248,9 +222,7 @@ class TestBoundsWhatItReads:
         serve: Serve,
         treat_local_as_public: None,
     ) -> None:
-        # Pointing lxml at a tarball spends the whole byte budget to produce
-        # nothing. The refusal is logged and dropped by `fetch_all`, so the
-        # observable result is an empty answer rather than an exception.
+        # A non-page type is refused, so `fetch_all` returns empty.
         application = web.Application()
         application.router.add_get("/", page("not markup", content_type=content_type))
         base = await serve(application)
@@ -281,10 +253,7 @@ class TestFollowsRedirectsSafely:
         serve: Serve,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        # The reason redirects are followed by hand. A guard that only inspects
-        # the URL the user typed is no guard at all: a public host is free to
-        # answer with "Location: http://169.254.169.254/", and aiohttp would
-        # follow it straight to the cloud metadata service.
+        # A redirect to the metadata address must be refused.
         async def redirect(_request: web.Request) -> web.Response:
             raise web.HTTPFound("http://169.254.169.254/latest/meta-data/")
 
@@ -292,8 +261,7 @@ class TestFollowsRedirectsSafely:
         application.router.add_get("/", redirect)
         base = await serve(application)
 
-        # Only the loopback the test server is on is treated as public; the
-        # metadata address is still refused.
+        # Only loopback is relaxed. The metadata address is still refused.
         monkeypatch.setattr(
             "app.adapters.web.aiohttp_scraper.is_blocked_address",
             lambda address: address.startswith("169.254."),
@@ -346,17 +314,14 @@ class TestRefusesPrivateTargets:
             "http://10.0.0.5/",
             "http://192.168.1.1/",
             "http://[::1]/",
-            # 10.0.0.1 wearing an IPv6 costume. None of the v6 predicates would
-            # call this private on their own.
+            # IPv4-mapped IPv6 for 10.0.0.1.
             "http://[::ffff:10.0.0.1]/",
         ],
     )
     async def test_a_literal_private_address_never_leaves_the_process(
         self, url: str, fetcher: AiohttpWebContentFetcher
     ) -> None:
-        # Refused by `FetchableUrl.parse` before a socket is opened: everything
-        # an attacker gets by naming one of these is infrastructure that trusts
-        # anything already inside the network.
+        # Refused before any socket opens.
         with pytest.raises(UnsafeUrl):
             await fetcher._fetch(url)
 
@@ -372,16 +337,20 @@ class TestRefusesPrivateTargets:
     async def test_a_hostname_that_resolves_to_a_private_address_is_refused(
         self, fetcher: AiohttpWebContentFetcher
     ) -> None:
-        # The literal check in the domain cannot catch this one - "localhost"
-        # is not an address - so the adapter resolves the name and judges every
-        # answer. This is real DNS: `localhost` resolves through the system
-        # resolver like any other name.
+        # A name, so the adapter resolves it (real DNS) and checks every address.
         with pytest.raises(UnsafeUrl, match="resolves to"):
             await fetcher._fetch("http://localhost:6333/")
 
     async def test_a_host_that_does_not_resolve_is_refused_rather_than_dialled(
-        self, fetcher: AiohttpWebContentFetcher
+        self, fetcher: AiohttpWebContentFetcher, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # The resolver failure is injected as the real `gaierror`, with no network.
+
+        def fail_dns(host: Any, *args: Any, **kwargs: Any) -> Any:
+            raise socket.gaierror(8, "Name or service not known")
+
+        monkeypatch.setattr(socket, "getaddrinfo", fail_dns)
+
         with pytest.raises(UnsafeUrl, match="does not resolve"):
             await fetcher._fetch("http://no-such-host.invalid/")
 
@@ -409,8 +378,7 @@ class TestFetchAll:
         serve: Serve,
         treat_local_as_public: None,
     ) -> None:
-        # `return_exceptions=True` and the isinstance check. Without them, one
-        # 500 in a message full of links would lose every page in it.
+        # One failing link must not lose the others.
         async def fails(_request: web.Request) -> web.Response:
             raise web.HTTPInternalServerError
 
@@ -434,9 +402,7 @@ class TestFetchAll:
         serve: Serve,
         treat_local_as_public: None,
     ) -> None:
-        # aiohttp's default agent is rejected outright by a great many sites -
-        # Wikimedia answers it with a flat 403 - which silently cost us the
-        # content of every wikipedia.org link.
+        # Many sites (Wikimedia too) reject aiohttp's default agent.
         seen: list[str] = []
 
         async def handler(request: web.Request) -> web.Response:

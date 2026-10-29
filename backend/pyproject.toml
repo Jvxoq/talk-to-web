@@ -43,14 +43,12 @@ dev = [
     "pytest>=8.3.4",
     "pytest-asyncio>=0.25.0",
     "pytest-cov>=6.0.0",
+    "pytest-timeout>=2.4.0",
     "pre-commit>=4.0.0",
     "ruff>=0.9.0",
 ]
 
-# This is an application, not a distributable library: the code lives in `app/`,
-# which does not match the project name, and nothing imports it as a package.
-# Marking it non-packaged keeps `uv sync` installing dependencies only, with no
-# build backend required.
+# An application, not a library, so `uv sync` installs dependencies only.
 [tool.uv]
 package = false
 
@@ -66,6 +64,7 @@ select = [
     "N",
     "UP",
     "B",
+    "BLE",
     "A",
     "C4",
     "ASYNC",
@@ -83,14 +82,9 @@ ban-relative-imports = "all"
 max-complexity = 8
 
 [tool.ruff.lint.per-file-ignores]
-# Fakes assert to prove their own invariants, and tests assert for a living.
-# S105/S106 flag literal passwords, tokens and signing secrets - which is
-# exactly what an auth test is made of. Suppressed only here: in `app/` the same
-# rules are the ones that would catch a credential committed by accident.
+# Tests use asserts and fake secrets (S105/S106). These rules still apply in `app/`.
 "tests/*" = ["S101", "S105", "S106"]
-# Domain errors are named for the business fact they report ("ConversationNotFound"),
-# not for the fact that they are exceptions. The name is part of the ubiquitous
-# language, so N818's "-Error" suffix is declined here and nowhere else.
+# Domain errors are named for the business fact, without an "Error" suffix.
 "app/domain/*/errors.py" = ["N818"]
 
 [tool.mypy]
@@ -113,34 +107,31 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-# `uv run pytest` needs nothing running, and that stays true as the integration
-# suite grows: everything under `tests/integration/` is marked (by that
-# package's `pytest_collection_modifyitems`) and deselected here. Opt in with
-# `uv run pytest -m integration` — a `-m` on the command line replaces this one
-# rather than adding to it.
+# A hung test fails instead of hanging CI. Needs `pytest-timeout`.
+timeout = 30
+filterwarnings = [
+    "error",
+    # Raised by Starlette when `fastapi.testclient` loads, not by our code.
+    "ignore::starlette.exceptions.StarletteDeprecationWarning",
+    # Local-mode Qdrant accepts payload indexes but ignores them.
+    "ignore:Payload indexes have no effect in the local Qdrant:UserWarning",
+]
+# Integration tests are deselected, so `uv run pytest` needs nothing running.
+# Opt in with `uv run pytest -m integration`.
 addopts = ["-m", "not integration"]
 markers = [
     "integration: needs a real Postgres and Qdrant (see tests/integration/conftest.py)",
 ]
 
-# `source = ["app"]` scopes coverage to the application package, so a stray
-# script or a future top-level module cannot dilute the figure.
+# Coverage for the `app` package only.
 [tool.coverage.run]
 source = ["app"]
 branch = true
 
-# `fail_under` lives here rather than as a `--cov-fail-under` flag in CI so a
-# local run and a CI run disagree about nothing. The floor is the measured
-# figure rounded down, not an aspiration: it exists to catch a regression, and
-# a number nobody can hit is a number that gets deleted.
+# Kept here, not as a CI flag, so local runs and CI agree.
 [tool.coverage.report]
 show_missing = true
-# Raised from 75 when the guardrail, cost and tracing work landed. Those
-# modules are mostly pure functions, so they arrive near fully covered and
-# leaving the gate at 75 would have let the rest of the app rot underneath a
-# number the new code was quietly holding up. Set just under the measured 87%,
-# which is enough headroom for an honest refactor and not enough to lose a
-# whole module's tests without noticing.
+# Just under the measured 87%, to catch a regression without blocking refactors.
 fail_under = 85
 exclude_lines = [
     "pragma: no cover",
@@ -189,19 +180,14 @@ forbidden_modules = [
     "httpx",
     "aiohttp",
     "app.adapters",
-    # The agent graph lives in the application layer, so `langgraph` is allowed
-    # there: it is orchestration with no network or database access, the same
-    # category as `asyncio`. LangChain is the opposite - it binds real model
-    # providers - so it stays behind the `ChatModel` port, in adapters. Naming
-    # it here is what stops a convenient import from quietly erasing that line.
+    # `langgraph` is allowed in the application layer: orchestration with no
+    # network or database access. LangChain binds real providers, so it stays in
+    # adapters.
     "langchain",
     "langchain_core",
     "langchain_together",
     "tavily",
-    # Cryptography is infrastructure like any other. The use cases hash and sign
-    # through `PasswordHasher` / `AccessTokenCodec`, so a token format or a KDF
-    # can be replaced without a business rule noticing - and, more to the point,
-    # so a convenient `import jwt` in a use case cannot quietly weld one in.
+    # Crypto stays behind `PasswordHasher` and `AccessTokenCodec`.
     "jwt",
     "argon2",
 ]
