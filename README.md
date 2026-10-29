@@ -6,7 +6,7 @@
 [![Frontend CI](https://github.com/Jvxoq/talk-to-web/actions/workflows/frontend.yml/badge.svg)](https://github.com/Jvxoq/talk-to-web/actions/workflows/frontend.yml)
 [![Evals](https://github.com/Jvxoq/talk-to-web/actions/workflows/evals.yml/badge.svg)](https://github.com/Jvxoq/talk-to-web/actions/workflows/evals.yml)
 
-**[Live demo](https://talk-to-web.vercel.app)** · **[Architecture](ARCHITECTURE.md)** · **[Backend internals](backend/README.md)**
+**[Live demo](https://talk-to-web.vercel.app)** · **[Backend internals](backend/README.md)**
 
 Upload a PDF/DOCX/text file, then chat about it. The agent can retrieve your documents (Qdrant), fetch a web page, or search the web (Tavily) — plus live speech-to-text (Deepgram).
 
@@ -25,7 +25,6 @@ This is an **onion-architecture reference** (`domain → application → adapter
 
 **Agent highlights:** LangGraph graph with tool routing enforced in `ToolRegistry.invoke` (not just a prompt), Qdrant retrieval filtered on owner + conversation, document digest on every turn.
 
-- Architecture, deployment, features, operational concerns → [ARCHITECTURE.md](ARCHITECTURE.md)
 - Backend internals (layers, use cases, config) → [backend/README.md](backend/README.md)
 - Frontend internals (feature slices, state, theming) → [frontend/README.md](frontend/README.md)
 
