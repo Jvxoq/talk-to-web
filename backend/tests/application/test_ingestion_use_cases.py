@@ -8,6 +8,7 @@ import pytest
 from app.application.ingestion.dto import UploadDocumentInput
 from app.application.ingestion.ports import DocumentSummarizer
 from app.application.ingestion.use_cases.delete_document import DeleteDocument
+from app.application.ingestion.use_cases.get_conversation_document import GetConversationDocument
 from app.application.ingestion.use_cases.index_document import IndexDocument
 from app.application.ingestion.use_cases.list_documents import ListDocuments
 from app.application.ingestion.use_cases.upload_document import UploadDocument
@@ -35,14 +36,11 @@ from tests.fakes import (
 
 OWNER = 7
 STRANGER = 8
-# The thread every upload here is attached to. A document belongs to one
-# conversation, so there is no such thing as an upload without one.
+# The thread every upload here attaches to.
 CONVERSATION = 42
-# The stranger's own thread. An upload may only name a conversation its own
-# account owns, so the two never share one.
+# The stranger's own thread.
 STRANGER_CONVERSATION = 43
-# A second thread belonging to the same account, for the tests that prove one
-# thread's upload leaves another's alone.
+# A second thread of the same account.
 OTHER_CONVERSATION = 44
 
 
@@ -60,9 +58,7 @@ def upload_document(
     remove_document: "FakeDocumentRemover | None" = None,
 ) -> UploadDocument:
     factory = factory or UnitOfWorkSpy()
-    # The upload refuses a thread this account does not own, so every test
-    # needs one to aim at. Seeded here rather than in each test, because it is
-    # a precondition of uploading at all rather than anything under test.
+    # Uploads need an owned thread, so seed one.
     seed_conversation(factory)
     seed_conversation(factory, STRANGER, STRANGER_CONVERSATION)
     return UploadDocument(
@@ -126,8 +122,7 @@ class TestUploadDocument:
         assert stored.chunks_indexed == 0
 
     async def test_accepts_a_content_type_with_parameters(self) -> None:
-        # Browsers append charset and friends; strict equality would reject a
-        # perfectly good upload.
+        # Browsers append parameters like charset.
         result = await upload_document(FakeFileStorage(), 1024, FakeRateLimiter())(
             UploadDocumentInput(
                 "a.pdf",
@@ -151,8 +146,7 @@ class TestUploadDocument:
         assert storage.saved == [], "nothing may be written before the type check passes"
 
     async def test_rejects_a_file_that_only_claims_to_be_a_pdf(self) -> None:
-        # The declared type and the name are both attacker-chosen. Only the
-        # first bytes say what the file really is.
+        # Type and name are client-chosen. The first bytes decide.
         storage = FakeFileStorage()
         with pytest.raises(UnsupportedDocumentType):
             await upload_document(storage, 1024, FakeRateLimiter())(
@@ -188,8 +182,7 @@ class TestUploadDocument:
         assert storage.saved == []
 
     async def test_the_signature_check_does_not_eat_the_bytes_it_read(self) -> None:
-        # The opening bytes are buffered across chunk boundaries to be judged;
-        # what lands in storage must still be the whole original file.
+        # Buffering the opening bytes must not change the stored file.
         storage = FakeFileStorage()
         await upload_document(storage, 1024, FakeRateLimiter())(
             UploadDocumentInput(
@@ -203,9 +196,7 @@ class TestUploadDocument:
         assert storage.saved == [("a.pdf", b"%PDF-1.7body")]
 
     async def test_an_upload_past_the_budget_is_refused_before_anything_is_stored(self) -> None:
-        # Indexing is what costs money - extraction, chunking, one embedding call
-        # per chunk - so the limit has to bite before the bytes are accepted, not
-        # after they are on disk.
+        # The limit applies before any bytes are accepted.
         storage = FakeFileStorage()
         limiter = FakeRateLimiter(max_attempts=1)
         upload = upload_document(storage, 1024, limiter)
@@ -367,8 +358,7 @@ class TestOneAttachmentPerConversation:
         assert remover.removed == [], "the other thread's file is not this thread's to replace"
 
     async def test_a_failed_removal_does_not_cost_the_new_upload(self) -> None:
-        # The user's new file is already stored. Refusing the upload because a
-        # stale one would not delete trades a working attachment for a dead one.
+        # The new file is stored, so a failed old delete must not fail the upload.
         factory = UnitOfWorkSpy()
         remover = FakeDocumentRemover(fail_with=RuntimeError("qdrant is down"))
         upload = upload_document(
@@ -423,10 +413,7 @@ class TestIndexDocument:
         owner_id: int = OWNER,
     ) -> IndexDocument:
         factory = factory or UnitOfWorkSpy()
-        # Production always has a committed row by the time indexing runs:
-        # `UploadDocument` commits it before the route schedules this task,
-        # and the re-check inside the lock reads it. Seeded here because it is
-        # a precondition of indexing at all rather than anything under test.
+        # In production the row always exists before indexing, so seed it.
         factory.documents.rows.setdefault(document_id, existing_document(document_id, owner_id))
         return IndexDocument(
             extractor=FakeTextExtractor(text),
@@ -465,8 +452,7 @@ class TestIndexDocument:
         assert factory.documents.rows[1].chunks_indexed == result.chunks_indexed
 
     async def test_batches_larger_than_the_embed_window(self) -> None:
-        # 20+ chunks forces more than one embedding batch; every chunk must
-        # still get exactly one vector.
+        # More than one batch. Each chunk still gets one vector.
         index = FakeVectorIndex()
         embedder = FakeEmbedder()
         factory = UnitOfWorkSpy()
@@ -494,13 +480,7 @@ class TestIndexDocument:
         assert index.ensured == [3], "the collection is created, never recreated"
 
     async def test_a_second_upload_does_not_wipe_the_first(self) -> None:
-        """The regression 2.3 exists to fix.
-
-        Indexing used to clear the owner's whole namespace before every
-        upload, so a second document destroyed the first one's passages. Now
-        each document is tagged with its own id, and only `DeleteDocument`
-        removes one - never another upload.
-        """
+        """A second upload must not erase the first one's passages."""
         index = FakeVectorIndex()
         await self.build("first document text", index, document_id=1)(
             "uploads/a.pdf", "a.pdf", 1, OWNER, CONVERSATION
@@ -562,9 +542,7 @@ class TestIndexDocument:
         assert summarizer.calls == [("a.pdf", "the extracted words")]
 
     async def test_a_summarizer_that_declines_still_indexes_the_document(self) -> None:
-        # `None` is the port's "could not summarize this". The file is already
-        # embedded by then, so it must stay fully searchable with an empty
-        # digest rather than losing the upload over an enhancement.
+        # `None` means no summary. The file is still indexed.
         factory = UnitOfWorkSpy()
         document = await factory.documents.add(existing_document(1, OWNER))
         assert document.id is not None
@@ -586,10 +564,7 @@ class TestIndexDocument:
         assert stored.chunks_indexed == result.chunks_indexed
 
     async def test_a_summarizer_that_raises_still_indexes_the_document(self) -> None:
-        # Belt and braces against a summarizer that breaks the port's contract.
-        # The vectors are already upserted at this point, so an exception
-        # escaping would leave them stranded behind a row still claiming zero
-        # chunks - the one inconsistency this use case must not produce.
+        # A summarizer that raises must not leave the row claiming zero chunks.
         class ExplodingSummarizer:
             async def summarize_document(self, name: str, text: str) -> str | None:
                 raise RuntimeError("provider down")
@@ -627,15 +602,7 @@ class TestIndexDocument:
         assert await index.search([0.0], 3, 0.5, STRANGER, CONVERSATION) == []
 
     async def test_a_delete_that_lands_while_embedding_wins(self) -> None:
-        """The bug this lock exists for.
-
-        Indexing spends tens of seconds embedding before it writes anything.
-        A delete that arrives in that window removes the row and reports
-        success - and without the lock the indexer would then upsert every
-        point anyway, leaving vectors retrievable forever with no row left for
-        any later delete to find them by. The indexer must instead re-check
-        the row and stop.
-        """
+        """A delete during embedding wins. The indexer re-checks the row and stops."""
         factory = UnitOfWorkSpy()
         factory.documents.rows[1] = existing_document(1, OWNER)
         embedder = GatedEmbedder()
@@ -648,8 +615,7 @@ class TestIndexDocument:
                 "uploads/a.pdf", "a.pdf", 1, OWNER, CONVERSATION
             )
         )
-        # The indexer is now suspended inside its first embed call - before it
-        # has taken the lock, exactly like a real mid-embedding delete.
+        # The indexer is paused in its first embed call, before the lock.
         await embedder.entered.wait()
 
         await DeleteDocument(factory, index=index, storage=FakeFileStorage(), lock=lock)(1, OWNER)
@@ -663,12 +629,7 @@ class TestIndexDocument:
         assert factory.documents.rows == {}
 
     async def test_a_delete_that_arrives_while_the_indexer_writes_waits(self) -> None:
-        """The other side of the same lock.
-
-        The indexer is holding the lock and inside its upsert. The delete
-        must wait for it, then remove what was written - not run first,
-        find nothing, and let the upsert orphan its points afterwards.
-        """
+        """A delete during the upsert waits, then removes what was written."""
         factory = UnitOfWorkSpy()
         factory.documents.rows[1] = existing_document(1, OWNER)
         index = GatedIndex()
@@ -682,9 +643,7 @@ class TestIndexDocument:
         deleting = asyncio.create_task(
             DeleteDocument(factory, index=index, storage=FakeFileStorage(), lock=lock)(1, OWNER)
         )
-        # One scheduler turn: the fake's awaits never suspend, so an unlocked
-        # delete would now be finished. Waiting on the lock is the only way it
-        # can still be running.
+        # One scheduler turn. Only the lock can keep the delete running now.
         await asyncio.sleep(0)
         assert not deleting.done(), "the delete must wait for the indexer to leave the lock"
 
@@ -692,10 +651,7 @@ class TestIndexDocument:
         indexed = await indexing
         assert indexed.chunks_indexed > 0
 
-        # The delete has now taken the lock and is inside its vector delete -
-        # after its row read, before the row goes. The indexer's writes are
-        # provably complete and visible to it at this moment, which is the
-        # ordering the lock exists to guarantee.
+        # The delete now holds the lock, after the indexer's writes finished.
         await index.entered_delete.wait()
         assert factory.documents.rows[1].chunks_indexed == indexed.chunks_indexed
 
@@ -788,9 +744,7 @@ class TestDeleteDocument:
         assert factory.issued[0].committed
 
     async def test_a_url_ingested_document_never_touches_storage(self) -> None:
-        """A document from the removed URL path never had a file - its `reference`
-        is the source URL - so deleting it must not ask `FileStorage` to remove
-        anything."""
+        """An old URL-ingested document has no stored file to delete."""
         factory = UnitOfWorkSpy()
         factory.documents.rows[1] = UploadedDocument(
             name="example.com-abc123.txt",
@@ -819,3 +773,49 @@ class TestDeleteDocument:
             await delete(1, STRANGER)
 
         assert 1 in factory.documents.rows
+
+
+class TestGetConversationDocument:
+    async def test_returns_attached_document(self) -> None:
+        """The composer chip shows the one file the thread holds."""
+        factory = UnitOfWorkSpy()
+        seed_conversation(factory)
+        attached = await factory.documents.add(
+            UploadedDocument(
+                name="a.pdf",
+                reference="uploads/7/a.pdf",
+                owner_id=OWNER,
+                conversation_id=CONVERSATION,
+            )
+        )
+
+        result = await GetConversationDocument(factory)(CONVERSATION, OWNER)
+
+        assert result == attached
+
+    async def test_empty_thread_returns_none(self) -> None:
+        """An empty attachment is a normal state, not an error."""
+        factory = UnitOfWorkSpy()
+        seed_conversation(factory)
+
+        assert await GetConversationDocument(factory)(CONVERSATION, OWNER) is None
+
+    async def test_missing_thread_raises_unknown(self) -> None:
+        with pytest.raises(UnknownConversation, match="Conversation 404 not found"):
+            await GetConversationDocument(UnitOfWorkSpy())(404, OWNER)
+
+    async def test_stranger_cannot_read_attachment(self) -> None:
+        """A stranger's thread id must read as missing, never as another's file."""
+        factory = UnitOfWorkSpy()
+        seed_conversation(factory)
+        await factory.documents.add(
+            UploadedDocument(
+                name="a.pdf",
+                reference="uploads/7/a.pdf",
+                owner_id=OWNER,
+                conversation_id=CONVERSATION,
+            )
+        )
+
+        with pytest.raises(UnknownConversation, match="Conversation 42 not found"):
+            await GetConversationDocument(factory)(CONVERSATION, STRANGER)

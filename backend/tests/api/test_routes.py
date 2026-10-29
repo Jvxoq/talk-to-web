@@ -1,7 +1,6 @@
-"""API tests: status codes, serialization and error mapping — not business rules.
+"""API tests: status codes, serialization and error mapping, not business rules.
 
-The app is built with a container full of stubs and the lifespan never runs, so
-these exercise the delivery layer without a database, a vector store or a key.
+Stub container, no lifespan, so no database, vector store or key is needed.
 """
 
 import json
@@ -46,7 +45,12 @@ from app.domain.chat.entities import Conversation, Message
 from app.domain.chat.errors import ConversationNotFound
 from app.domain.identity.errors import InvalidToken
 from app.domain.ingestion.entities import UploadedDocument
-from app.domain.ingestion.errors import DocumentNotFound, DocumentTooLarge, UnsupportedDocumentType
+from app.domain.ingestion.errors import (
+    DocumentNotFound,
+    DocumentTooLarge,
+    UnknownConversation,
+    UnsupportedDocumentType,
+)
 from app.domain.usage.errors import RateLimited
 from app.factory import create_app
 from app.settings import Settings
@@ -54,27 +58,20 @@ from tests.fakes import FakeReadinessProbe
 
 NOW = datetime(2026, 8, 6, tzinfo=UTC)
 
-# What the stub container reports as configured. The API reads the model list off
-# the container, never off settings, so this is the only place the tests need it.
+# The models the stub container reports.
 MODELS: tuple[str, ...] = ("llama-3.3-70b-versatile", "openai/gpt-oss-120b")
 
 # Likewise for the WebSocket allow-list.
 WS_ORIGINS: tuple[str, ...] = ("https://app.example.com",)
 
-# Every authenticated request in this file carries this token and resolves to
-# this person. The token is opaque here on purpose - `StubIdentifyRequest` below
-# stands in for the codec, so these tests never depend on the JWT format.
+# The token every authenticated request sends. Opaque, so no JWT format is assumed.
 TOKEN = "a-valid-access-token"
 USER = UserContext(user_id=7, email="owner@example.com")
-# The thread an upload attaches to. Sent as a form field alongside the file,
-# because the two only mean anything together.
+# The thread an upload attaches to, sent as a form field.
 CONVERSATION = 42
 AUTH: dict[str, str] = {"Authorization": f"Bearer {TOKEN}"}
 
-# The WebSocket carries its token as an offered subprotocol rather than a query
-# parameter: browsers give no way to set a header on a handshake, but they do
-# let JavaScript choose `Sec-WebSocket-Protocol`. The fixed marker comes first,
-# the token second - see `_token_from_subprotocols` in the transcription router.
+# The WebSocket token rides as the second subprotocol, after a fixed marker.
 WS_URL = "/ws/transcribe/"
 WS_SUBPROTOCOLS = ["access_token", TOKEN]
 
@@ -98,9 +95,7 @@ class StubGenerateReply:
         self.seen: list[GenerateReplyInput] = []
 
     async def __call__(self, data: GenerateReplyInput) -> AsyncIterator[ReplyEvent]:
-        # A coroutine returning an iterator, matching the real use case: it
-        # spends the rate-limit budget eagerly and only then hands back the
-        # stream, so a refusal happens before the response starts.
+        # Like the real use case: limits first, then the stream.
         self.seen.append(data)
         return self._events()
 
@@ -125,12 +120,7 @@ class StubUseCase:
 
 
 class StubIdentifyRequest:
-    """Accepts one token and rejects everything else.
-
-    Deliberately not a signature check: these tests are about the delivery layer,
-    and the real codec has its own tests. What matters here is that a route with
-    no usable token never reaches its use case.
-    """
+    """Accepts one token and rejects the rest. The real codec has its own tests."""
 
     def __init__(self, user: UserContext = USER, accepts: str = TOKEN) -> None:
         self.user = user
@@ -153,6 +143,7 @@ class StubContainer:
     upload_document: Any = None
     index_document: Any = None
     list_documents: Any = None
+    get_conversation_document: Any = None
     delete_document: Any = None
     transcribe_stream: Any = None
     register_user: Any = None
@@ -160,17 +151,12 @@ class StubContainer:
     refresh_session: Any = None
     revoke_session: Any = None
     identify_request: Any = field(default_factory=StubIdentifyRequest)
-    # The real use case, not a stub: it is pure orchestration over its probes,
-    # so a test says what it means by supplying the probes rather than by
-    # replacing the thing under test. No probes is a ready deployment, which is
-    # what every test in this file that is not about `/ready` wants.
+    # The real use case with no probes, which reads as ready.
     check_readiness: Any = field(
         default_factory=lambda: CheckReadiness(probes=[], timeout_seconds=1.0)
     )
     refresh_cookie: RefreshCookiePolicy = field(
-        # `secure=False` so `httpx` and `TestClient` keep the cookie over the
-        # plain-http base URL these tests use; a Secure cookie would be dropped
-        # and every refresh test would fail for the wrong reason.
+        # `secure=False`, or the test clients drop the cookie over plain http.
         default_factory=lambda: RefreshCookiePolicy(
             name="refresh_token", path="/auth", secure=False, samesite="lax"
         )
@@ -181,12 +167,7 @@ class StubContainer:
 
 
 def frames(body: str) -> list[dict[str, Any]]:
-    """Every SSE frame's JSON payload, in order.
-
-    Parsed rather than string-matched because the assertions below are about
-    what the frontend will read out of each frame, not about how json.dumps
-    happened to space it.
-    """
+    """Every SSE frame's parsed JSON payload, in order."""
     return [
         json.loads(line.removeprefix("data: "))
         for line in body.split("\n\n")
@@ -195,19 +176,16 @@ def frames(body: str) -> list[dict[str, Any]]:
 
 
 def client(
-    container: StubContainer, *, reraise: bool = True, authenticated: bool = True
+    container: StubContainer,
+    *,
+    reraise: bool = True,
+    authenticated: bool = True,
+    cookies: dict[str, str] | None = None,
 ) -> httpx.AsyncClient:
-    """
-    Build the real app around a stub container, without running the lifespan.
+    """Build the real app around a stub container, without the lifespan.
 
-    `reraise=False` is for the 500 path only: Starlette hands the exception to
-    our handler, sends that response, and then re-raises so the server still
-    logs it. Only by not re-raising here can a test see the body a browser would
-    actually receive.
-
-    The bearer header is attached by default so every test below reads as what
-    it is about. `authenticated=False` is how a test asks the opposite question:
-    what an anonymous caller gets.
+    `reraise=False` lets a test read the 500 body. `authenticated=False` drops
+    the default bearer header.
     """
     app = create_app(settings())
     app.dependency_overrides[get_container] = lambda: container
@@ -215,6 +193,7 @@ def client(
         transport=httpx.ASGITransport(app=app, raise_app_exceptions=reraise),
         base_url="http://test",
         headers=dict(AUTH) if authenticated else {},
+        cookies=cookies,
     )
 
 
@@ -224,14 +203,9 @@ async def _no_lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 
 def ws_client(container: StubContainer) -> TestClient:
-    """A WebSocket-capable client over the real app and a stub container.
+    """A WebSocket-capable `TestClient` over the real app and a stub container.
 
-    `httpx.ASGITransport` cannot speak WebSocket, so these tests need
-    `TestClient` — and `TestClient` only opens the portal `websocket_connect`
-    needs when it is entered as a context manager, which is also what runs the
-    lifespan. The real lifespan builds Postgres, Qdrant and Deepgram clients, so
-    it is replaced with one that does nothing; the container arrives through the
-    dependency override instead, exactly as in the HTTP tests above.
+    Entering `TestClient` runs the lifespan, so it is replaced with a no-op.
     """
     app = create_app(settings())
     app.dependency_overrides[get_container] = lambda: container
@@ -263,15 +237,11 @@ class TestGenerateText:
 
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/event-stream")
-        # JSON-encoded per frame, because a token can contain the newline that
-        # would otherwise terminate the frame early.
+        # JSON per frame, so a newline in a token cannot end the frame.
         assert response.text == 'data: {"delta": "Hel\\nlo"}\n\ndata: {"done": true}\n\n'
 
     async def test_tool_activity_reaches_the_client_as_its_own_frames(self) -> None:
-        # Asserted on content, not on frame count. `to_sse` matches these events
-        # with class patterns that capture fields by name, so a renamed field
-        # would stop matching and silently drop the frame - which a "three frames
-        # arrived" assertion would happily pass.
+        # Check content, not count: a renamed field would silently drop a frame.
         stub = StubGenerateReply(
             [
                 ReplyToolStarted(name="search_web", summary="tallest building"),
@@ -309,8 +279,7 @@ class TestGenerateText:
             )
 
         assert frames(response.text) == [
-            # No `tokens_after` on the start frame: it is not known yet, and
-            # sending zero would read as "condensed to nothing".
+            # No `tokens_after` on start, since it is not known yet.
             {"summarizing": {"status": "start", "tokens_before": 12480}},
             {"summarizing": {"status": "done", "tokens_before": 12480, "tokens_after": 4100}},
             {"delta": "Here you go."},
@@ -353,8 +322,7 @@ class TestGenerateText:
         assert frames(response.text)[0] == {"tool": {"name": "search_web", "status": "ok"}}
 
     async def test_a_failed_tool_is_reported_as_failed_not_as_an_error(self) -> None:
-        # The distinction matters to the client: `error` ends the answer, a
-        # failed tool only costs it some grounding.
+        # `error` ends the answer. A failed tool does not.
         stub = StubGenerateReply(
             [ReplyToolFinished(name="retrieve_documents", ok=False), ReplyCompleted()]
         )
@@ -381,9 +349,7 @@ class TestGenerateText:
         assert response.text.endswith('data: {"error": "rate limited"}\n\n')
 
     async def test_a_spent_chat_budget_is_a_429_before_the_stream_opens(self) -> None:
-        # The whole reason the use case is awaited rather than iterated: a limit
-        # discovered mid-stream could only truncate a body that already sent 200,
-        # and the client would read a refusal as a broken answer.
+        # The limit is checked before streaming, so it is a 429, not a cut-off 200.
         stub = StubUseCase(raises=RateLimited(retry_after_seconds=30))
 
         async with client(StubContainer(generate_reply=stub)) as http:
@@ -394,8 +360,7 @@ class TestGenerateText:
         assert response.status_code == 429
         assert response.headers["retry-after"] == "30"
         assert not response.headers["content-type"].startswith("text/event-stream")
-        # The same number in the body, because a browser cannot read the header
-        # cross-origin and the frontend counts down from this.
+        # Also in the body, since cross-origin JS cannot read the header.
         assert response.json()["retry_after_seconds"] == 30
 
     async def test_the_conversation_id_is_forwarded_as_the_agents_memory_key(self) -> None:
@@ -414,9 +379,7 @@ class TestGenerateText:
         "body",
         [
             {"model": MODELS[0], "user_input": "hi"},
-            # The frontend sends the key explicitly and sets it to null until the
-            # conversation exists server-side, so `extra="forbid"` must not choke
-            # on it.
+            # The frontend sends null until the conversation exists.
             {"model": MODELS[0], "user_input": "hi", "conversation_id": None},
         ],
     )
@@ -430,9 +393,7 @@ class TestGenerateText:
         assert stub.seen[0].conversation_id is None
 
     async def test_an_unconfigured_model_is_a_4xx_not_a_500_or_an_error_frame(self) -> None:
-        # The model list is deployment configuration, so this cannot be caught by
-        # the request schema alone. It still has to fail before the stream opens,
-        # while a status code can still say so.
+        # The model list is config, so this is checked before the stream opens.
         stub = StubGenerateReply([ReplyCompleted()])
 
         async with client(StubContainer(generate_reply=stub)) as http:
@@ -506,8 +467,7 @@ class TestUpload:
             # Returned so the client can undo the attachment it just made.
             "document_id": 1,
         }
-        # The owner and the thread ride along to the background task: indexing
-        # happens after the response, so it cannot look either up again.
+        # Owner and thread go to the background task, which runs after the response.
         assert index.calls == [("uploads/a.pdf", "a.pdf", 1, USER.user_id, CONVERSATION)]
 
     async def test_the_uploaded_bytes_reach_the_use_case(self) -> None:
@@ -550,8 +510,7 @@ class TestUpload:
 
         assert response.status_code == expected_status
         assert response.json()["type"] == type(error).__name__
-        # Only a rate limit carries a wait; every other failure would be telling
-        # the client to retry something that will fail again.
+        # Only a rate limit includes a wait.
         assert "retry_after_seconds" not in response.json()
 
     async def test_a_spent_upload_budget_is_a_429_that_says_for_how_long(self) -> None:
@@ -655,6 +614,42 @@ class TestConversations:
         assert response.status_code == 404
         assert response.json()["type"] == "ConversationNotFound"
 
+    async def test_the_attachment_is_returned_when_the_thread_has_one(self) -> None:
+        attached = UploadedDocument(
+            name="a.pdf", reference="uploads/7/a.pdf", owner_id=7, id=3, chunks_indexed=12
+        )
+        stub = StubUseCase(returns=attached)
+
+        async with client(StubContainer(get_conversation_document=stub)) as http:
+            response = await http.get("/conversations/1/document")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "id": 3,
+            "name": "a.pdf",
+            "chunks_indexed": 12,
+            "created_at": None,
+        }
+        assert stub.calls[0] == (1, USER.user_id)
+
+    async def test_no_attachment_is_null_not_a_404(self) -> None:
+        """No attachment is a normal state, not an error."""
+        stub = StubUseCase(returns=None)
+        async with client(StubContainer(get_conversation_document=stub)) as http:
+            response = await http.get("/conversations/1/document")
+
+        assert response.status_code == 200
+        assert response.json() is None
+
+    async def test_another_accounts_thread_id_is_a_404(self) -> None:
+        stub = StubUseCase(raises=UnknownConversation(99))
+
+        async with client(StubContainer(get_conversation_document=stub)) as http:
+            response = await http.get("/conversations/99/document")
+
+        assert response.status_code == 404
+        assert response.json()["type"] == "UnknownConversation"
+
     async def test_append_message_returns_201(self) -> None:
         stored = Message(
             prompt_content="p", response_content="r", id=5, conversation_id=1, created_at=NOW
@@ -695,12 +690,9 @@ class TestConversations:
 
 
 class TestTranscriptionHandshake:
-    """The origin check on `/ws/transcribe/`.
+    """The origin check on `/ws/transcribe/`, which CORS does not cover.
 
-    CORS middleware does not run on a WebSocket handshake, so this route is the
-    only thing standing between a public deployment and anyone who knows the URL
-    opening a billed Deepgram session. These tests are sync because `TestClient`
-    is; pytest-asyncio's auto mode leaves non-async tests alone.
+    Sync, because `TestClient` is.
     """
 
     class StubTranscribe:
@@ -729,12 +721,9 @@ class TestTranscriptionHandshake:
         "headers",
         [
             pytest.param({"origin": "https://evil.example"}, id="wrong-origin"),
-            # A browser always sends Origin on a handshake, so a request without
-            # one is not the frontend — and the frontend is the only caller this
-            # route has. Refusing it costs nothing and closes the scripted case.
+            # Browsers always send Origin, so a missing one is a script.
             pytest.param({}, id="no-origin"),
-            # Not a prefix match: an attacker controls their own subdomain, and
-            # `https://app.example.com.evil.test` starts with the allowed value.
+            # Exact match, not prefix: an attacker can own this lookalike host.
             pytest.param({"origin": f"{WS_ORIGINS[0]}.evil.test"}, id="suffix-attack"),
         ],
     )
@@ -750,15 +739,13 @@ class TestTranscriptionHandshake:
         ):
             pass  # pragma: no cover - the handshake never gets this far
 
-        # 1008 is "policy violation", and it arrives instead of an accept, so the
-        # client never has an open socket to send audio down.
+        # 1008 "policy violation", sent instead of an accept.
         assert refusal.value.code == 1008
         assert stub.calls == 0, "a refused handshake must never start a session"
 
 
 class TestTranscriptionAuth:
-    """The token check on `/ws/transcribe/`, offered as a subprotocol rather
-    than a query parameter — see `_token_from_subprotocols` in the router."""
+    """The token check on `/ws/transcribe/`, sent as a subprotocol."""
 
     class StubTranscribe:
         def __init__(self) -> None:
@@ -806,8 +793,7 @@ class TestTranscriptionAuth:
 
 
 class TestTranscriptionDailyBudget:
-    """`RateLimited` raised mid-session gets its own branch in the router,
-    distinct from the generic `except Exception` catch-all."""
+    """`RateLimited` mid-session gets its own message, not the generic one."""
 
     def test_a_spent_daily_budget_sends_a_busy_error_not_a_generic_failure(self) -> None:
         stub = StubUseCase(raises=RateLimited(retry_after_seconds=30))
@@ -838,9 +824,7 @@ class TestErrorsAndHealth:
     async def test_health_does_not_touch_dependencies(self) -> None:
         """Liveness stays static even when every dependency is down.
 
-        The two endpoints answer different questions on purpose: a failing
-        `/health` gets the process restarted, and restarting is never the cure
-        for a database that is briefly unreachable.
+        A failing `/health` restarts the process, which never fixes a database blip.
         """
         container = StubContainer(
             check_readiness=CheckReadiness(

@@ -6,6 +6,7 @@ from app.api.dependencies import (
     CurrentUserDep,
     DeleteConversationDep,
     GetConversationDep,
+    GetConversationDocumentDep,
     ListConversationsDep,
     RecordExchangeDep,
     StartConversationDep,
@@ -17,6 +18,7 @@ from app.api.v1.schemas.conversations import (
     MessageCreate,
     MessageOut,
 )
+from app.api.v1.schemas.ingestion import DocumentOut
 from app.application.chat.dto import RecordExchangeInput, StartConversationInput
 
 router = APIRouter(tags=["conversations"])
@@ -53,6 +55,17 @@ async def read_conversation(
     return ConversationDetailOut.from_domain(conversation)
 
 
+@router.get("/conversations/{conversation_id}/document")
+async def read_conversation_document(
+    conversation_id: int,
+    use_case: GetConversationDocumentDep,
+    user: CurrentUserDep,
+) -> DocumentOut | None:
+    """This thread's attachment, or `null`. A stranger's thread is a 404."""
+    document = await use_case(conversation_id, user.user_id)
+    return DocumentOut.from_domain(document) if document is not None else None
+
+
 @router.post("/conversations/{conversation_id}/messages", status_code=status.HTTP_201_CREATED)
 async def create_message(
     conversation_id: int,
@@ -76,10 +89,9 @@ async def create_message(
     return MessageOut.from_domain(message)
 
 
-# POST rather than DELETE because `app.factory` only allows GET, POST and OPTIONS
-# across origins. (It was originally POST so `navigator.sendBeacon` could fire it
-# as the tab unloaded - that went away with accounts: beacons cannot carry an
-# Authorization header, and a conversation someone owns should outlive the tab.)
+# POST, not DELETE, because CORS allows only GET, POST and OPTIONS.
+
+
 @router.post("/conversations/{conversation_id}/delete", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_conversation(
     conversation_id: int,

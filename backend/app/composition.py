@@ -1,7 +1,6 @@
-"""The composition root: the only module that constructs infrastructure.
+"""The composition root: the only module that builds infrastructure.
 
-Everywhere else receives its collaborators already built. That is what lets a
-test swap the container for one holding fakes without patching a single import.
+Everything else gets collaborators already built, so tests can swap in fakes.
 """
 
 import re
@@ -72,27 +71,21 @@ from app.application.identity.use_cases.refresh_session import RefreshSession
 from app.application.identity.use_cases.register_user import RegisterUser
 from app.application.identity.use_cases.revoke_session import RevokeSession
 from app.application.ingestion.use_cases.delete_document import DeleteDocument
+from app.application.ingestion.use_cases.get_conversation_document import GetConversationDocument
 from app.application.ingestion.use_cases.index_document import IndexDocument
 from app.application.ingestion.use_cases.list_documents import ListDocuments
 from app.application.ingestion.use_cases.upload_document import UploadDocument
 from app.application.transcription.use_cases.transcribe_stream import TranscribeStream
 from app.settings import Settings
 
-# `postgresql+psycopg://` and friends. SQLAlchemy spells the driver into the
-# scheme; libpq-based clients treat the whole scheme as the protocol name and
-# reject anything that is not `postgresql://` (or `postgres://`).
+# Matches `postgresql+psycopg://` and similar. libpq rejects the `+driver` part.
 _SQLALCHEMY_DRIVER = re.compile(r"^(postgresql|postgres)\+[a-z0-9_]+://")
 
 
 def _plain_dsn(database_url: str) -> str:
     """Strip SQLAlchemy's `+driver` so psycopg can read the same URL.
 
-    One `DATABASE_URL` configures two clients with different dialects: the
-    SQLAlchemy engine wants `postgresql+psycopg://…`, while `AsyncPostgresSaver`
-    hands its string straight to psycopg, which fails on the `+psycopg` suffix
-    with an unhelpful "missing host". Rewriting here keeps that a one-line
-    translation at the composition root instead of a second env var that can
-    drift out of sync with the first.
+    Avoids a second env var that could drift from `DATABASE_URL`.
     """
     return _SQLALCHEMY_DRIVER.sub(r"\1://", database_url, count=1)
 
@@ -110,6 +103,7 @@ class AppContainer:
     upload_document: UploadDocument
     index_document: IndexDocument
     list_documents: ListDocuments
+    get_conversation_document: GetConversationDocument
     delete_document: DeleteDocument
     transcribe_stream: TranscribeStream
     register_user: RegisterUser
@@ -118,17 +112,14 @@ class AppContainer:
     revoke_session: RevokeSession
     identify_request: IdentifyRequest
     check_readiness: CheckReadiness
-    # Not a use case: writing the refresh cookie is a delivery decision that
-    # depends on the deployment, and the API may not read settings.
+    # The four fields below are config, not use cases. The API needs them
+    # and may not read settings.
     refresh_cookie: RefreshCookiePolicy
-    # Whether the address on the connection came from a proxy this deployment
-    # configured, and can therefore be used as a rate-limit key.
+    # Whether the forwarded client IP can be trusted as a rate-limit key.
     trust_forwarded_client_ip: bool
-    # Not a use case: the API rejects an unknown model with a 4xx and tells the
-    # frontend what to offer, and it may not read settings itself.
+    # Models the API accepts and offers to the frontend.
     chat_models: tuple[str, ...]
-    # Also not a use case: the handshake is rejected before any use case is
-    # reached, and `TranscribeStream` must not learn it is on a WebSocket.
+    # Checked at the WebSocket handshake, before any use case runs.
     websocket_origins: tuple[str, ...]
 
 
@@ -141,18 +132,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.database_url,
         pool_size=settings.database_pool_size,
         max_overflow=settings.database_max_overflow,
-        # Without this a dead connection is handed to a request and fails it.
+        # Test a connection before use, so a dead one does not fail a request.
         pool_pre_ping=True,
-        # Neon scales to zero and reaps idle pooler connections, so a
-        # long-lived pool fills with sockets the server has forgotten. Retiring
-        # them early avoids paying for `pool_pre_ping` to discover it.
+        # Neon drops idle connections, so retire ours first.
         pool_recycle=300,
     )
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
-    # No `create_all`, in any environment. `alembic upgrade head` owns the
-    # schema. Creating tables at startup races concurrent replicas and drifts
-    # from the migration history.
+    # No `create_all`. `alembic upgrade head` owns the schema.
     qdrant_client = AsyncQdrantClient(
         url=settings.qdrant_url,
         api_key=(
@@ -169,8 +156,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     tavily_client = AsyncTavilyClient(api_key=settings.tavily_api_key.get_secret_value())
 
     # --- observability ---
-    # Built before anything that traces. Unset keys are the normal case: local
-    # runs and the test suite get `NullTracer` and send nothing.
+    # Built first. Without keys, `NullTracer` sends nothing.
     tracer: Tracer = NullTracer()
     if settings.langfuse_public_key and settings.langfuse_secret_key:
         candidate = LangfuseTracer(
@@ -180,9 +166,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             capture_content=settings.langfuse_capture_content,
             flush_timeout_seconds=settings.langfuse_flush_timeout_seconds,
         )
-        # Checked here, never on `/ready`: a tracing outage must not return
-        # 503. One startup log line catches the only failure that matters, a
-        # typo in a key.
+        # Checked here, not on `/ready`, so a tracing outage never causes a 503.
         if await candidate.credentials_valid():
             tracer = candidate
             logger.info("Langfuse tracing enabled")
@@ -200,8 +184,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
 
     # --- adapters ---
-    # Same adapter, so the condenser shares one HTTP client. Not offered in the
-    # UI: `chat_models` below stays the user-selectable list.
+    # The condenser model shares this client but is not offered in the UI.
     chat_model = LangChainChatModel(
         provider=settings.llm_provider,
         models=list(dict.fromkeys([*settings.llm_models, settings.agent_condenser_model])),
@@ -252,14 +235,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         ttl_seconds=settings.access_token_ttl_seconds,
     )
     refresh_token_factory = Sha256RefreshTokenFactory()
-    # Shared by register, login and refresh. Keys are namespaced per route, so
-    # this is one budget per key, not one for all.
+    # Shared by register, login and refresh. Keys are namespaced per route.
     auth_limiter = SlidingWindowRateLimiter(
         max_attempts=settings.auth_rate_limit_attempts,
         window_seconds=settings.auth_rate_limit_window_seconds,
     )
-    # One limiter per budget: a chat request and an upload have different
-    # ceilings over different windows, and a limiter holds one of each.
+    # One limiter per budget, since chat and upload have different limits.
     chat_limiter = SlidingWindowRateLimiter(
         max_attempts=settings.chat_rate_limit_requests,
         window_seconds=settings.chat_rate_limit_window_seconds,
@@ -268,9 +249,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         max_attempts=settings.upload_rate_limit_requests,
         window_seconds=settings.upload_rate_limit_window_seconds,
     )
-    # One instance, one key ("global"), shared by everything that spends money
-    # at a provider. Not namespaced per caller, on purpose: the point is a
-    # ceiling signing up again cannot get around.
+    # One global key for all paid calls, so new accounts cannot get around it.
     daily_budget_limiter = SlidingWindowRateLimiter(
         max_attempts=settings.global_daily_call_budget,
         window_seconds=settings.global_daily_call_budget_window_seconds,
@@ -281,15 +260,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         utterance_end_ms=settings.utterance_end_ms,
     )
 
-    # Probes reuse the engine and client requests use. A private connection
-    # would report "up" while an exhausted pool failed every real request.
+    # Probes share the request pool, so an exhausted pool shows as not ready.
     check_readiness = CheckReadiness(
         probes=[PostgresProbe(engine), QdrantProbe(qdrant_client)],
         timeout_seconds=settings.readiness_timeout_seconds,
     )
 
-    # A factory, not an instance: an AsyncSession is not safe to share between
-    # concurrent requests, so every use case call gets its own unit of work.
+    # A factory, because an AsyncSession cannot be shared across requests.
     def uow_factory() -> SqlAlchemyUnitOfWork:
         return SqlAlchemyUnitOfWork(session_factory)
 
@@ -300,10 +277,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         refresh_ttl_seconds=settings.refresh_token_ttl_seconds,
     )
 
-    # A pool, not `AsyncPostgresSaver.from_conn_string(...)`: that opens one
-    # raw connection, so every read serializes on it and one dropped connection
-    # kills the checkpointer until restart. `prepare_threshold=0` matters
-    # because Neon's transaction pooler loses prepared statements.
+    # A pool, because one raw connection serializes reads and dies for good on
+    # a drop. `prepare_threshold=0` because Neon's pooler loses prepared statements.
     async with AsyncExitStack() as stack:
         checkpointer_pool = await stack.enter_async_context(
             AsyncConnectionPool[AsyncConnection[DictRow]](
@@ -312,29 +287,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 max_size=settings.checkpointer_pool_max_size,
                 kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
                 open=False,
-                # Same Neon reality as the engine above. `check` pings before handing a
-                # connection over, and `max_lifetime` mirrors `pool_recycle` so
-                # connections retire before Neon reaps them.
+                # Same as the engine: ping before use, retire before Neon drops them.
                 check=AsyncConnectionPool.check_connection,
                 max_lifetime=300,
             )
         )
-        # `serde` allow-lists `ChatMessage` for msgpack. LangGraph only warns
-        # today, but a future version refuses to load checkpoints holding it.
+        # Allow-list `ChatMessage`, which future LangGraph versions will require.
         checkpointer = AsyncPostgresSaver(
             conn=checkpointer_pool,
             serde=JsonPlusSerializer(allowed_msgpack_modules=(ChatMessage,)),
         )
-        # Not gated on the environment. These tables are LangGraph's, not in our
-        # Alembic history, and `setup()` is the only supported way to make them.
-        # It is idempotent and safe on every boot.
+        # LangGraph's own tables, outside Alembic. Safe to run on every boot.
         await checkpointer.setup()
 
-        # Compiled once, at startup. Per request it would rebuild every node and
-        # re-attach the checkpointer on every message.
+        # Compiled once at startup, not per request.
         graph = build_agent_graph(
             model=chat_model,
-            # The one place a capability is added to the agent.
+            # Add new agent tools here.
             tools=ToolRegistry(
                 [
                     RetrieveDocuments(knowledge),
@@ -342,9 +311,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     SearchWeb(searcher, max_results=settings.tavily_max_results),
                 ],
                 guard=tool_output_guard,
-                # Which tool must be tried first on a document-scoped question. Named
-                # here because this file decides which tools exist; the registry only
-                # enforces the order.
+                # Named here, where the tools are chosen. The registry only enforces order.
                 routing=ToolRoutingPolicy(
                     document_tool=RetrieveDocuments.name,
                     web_search_tool=SearchWeb.name,
@@ -361,22 +328,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             tracer=tracer,
         )
 
-        # Built before the container because three of its members take it.
-        # Removing a document is one operation, and each caller re-deriving the
-        # three steps is how one of them leaves the vectors behind.
-        #
-        # The lock is what keeps that removal from racing the indexing: a
-        # delete that lands while the indexer is still embedding must not let
-        # the indexer's upsert orphan its own points afterwards. One instance
-        # shared by both use cases is the whole mechanism - two locks would
-        # serialize nothing.
+        # One shared remover, so no caller forgets the vectors. One shared lock,
+        # so a delete cannot race indexing. Two locks would serialize nothing.
         document_lock = InProcessDocumentLock()
         delete_document = DeleteDocument(
             uow_factory, index=vector_index, storage=storage, lock=document_lock
         )
 
-        # Annotated as the API's Protocol, so mypy proves here that the concrete
-        # container provides everything the routes ask for.
+        # Typed as the API's Protocol, so mypy checks the container is complete.
         container: Container = AppContainer(
             generate_reply=GenerateReply(
                 graph=graph,
@@ -387,8 +346,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 guards=input_guard,
                 tracer=tracer,
                 uow_factory=uow_factory,
-                # The same guard the tool registry uses: a digest is external content by
-                # the same definition a fetched page is.
+                # Same guard as tools, because a digest is external content too.
                 tool_output_guard=tool_output_guard,
                 max_digest_documents=settings.chat_digest_max_documents,
                 max_digest_summary_chars=settings.chat_digest_max_summary_chars,
@@ -399,11 +357,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             get_conversation=GetConversation(uow_factory),
             list_conversations=ListConversations(uow_factory),
             record_exchange=RecordExchange(uow_factory),
-            # Both of these take `delete_document`, the one use case that
-            # removes a document entirely - vectors, file and row. Built above
-            # them so the same instance serves all three call sites: replacing
-            # a conversation's attachment, deleting a conversation, and the
-            # user pressing the close button.
+            # Both share `delete_document` with the delete route.
             delete_conversation=DeleteConversation(uow_factory, remove_document=delete_document),
             upload_document=UploadDocument(
                 storage=storage,
@@ -421,15 +375,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 chunk_overlap=settings.chunk_overlap,
                 embedding_dimensions=settings.embedding_dimensions,
                 uow_factory=uow_factory,
-                # The condenser again, satisfying ingestion's own
-                # `DocumentSummarizer` port structurally. One cheap model does
-                # every shortening this app performs.
+                # The condenser also fits ingestion's `DocumentSummarizer` port.
                 summarizer=condenser,
-                # The same instance `delete_document` holds: indexing against
-                # deletion is serialized per document by sharing one lock.
+                # Same lock as `delete_document`.
                 lock=document_lock,
             ),
             list_documents=ListDocuments(uow_factory),
+            get_conversation_document=GetConversationDocument(uow_factory),
             delete_document=delete_document,
             transcribe_stream=TranscribeStream(
                 transcriber=transcriber,
@@ -479,12 +431,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         try:
             yield
         finally:
-            # Without this block a redeploy leaks connections until the database
-            # refuses new ones. The checkpointer's own pool is closed by the exit
-            # stack unwinding immediately after.
-            # First, and under its own timeout inside the adapter: anything
-            # still queued describes work this process just did, and after the
-            # clients close there is nothing left worth tracing.
+            # Close everything, or redeploys leak connections. The exit stack
+            # closes the checkpointer pool. Flush traces first.
+
             await tracer.flush()
             await chat_model.aclose()
             await vector_index.aclose()
