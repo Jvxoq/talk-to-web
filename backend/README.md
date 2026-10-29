@@ -221,13 +221,13 @@ and needs real Postgres/Qdrant — see Commands above.
   works and the old row, file and vectors stay. The log line is
   `Could not replace document ...`. Nothing in the UI lists such a document, so
   removing it means calling `POST /documents/{id}/delete` by hand.
-- **A schema behind the code is not detected at startup.** Nothing compares the
-  database's `alembic_version` to the code's head, so an instance whose migration
-  never ran serves traffic against missing columns. `_owned_documents` then
-  catches the `UndefinedColumn`, logs `Could not read documents for owner ...`,
-  and returns `None`, so the reply still streams and the request still answers
-  200. The account silently loses every document feature. The log line is the
-  only signal, and nothing alerts on it.
+- **A schema error after startup still becomes a 200.** Startup refuses a
+  database that is not at the code's Alembic head (`verify_schema`), so a
+  skipped migration stops the boot. A schema that changes under a running
+  instance is not caught: `_owned_documents` catches the `UndefinedColumn`, logs
+  `Could not read documents for owner ...`, and returns `None`, so the reply
+  still streams and the request still answers 200. The log line is the only
+  signal, and nothing alerts on it.
 - **The condenser can fail silently.** It is allowed to, on purpose, but the
   cost is not silent: a thread over the history budget that cannot be
   summarized falls through to dropping older messages, so the conversation
