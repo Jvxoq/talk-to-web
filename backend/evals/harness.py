@@ -1,29 +1,12 @@
 """Builds a real container for one eval run, against real APIs.
 
-Mirrors `app.composition.lifespan` rather than importing from it: importing
-the real lifespan would drag in the FastAPI app object and its Postgres
-engine, neither of which an eval run has any use for. This module is the
-`evals/` package's own composition root - the one place it constructs a
-client - built to the same shape for the same reason `app.composition` is:
-so a run is exactly the collaborators production would build, not a
-simplified stand-in that could hide a real regression.
+The `evals/` composition root. Mirrors `app.composition.lifespan` with the
+same collaborators, but without FastAPI or Postgres.
 
-No Postgres, on purpose. `GenerateReply` reads exactly one thing through a
-`UnitOfWork` on the reply path - the list of documents this owner has uploaded
-- so that list is served from memory here, and fixtures are written straight to
-the vector store rather than through `IndexDocument` (which also writes a
-bookkeeping row this harness has no database for).
-
-That in-memory list is not a formality, and getting it wrong is how this
-harness spent a while measuring the opposite of what it claimed. An earlier
-version answered "no documents" to every request, on the reasoning that an
-eval case uploads nothing. But `index_fixtures` *does* upload - into Qdrant,
-under this run's owner - and `ToolRoutingPolicy` refuses `retrieve_documents`
-outright for an account it believes is empty. So every retrieval case in every
-suite was being graded on a run where the retrieval tool could not fire, and
-the resulting "the model searched the web instead" failures were the harness's
-doing. The shelf below is what keeps the two halves telling the same story:
-whatever is indexed is what the reply is told exists.
+The reply path reads only the owner's document list, so it is served from
+memory (the shelf). Fixtures go straight to the vector store. The shelf must
+match what was indexed, or the routing gate refuses retrieval and every
+retrieval case fails for the harness's reason.
 """
 
 import asyncio
@@ -70,11 +53,12 @@ from app.application.chat.tools.fetch_web_pages import FetchWebPages
 from app.application.chat.tools.retrieve_documents import RetrieveDocuments
 from app.application.chat.tools.search_web import SearchWeb
 from app.application.chat.use_cases.generate_reply import GenerateReply
+from app.domain.chat.errors import UnsafeUserMessage
 from app.domain.ingestion.entities import Document, UploadedDocument
 from app.domain.ingestion.value_objects import Chunk, DocumentName
 from app.settings import Settings
 from evals.cases import EvalCase, Owner
-from evals.judge import Judge
+from evals.judge import Judge, Verdict
 
 EVAL_OWNER_ID = 999_999_001
 """The account every fixture is indexed under, and the one almost every case
@@ -140,16 +124,7 @@ def owner_id_for(owner: Owner) -> int:
 
 
 class AlwaysAllowRateLimiter:
-    """A `RateLimiter` that never refuses.
-
-    Satisfies `app.application.chat.ports.RateLimiter`. The production
-    `SlidingWindowRateLimiter` is 3 chat requests per 60 seconds - the right
-    ceiling for one signed-in person, and enough to make a 25-case eval suite
-    take nine minutes waiting on a throttle that exists to stop a different
-    problem than the one this run has. An eval run is a fixed, known workload
-    run deliberately by whoever pays for the API keys; the budget it needs is
-    exactly as many calls as it was asked to make.
-    """
+    """A `RateLimiter` that never refuses. An eval run is a known, paid workload."""
 
     async def hit(self, key: str) -> None:
         return None
@@ -167,20 +142,15 @@ class CaseRun:
     usage: ReplyUsage | None = None
     failed: ReplyFailed | None = None
     latency_ms: float = 0.0
-    # Which sample of this case this is, under `--repeat`. 1 unless the driver
-    # says otherwise. A model at temperature 0 still varies between calls, so
-    # one sample cannot tell a regression from a coin flip - see
-    # `evals.__main__._verdicts`, which is what reads this.
+    # Which sample under `--repeat`. Read by `evals.__main__._verdicts`.
     sample: int = 1
-    # How many times the case was run before this result stood. 1 is the
-    # normal case; anything higher means a provider rate limit or a transient
-    # error was retried, and is worth seeing in the report rather than being
-    # smoothed away.
+    # Attempts taken. Above 1 means a retry, shown in the report.
     attempts: int = 1
-    # Set only if the call raised outright - a bug in the harness or the use
-    # case, not a modelled failure. A modelled failure (a dead provider, a
-    # rate limit) comes back as `failed` instead, because `GenerateReply`
-    # itself never raises those; see its own docstring.
+    # Guardrail categories when the input was refused. Graded, never retried.
+    blocked: str | None = None
+    # The security judge's answer, filled in by the driver.
+    verdict: Verdict | None = None
+    # Set only if the call raised: a bug. Provider failures arrive as `failed`.
     error: str | None = None
 
     @property
@@ -189,21 +159,14 @@ class CaseRun:
 
     @property
     def broke(self) -> bool:
-        """Did this case fail for a reason that is not the model's answer?
-
-        The two are worth separating everywhere downstream: a rate limit is
-        something to re-run, a wrong tool choice is something to fix.
-        """
+        """Whether the case failed for a reason other than the model's answer."""
         return self.error is not None or self.failed is not None
 
 
 class _Shelf:
-    """What each eval account has "uploaded", as `GenerateReply` sees it.
+    """Each eval account's uploaded documents, as `GenerateReply` sees them.
 
-    Mutable and shared, because the two halves of a fixture are written at
-    different times: the vector store gets the chunks in `index_fixtures`, and
-    the reply path needs the matching list of names and summaries on every
-    request afterwards. One object holds both so they cannot disagree.
+    Shared, so the index and the reply path cannot disagree.
     """
 
     def __init__(self) -> None:
@@ -217,12 +180,9 @@ class _Shelf:
 
 
 class _ShelfDocumentRepository:
-    """The half of `DocumentRepository` a reply actually reads: the list.
+    """The list methods of `DocumentRepository`, served from the shelf.
 
-    Both lists answer from the same shelf, and the conversation is ignored on
-    purpose. In production a document belongs to one thread; here the shelf is
-    the whole point of the run and every case must see it, while each case
-    still gets a thread of its own so no case remembers another's turns.
+    Ignores the conversation, so every case sees the whole shelf.
     """
 
     def __init__(self, shelf: _Shelf) -> None:
@@ -238,14 +198,10 @@ class _ShelfDocumentRepository:
 
 
 class _PinnedConversationIndex:
-    """A `VectorIndex` that files and reads every passage under one thread.
+    """A `VectorIndex` that stores and searches everything under one fixed thread.
 
-    The eval store holds one shelf per owner, and every case must be able to
-    reach it - but each case runs in a thread of its own so nothing it says is
-    remembered by the next. Those two facts pull against the production rule
-    that a search only sees the thread it was asked in, so the rule is pinned
-    here rather than bent: the wrapper supplies the conversation on both sides,
-    and the real filter still runs underneath.
+    Each case has its own thread but must see the shared shelf. The real
+    filter still runs.
     """
 
     def __init__(self, index: QdrantVectorIndex, conversation_id: int) -> None:
@@ -281,14 +237,36 @@ class _PinnedConversationIndex:
         await self._index.delete_document(document_id, owner_id)
 
 
-class _ShelfUnitOfWork:
-    """A unit of work that only knows how to list documents.
+class _ServedPagesFetcher(AiohttpWebContentFetcher):
+    """The production fetcher, serving pages from a table instead of the network.
 
-    Structural, like every other port in this codebase: `GenerateReply` reaches
-    for `uow.documents` and nothing else on the reply path, so nothing else is
-    implemented. Anything that did reach further would fail loudly here rather
-    than silently reading an empty stand-in.
+    Only `_fetch` is replaced, so `_parse` and `fetch_all` are real. Unknown
+    URLs use the real `_fetch`. Security pages use `pages.evals.test`, which
+    never resolves.
     """
+
+    def __init__(self, session: aiohttp.ClientSession, pages: dict[str, str]) -> None:
+        super().__init__(session=session)
+        self._pages = pages
+
+    async def _fetch(self, url: str) -> str:
+        html = self._pages.get(page_key(url))
+        if html is None:
+            return await super()._fetch(url)
+        return self._parse(html, url)
+
+
+def page_key(url: str) -> str:
+    """Normalise a URL, since `HttpUrl` may lowercase the host or add a slash."""
+    parts = urlsplit(url.strip())
+    path = parts.path.rstrip("/") or "/"
+    return f"{parts.scheme.lower()}://{parts.netloc.lower()}{path}" + (
+        f"?{parts.query}" if parts.query else ""
+    )
+
+
+class _ShelfUnitOfWork:
+    """A unit of work with only `documents`, the one thing a reply reads."""
 
     def __init__(self, shelf: _Shelf) -> None:
         self.documents = _ShelfDocumentRepository(shelf)
@@ -309,33 +287,29 @@ class EvalHarness:
     embedder: GeminiEmbedder
     vector_index: QdrantVectorIndex
     model: str
-    # The prompt the agent under test is actually running with, so a leak probe
-    # can be derived from it instead of pinned as a literal in a dataset file.
-    # Pinned, it would go stale the first time `LLM_SYSTEM_PROMPT` was set in an
-    # environment - and go stale silently, still passing, still claiming to
-    # prove the prompt does not leak.
+    # The live system prompt, so leak probes never go stale.
     system_prompt: str
-    # How many distinct source documents a retrieval metric grades. Not
-    # `retrieval_limit`: that counts passages, and several passages routinely
-    # come from one file, which `RetrieveDocuments` deduplicates before it
-    # cites anything.
+    # Distinct documents graded. Not `retrieval_limit`, which counts passages.
     retrieval_k: int
     chunk_size: int
     chunk_overlap: int
     embedding_dimensions: int
     _shelf: _Shelf
+    # Pages served by `_ServedPagesFetcher`, keyed by `page_key`.
+    _pages: dict[str, str] = field(default_factory=dict)
+
+    def serve_pages(self, cases: Sequence[EvalCase]) -> int:
+        """Register every case's `page` so a fetch of its URL never leaves the process."""
+        for case in cases:
+            if case.page is not None:
+                self._pages[page_key(case.page.url)] = case.page.html
+        return len(self._pages)
 
     async def index_fixtures(self) -> int:
-        """Chunk, embed and upsert every file in `evals/fixtures/`, then record
-        what was indexed so the reply path can be told the same thing.
+        """Index every file in `evals/fixtures/` and record it on the shelf.
 
-        Bypasses `IndexDocument` on purpose: that use case also writes a
-        bookkeeping row through a `UnitOfWork`, and this harness runs with no
-        Postgres at all - see the module docstring. It does not bypass
-        production's chunking, which it used to: the sizes come off `Settings`,
-        so a retrieval score here is measured over the same windows a real
-        upload produces. Hard-coded 500/50 windows meant this suite could pass
-        while production's 1400/200 ones failed, or the reverse.
+        Skips `IndexDocument`, which needs Postgres. Chunk sizes come from
+        `Settings`, so scores match production windows.
         """
         await self.vector_index.ensure(self.embedding_dimensions)
         if not _FIXTURES_DIR.is_dir():
@@ -371,23 +345,13 @@ class EvalHarness:
             )
 
         self._shelf.put(EVAL_OWNER_ID, shelf)
-        # Written explicitly rather than left absent. `GenerateReply` treats a
-        # read that never answered as "unknown" and leaves the document tool
-        # open; the empty account has to be a read that answered "none", which
-        # is the state the gate actually closes on.
+        # An explicit empty list, since a missing one reads as "unknown".
         self._shelf.put(EMPTY_OWNER_ID, [])
         logger.info(f"Indexed {total_chunks} chunk(s) from {len(shelf)} fixture(s)")
         return total_chunks
 
     async def run_case(self, case: EvalCase, *, temperature: float = 0.0) -> CaseRun:
-        """Run one case to completion, retrying a transient failure.
-
-        Retries cover a provider rate limit *and* an outright exception. The
-        old version retried only the former, which meant one dropped
-        connection turned into a permanent red case in a report that costs
-        money to regenerate. Neither is a statement about the model, so
-        neither should end the run.
-        """
+        """Run one case, retrying rate limits and raised exceptions."""
         run = await self._run_once(case, temperature=temperature)
         for attempt in range(2, _MAX_ATTEMPTS + 1):
             if not _worth_retrying(run):
@@ -408,11 +372,8 @@ class EvalHarness:
                     user_input=case.input,
                     owner_id=owner_id_for(case.owner),
                     temperature=temperature,
-                    # Every case is its own thread: cross-case state would make
-                    # one case's answer depend on run order, which is exactly
-                    # what an eval must not do. A number rather than `None`,
-                    # because a turn with no thread owns no documents and the
-                    # rag suite would then have nothing to retrieve.
+                    # A thread per case, so run order does not matter. Not
+                    # `None`, which would own no documents.
                     conversation_id=next(_case_threads),
                 )
             )
@@ -422,6 +383,9 @@ class EvalHarness:
                     run.usage = event
                 elif isinstance(event, ReplyFailed):
                     run.failed = event
+        except UnsafeUserMessage as refused:
+            # A guardrail block is the app's answer, so it is not retried.
+            run.blocked = refused.reason
         except Exception as error:
             run.error = str(error)
         run.latency_ms = (time.perf_counter() - started) * 1000
@@ -429,13 +393,7 @@ class EvalHarness:
 
 
 def fixture_text(name: str) -> str | None:
-    """One fixture's raw text, or `None` if it is not there.
-
-    Read by the scorer to give the judge the source text an answer was
-    supposed to be drawn from. `None` rather than an empty string, so a
-    missing file is a reportable problem instead of a groundedness score
-    quietly computed against nothing.
-    """
+    """A fixture's raw text for the judge, or `None` if missing."""
     path = _FIXTURES_DIR / name
     if not path.is_file():
         return None
@@ -450,9 +408,7 @@ def _opening_paragraph(content: str) -> str:
     """The first paragraph of a fixture, standing in for a written summary."""
     for block in content.split("\n\n"):
         collapsed = " ".join(block.split())
-        # Skip a bare title line: it is a heading, not a description, and a
-        # digest entry reading "- aurora_robotics.txt: Aurora Robotics
-        # Overview" tells the model nothing it did not get from the filename.
+        # Skip a short title line, which adds nothing to the filename.
         if len(collapsed) > 40:
             return collapsed[:_DIGEST_SUMMARY_CHARS]
     return ""
@@ -465,13 +421,7 @@ def _worth_retrying(run: CaseRun) -> bool:
 
 
 def _require_local_qdrant(url: str) -> None:
-    """Refuse to run against anything but a local Qdrant.
-
-    Qdrant Cloud's free tier is 1 GB, and a scratch `eval_<run_id>` collection
-    per run is exactly the kind of thing that fills it over a few afternoons
-    of eval iteration. This is a hard stop, not a warning: nothing downstream
-    should be trusted to remember to pass `--local` or equivalent.
-    """
+    """Refuse any Qdrant that is not local, so scratch collections never fill the cloud tier."""
     host = urlsplit(url).hostname or ""
     if host not in _LOCAL_HOSTS:
         raise RuntimeError(
@@ -482,15 +432,11 @@ def _require_local_qdrant(url: str) -> None:
 
 @asynccontextmanager
 async def build_harness(
-    *, run_id: str | None = None, model: str | None = None
+    *, run_id: str | None = None, model: str | None = None, judge_model: str | None = None
 ) -> AsyncIterator[EvalHarness]:
-    """Build one real container for a run, and tear every client down after -
-    the scratch Qdrant collection included, even when the run is interrupted.
+    """Build one real container for a run, then close every client.
 
-    Settings are read directly from the environment/`.env`, the same way
-    `app.settings.get_settings` does, but without its `lru_cache`: a fresh
-    `Settings()` is fine here, since a CLI process builds a container exactly
-    once and exits.
+    Drops the scratch Qdrant collection even if the run is interrupted.
     """
     settings = Settings()
     _require_local_qdrant(settings.qdrant_url)
@@ -498,6 +444,8 @@ async def build_harness(
     resolved_run_id = run_id or uuid4().hex[:12]
     collection = f"eval_{resolved_run_id}"
     answering_model = model or settings.llm_models[0]
+    # Defaults to the condenser model. Overridable to match JailbreakBench's judge.
+    grading_model = judge_model or settings.agent_condenser_model
 
     qdrant_client = AsyncQdrantClient(
         url=settings.qdrant_url,
@@ -514,8 +462,7 @@ async def build_harness(
     )
     tavily_client = AsyncTavilyClient(api_key=settings.tavily_api_key.get_secret_value())
 
-    # Unset Langfuse keys, same as production, is the normal case: no key held
-    # locally, nothing sent, `NullTracer` everywhere.
+    # `NullTracer` unless Langfuse keys are set.
     tracer: Tracer = NullTracer()
     if settings.langfuse_public_key and settings.langfuse_secret_key:
         candidate = LangfuseTracer(
@@ -531,12 +478,16 @@ async def build_harness(
 
     chat_model = LangChainChatModel(
         provider=settings.llm_provider,
-        # `answering_model` first, and included at all: `--model` names a model
-        # that is very often not in `LLM_MODELS`, which is the entire point of
-        # the flag. Left out, the registry has no client for it and every case
-        # in the run fails on the first call with an unknown-model error.
+        # Include `--model`, which is often not in `LLM_MODELS`.
         models=list(
-            dict.fromkeys([answering_model, *settings.llm_models, settings.agent_condenser_model])
+            dict.fromkeys(
+                [
+                    answering_model,
+                    *settings.llm_models,
+                    settings.agent_condenser_model,
+                    grading_model,
+                ]
+            )
         ),
         api_key=settings.llm_api_key.get_secret_value(),
         max_tokens=settings.llm_max_tokens,
@@ -564,7 +515,8 @@ async def build_harness(
         limit=settings.retrieval_limit,
         score_threshold=settings.retrieval_score_threshold,
     )
-    web = AiohttpWebContentFetcher(session=http_session)
+    pages: dict[str, str] = {}
+    web = _ServedPagesFetcher(session=http_session, pages=pages)
     searcher = TavilyWebSearcher(client=tavily_client)
     tool_output_guard = ToolOutputGuard(
         strip_instructions=settings.guardrail_strip_tool_instructions,
@@ -588,11 +540,7 @@ async def build_harness(
                 SearchWeb(searcher, max_results=settings.tavily_max_results),
             ],
             guard=tool_output_guard,
-            # Without this, a case scores on the model's unassisted tool
-            # choice - a different, easier-to-fail question than the one
-            # production actually answers, where `composition.py` wires this
-            # same gate in front of every request. Mirrored here so `tools`
-            # eval numbers mean what they claim to mean.
+            # The same gate as production, so `tools` scores mean the same thing.
             routing=ToolRoutingPolicy(
                 document_tool=RetrieveDocuments.name,
                 web_search_tool=SearchWeb.name,
@@ -617,16 +565,13 @@ async def build_harness(
         daily_budget=limiter,
         guards=input_guard,
         tracer=tracer,
-        # Serves the same list `index_fixtures` wrote, per owner. Typed through
-        # `cast` because the real port is a SQLAlchemy-backed unit of work and
-        # this satisfies only the slice of it a reply touches - see
-        # `_ShelfUnitOfWork`.
+        # Serves the shelf. `cast`, since it covers only part of the port.
         uow_factory=cast(Any, lambda: _ShelfUnitOfWork(shelf)),
         tool_output_guard=tool_output_guard,
         max_digest_documents=settings.chat_digest_max_documents,
         max_digest_summary_chars=settings.chat_digest_max_summary_chars,
     )
-    judge = Judge(model=chat_model, model_name=settings.agent_condenser_model, tracer=tracer)
+    judge = Judge(model=chat_model, model_name=grading_model, tracer=tracer)
 
     harness = EvalHarness(
         generate_reply=generate_reply,
@@ -640,14 +585,13 @@ async def build_harness(
         chunk_overlap=settings.chunk_overlap,
         embedding_dimensions=settings.embedding_dimensions,
         _shelf=shelf,
+        _pages=pages,
     )
 
     try:
         yield harness
     finally:
-        # Runs even on Ctrl-C: a `KeyboardInterrupt` raised inside the `async
-        # with build_harness(...)` block propagates through this generator as
-        # an exception, which is what drives execution into this `finally`.
+        # Runs even on Ctrl-C.
         try:
             await qdrant_client.delete_collection(collection)
             logger.info(f"Dropped scratch collection {collection!r}")

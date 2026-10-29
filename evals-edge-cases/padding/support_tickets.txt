@@ -1,0 +1,191 @@
+Support queue export. Ticket numbers are internal and not customer facing.
+Ticket T-3100: customer reports trouble with the audit log. Owner Gunnar, team Osprey, status reopened, priority 1.
+Ticket T-3101: customer reports trouble with export to CSV. Owner Emeka, team Osprey, status resolved, priority 4.
+Ticket T-3102: customer reports trouble with the audit log. Owner Ilse, team Osprey, status reopened, priority 3.
+Ticket T-3103: customer reports trouble with the mobile layout. Owner Hiroko, team Falcon, status escalated, priority 2.
+Ticket T-3104: customer reports trouble with the audit log. Owner Emeka, team Marlin, status reopened, priority 1.
+Ticket T-3105: customer reports trouble with the onboarding flow. Owner Gunnar, team Heron, status resolved, priority 1.
+Ticket T-3106: customer reports trouble with password reset. Owner Emeka, team Falcon, status open, priority 1.
+Ticket T-3107: customer reports trouble with the mobile layout. Owner Hiroko, team Heron, status open, priority 4.
+Ticket T-3108: customer reports trouble with the dark theme. Owner Casimir, team Heron, status open, priority 2.
+Ticket T-3109: customer reports trouble with the onboarding flow. Owner Hiroko, team Marlin, status open, priority 2.
+Ticket T-3110: customer reports trouble with the onboarding flow. Owner Gunnar, team Falcon, status open, priority 3.
+Ticket T-3111: customer reports trouble with search latency. Owner Emeka, team Heron, status escalated, priority 3.
+Ticket T-3112: customer reports trouble with search latency. Owner Gunnar, team Falcon, status escalated, priority 1.
+Ticket T-3113: customer reports trouble with password reset. Owner Jovan, team Heron, status open, priority 4.
+Ticket T-3114: customer reports trouble with the dark theme. Owner Ilse, team Falcon, status open, priority 4.
+Ticket T-3115: customer reports trouble with the dark theme. Owner Gunnar, team Lynx, status open, priority 1.
+Ticket T-3116: customer reports trouble with password reset. Owner Jovan, team Heron, status waiting on customer, priority 4.
+Ticket T-3117: customer reports trouble with password reset. Owner Ilse, team Falcon, status open, priority 4.
+Ticket T-3118: customer reports trouble with the mobile layout. Owner Casimir, team Falcon, status resolved, priority 1.
+Ticket T-3119: customer reports trouble with the onboarding flow. Owner Beatrix, team Falcon, status waiting on customer, priority 1.
+Ticket T-3120: customer reports trouble with search latency. Owner Hiroko, team Falcon, status escalated, priority 2.
+Ticket T-3121: customer reports trouble with the admin dashboard. Owner Casimir, team Falcon, status escalated, priority 2.
+Ticket T-3122: customer reports trouble with the billing page. Owner Emeka, team Heron, status resolved, priority 4.
+Ticket T-3123: customer reports trouble with export to CSV. Owner Arjun, team Falcon, status open, priority 1.
+Ticket T-3124: customer reports trouble with the onboarding flow. Owner Jovan, team Falcon, status resolved, priority 3.
+Ticket T-3125: customer reports trouble with export to CSV. Owner Jovan, team Marlin, status resolved, priority 1.
+Ticket T-3126: customer reports trouble with the audit log. Owner Farida, team Heron, status resolved, priority 4.
+Ticket T-3127: customer reports trouble with search latency. Owner Casimir, team Falcon, status escalated, priority 2.
+Ticket T-3128: customer reports trouble with password reset. Owner Hiroko, team Lynx, status resolved, priority 3.
+Ticket T-3129: customer reports trouble with the dark theme. Owner Farida, team Osprey, status escalated, priority 1.
+Ticket T-3130: customer reports trouble with the dark theme. Owner Jovan, team Osprey, status reopened, priority 1.
+Ticket T-3131: customer reports trouble with search latency. Owner Jovan, team Osprey, status reopened, priority 4.
+Ticket T-3132: customer reports trouble with the mobile layout. Owner Gunnar, team Lynx, status resolved, priority 2.
+Ticket T-3133: customer reports trouble with the admin dashboard. Owner Emeka, team Falcon, status escalated, priority 3.
+Ticket T-3134: customer reports trouble with export to CSV. Owner Gunnar, team Marlin, status reopened, priority 1.
+Ticket T-3135: customer reports trouble with export to CSV. Owner Casimir, team Heron, status waiting on customer, priority 3.
+Ticket T-3136: customer reports trouble with email digests. Owner Hiroko, team Osprey, status reopened, priority 1.
+Ticket T-3137: customer reports trouble with email digests. Owner Ilse, team Lynx, status resolved, priority 2.
+Ticket T-3138: customer reports trouble with the mobile layout. Owner Emeka, team Heron, status open, priority 4.
+Ticket T-3139: customer reports trouble with the admin dashboard. Owner Delphine, team Osprey, status reopened, priority 1.
+Ticket T-3140: customer reports trouble with password reset. Owner Hiroko, team Heron, status open, priority 3.
+Ticket T-3141: customer reports trouble with the billing page. Owner Delphine, team Lynx, status reopened, priority 3.
+Ticket T-3142: customer reports trouble with email digests. Owner Farida, team Lynx, status reopened, priority 2.
+Ticket T-3143: customer reports trouble with the mobile layout. Owner Delphine, team Marlin, status open, priority 2.
+Ticket T-3144: customer reports trouble with export to CSV. Owner Farida, team Heron, status reopened, priority 3.
+Ticket T-3145: customer reports trouble with password reset. Owner Ilse, team Marlin, status waiting on customer, priority 1.
+Ticket T-3146: customer reports trouble with the admin dashboard. Owner Farida, team Falcon, status escalated, priority 4.
+Ticket T-3147: customer reports trouble with the billing page. Owner Casimir, team Osprey, status reopened, priority 1.
+Ticket T-3148: customer reports trouble with the audit log. Owner Emeka, team Heron, status reopened, priority 1.
+Ticket T-3149: customer reports trouble with the billing page. Owner Arjun, team Marlin, status reopened, priority 4.
+Ticket T-3150: customer reports trouble with the dark theme. Owner Jovan, team Marlin, status escalated, priority 3.
+Ticket T-3151: customer reports trouble with password reset. Owner Beatrix, team Lynx, status reopened, priority 2.
+Ticket T-3152: customer reports trouble with export to CSV. Owner Arjun, team Osprey, status waiting on customer, priority 2.
+Ticket T-3153: customer reports trouble with password reset. Owner Beatrix, team Falcon, status open, priority 1.
+Ticket T-3154: customer reports trouble with email digests. Owner Farida, team Lynx, status resolved, priority 1.
+Ticket T-3155: customer reports trouble with the dark theme. Owner Gunnar, team Falcon, status open, priority 3.
+Ticket T-3156: customer reports trouble with the audit log. Owner Jovan, team Marlin, status open, priority 4.
+Ticket T-3157: customer reports trouble with search latency. Owner Hiroko, team Marlin, status escalated, priority 2.
+Ticket T-3158: customer reports trouble with the mobile layout. Owner Casimir, team Falcon, status escalated, priority 3.
+Ticket T-3159: customer reports trouble with the onboarding flow. Owner Ilse, team Falcon, status open, priority 3.
+Ticket T-3160: customer reports trouble with email digests. Owner Hiroko, team Falcon, status open, priority 2.
+Ticket T-3161: customer reports trouble with the audit log. Owner Arjun, team Marlin, status escalated, priority 4.
+Ticket T-3162: customer reports trouble with the billing page. Owner Hiroko, team Osprey, status escalated, priority 3.
+Ticket T-3163: customer reports trouble with password reset. Owner Beatrix, team Osprey, status resolved, priority 4.
+Ticket T-3164: customer reports trouble with search latency. Owner Hiroko, team Marlin, status waiting on customer, priority 1.
+Ticket T-3165: customer reports trouble with the admin dashboard. Owner Delphine, team Falcon, status waiting on customer, priority 2.
+Ticket T-3166: customer reports trouble with the billing page. Owner Jovan, team Osprey, status waiting on customer, priority 4.
+Ticket T-3167: customer reports trouble with the billing page. Owner Gunnar, team Falcon, status open, priority 4.
+Ticket T-3168: customer reports trouble with the audit log. Owner Farida, team Marlin, status resolved, priority 1.
+Ticket T-3169: customer reports trouble with the audit log. Owner Casimir, team Osprey, status waiting on customer, priority 1.
+Ticket T-3170: customer reports trouble with search latency. Owner Hiroko, team Heron, status waiting on customer, priority 4.
+Ticket T-3171: customer reports trouble with search latency. Owner Emeka, team Lynx, status resolved, priority 2.
+Ticket T-3172: customer reports trouble with search latency. Owner Arjun, team Osprey, status reopened, priority 3.
+Ticket T-3173: customer reports trouble with the audit log. Owner Casimir, team Osprey, status resolved, priority 1.
+Ticket T-3174: customer reports trouble with the audit log. Owner Hiroko, team Lynx, status open, priority 2.
+Ticket T-3175: customer reports trouble with email digests. Owner Arjun, team Marlin, status reopened, priority 4.
+Ticket T-3176: customer reports trouble with export to CSV. Owner Beatrix, team Osprey, status waiting on customer, priority 3.
+Ticket T-3177: customer reports trouble with password reset. Owner Emeka, team Marlin, status waiting on customer, priority 1.
+Ticket T-3178: customer reports trouble with password reset. Owner Emeka, team Lynx, status waiting on customer, priority 1.
+Ticket T-3179: customer reports trouble with export to CSV. Owner Casimir, team Falcon, status resolved, priority 3.
+Ticket T-3180: customer reports trouble with email digests. Owner Casimir, team Lynx, status open, priority 3.
+Ticket T-3181: customer reports trouble with search latency. Owner Farida, team Lynx, status open, priority 4.
+Ticket T-3182: customer reports trouble with the mobile layout. Owner Emeka, team Heron, status waiting on customer, priority 2.
+Ticket T-3183: customer reports trouble with search latency. Owner Ilse, team Marlin, status waiting on customer, priority 2.
+Ticket T-3184: customer reports trouble with the dark theme. Owner Beatrix, team Falcon, status reopened, priority 4.
+Ticket T-3185: customer reports trouble with export to CSV. Owner Casimir, team Marlin, status waiting on customer, priority 2.
+Ticket T-3186: customer reports trouble with the dark theme. Owner Emeka, team Marlin, status open, priority 1.
+Ticket T-3187: customer reports trouble with email digests. Owner Gunnar, team Falcon, status reopened, priority 3.
+Ticket T-3188: customer reports trouble with the audit log. Owner Emeka, team Lynx, status open, priority 1.
+Ticket T-3189: customer reports trouble with password reset. Owner Hiroko, team Marlin, status escalated, priority 2.
+Ticket T-3190: customer reports trouble with search latency. Owner Jovan, team Osprey, status open, priority 2.
+Ticket T-3191: customer reports trouble with the audit log. Owner Jovan, team Heron, status open, priority 3.
+Ticket T-3192: customer reports trouble with email digests. Owner Hiroko, team Heron, status open, priority 1.
+Ticket T-3193: customer reports trouble with the audit log. Owner Delphine, team Osprey, status resolved, priority 1.
+Ticket T-3194: customer reports trouble with export to CSV. Owner Beatrix, team Lynx, status resolved, priority 1.
+Ticket T-3195: customer reports trouble with email digests. Owner Ilse, team Marlin, status open, priority 2.
+Ticket T-3196: customer reports trouble with the billing page. Owner Delphine, team Heron, status waiting on customer, priority 2.
+Ticket T-3197: customer reports trouble with the billing page. Owner Emeka, team Osprey, status reopened, priority 1.
+Ticket T-3198: customer reports trouble with the onboarding flow. Owner Beatrix, team Marlin, status escalated, priority 1.
+Ticket T-3199: customer reports trouble with the dark theme. Owner Jovan, team Lynx, status reopened, priority 2.
+Ticket T-3200: customer reports trouble with the admin dashboard. Owner Beatrix, team Osprey, status open, priority 2.
+Ticket T-3201: customer reports trouble with the onboarding flow. Owner Emeka, team Falcon, status resolved, priority 4.
+Ticket T-3202: customer reports trouble with the dark theme. Owner Ilse, team Osprey, status open, priority 1.
+Ticket T-3203: customer reports trouble with the billing page. Owner Gunnar, team Marlin, status reopened, priority 2.
+Ticket T-3204: customer reports trouble with the mobile layout. Owner Casimir, team Heron, status resolved, priority 4.
+Ticket T-3205: customer reports trouble with search latency. Owner Arjun, team Lynx, status resolved, priority 1.
+Ticket T-3206: customer reports trouble with password reset. Owner Arjun, team Osprey, status escalated, priority 4.
+Ticket T-3207: customer reports trouble with the mobile layout. Owner Farida, team Lynx, status reopened, priority 3.
+Ticket T-3208: customer reports trouble with password reset. Owner Ilse, team Falcon, status escalated, priority 2.
+Ticket T-3209: customer reports trouble with the audit log. Owner Delphine, team Lynx, status open, priority 3.
+Ticket T-3210: customer reports trouble with the billing page. Owner Ilse, team Marlin, status open, priority 3.
+Ticket T-3211: customer reports trouble with password reset. Owner Delphine, team Heron, status open, priority 2.
+Ticket T-3212: customer reports trouble with search latency. Owner Gunnar, team Lynx, status resolved, priority 1.
+Ticket T-3213: customer reports trouble with the onboarding flow. Owner Arjun, team Heron, status escalated, priority 3.
+Ticket T-3214: customer reports trouble with email digests. Owner Arjun, team Heron, status open, priority 3.
+Ticket T-3215: customer reports trouble with the billing page. Owner Ilse, team Falcon, status resolved, priority 2.
+Ticket T-3216: customer reports trouble with the onboarding flow. Owner Emeka, team Falcon, status escalated, priority 3.
+Ticket T-3217: customer reports trouble with search latency. Owner Beatrix, team Falcon, status reopened, priority 3.
+Ticket T-3218: customer reports trouble with the billing page. Owner Hiroko, team Heron, status reopened, priority 2.
+Ticket T-3219: customer reports trouble with the admin dashboard. Owner Beatrix, team Heron, status waiting on customer, priority 3.
+Ticket T-3220: customer reports trouble with password reset. Owner Jovan, team Osprey, status escalated, priority 2.
+Ticket T-3221: customer reports trouble with the billing page. Owner Ilse, team Osprey, status resolved, priority 2.
+Ticket T-3222: customer reports trouble with password reset. Owner Delphine, team Heron, status escalated, priority 4.
+Ticket T-3223: customer reports trouble with email digests. Owner Emeka, team Heron, status resolved, priority 4.
+Ticket T-3224: customer reports trouble with export to CSV. Owner Arjun, team Marlin, status escalated, priority 2.
+Ticket T-3225: customer reports trouble with the mobile layout. Owner Ilse, team Heron, status resolved, priority 4.
+Ticket T-3226: customer reports trouble with the onboarding flow. Owner Farida, team Marlin, status waiting on customer, priority 3.
+Ticket T-3227: customer reports trouble with email digests. Owner Farida, team Lynx, status escalated, priority 3.
+Ticket T-3228: customer reports trouble with the mobile layout. Owner Emeka, team Falcon, status open, priority 2.
+Ticket T-3229: customer reports trouble with email digests. Owner Beatrix, team Heron, status escalated, priority 4.
+Ticket T-3230: customer reports trouble with the onboarding flow. Owner Ilse, team Lynx, status resolved, priority 3.
+Ticket T-3231: customer reports trouble with the billing page. Owner Ilse, team Marlin, status waiting on customer, priority 4.
+Ticket T-3232: customer reports trouble with the audit log. Owner Farida, team Marlin, status waiting on customer, priority 3.
+Ticket T-3233: customer reports trouble with email digests. Owner Beatrix, team Lynx, status escalated, priority 2.
+Ticket T-3234: customer reports trouble with password reset. Owner Beatrix, team Falcon, status resolved, priority 1.
+Ticket T-3235: customer reports trouble with the admin dashboard. Owner Gunnar, team Heron, status waiting on customer, priority 4.
+Ticket T-3236: customer reports trouble with export to CSV. Owner Jovan, team Heron, status open, priority 4.
+Ticket T-3237: customer reports trouble with the admin dashboard. Owner Hiroko, team Osprey, status escalated, priority 3.
+Ticket T-3238: customer reports trouble with the audit log. Owner Gunnar, team Heron, status reopened, priority 4.
+Ticket T-3239: customer reports trouble with the audit log. Owner Arjun, team Lynx, status resolved, priority 4.
+Ticket T-3240: customer reports trouble with export to CSV. Owner Casimir, team Heron, status escalated, priority 2.
+Ticket T-3241: customer reports trouble with password reset. Owner Jovan, team Lynx, status reopened, priority 2.
+Ticket T-3242: customer reports trouble with the billing page. Owner Farida, team Osprey, status reopened, priority 2.
+Ticket T-3243: customer reports trouble with the audit log. Owner Delphine, team Lynx, status open, priority 1.
+Ticket T-3244: customer reports trouble with the onboarding flow. Owner Emeka, team Heron, status resolved, priority 3.
+Ticket T-3245: customer reports trouble with email digests. Owner Emeka, team Heron, status reopened, priority 4.
+Ticket T-3246: customer reports trouble with email digests. Owner Ilse, team Lynx, status resolved, priority 4.
+Ticket T-3247: customer reports trouble with the audit log. Owner Arjun, team Heron, status escalated, priority 4.
+Ticket T-3248: customer reports trouble with the onboarding flow. Owner Beatrix, team Heron, status waiting on customer, priority 1.
+Ticket T-3249: customer reports trouble with password reset. Owner Farida, team Heron, status resolved, priority 2.
+Ticket T-3250: customer reports trouble with the mobile layout. Owner Gunnar, team Lynx, status resolved, priority 4.
+Ticket T-3251: customer reports trouble with the dark theme. Owner Jovan, team Osprey, status reopened, priority 1.
+Ticket T-3252: customer reports trouble with search latency. Owner Farida, team Osprey, status escalated, priority 1.
+Ticket T-3253: customer reports trouble with export to CSV. Owner Ilse, team Marlin, status open, priority 3.
+Ticket T-3254: customer reports trouble with the audit log. Owner Ilse, team Lynx, status waiting on customer, priority 3.
+Ticket T-3255: customer reports trouble with email digests. Owner Delphine, team Heron, status waiting on customer, priority 4.
+Ticket T-3256: customer reports trouble with search latency. Owner Arjun, team Heron, status reopened, priority 1.
+Ticket T-3257: customer reports trouble with the audit log. Owner Jovan, team Falcon, status resolved, priority 1.
+Ticket T-3258: customer reports trouble with the onboarding flow. Owner Emeka, team Heron, status open, priority 3.
+Ticket T-3259: customer reports trouble with password reset. Owner Beatrix, team Heron, status open, priority 1.
+Ticket T-3260: customer reports trouble with the mobile layout. Owner Casimir, team Lynx, status reopened, priority 3.
+Ticket T-3261: customer reports trouble with email digests. Owner Ilse, team Marlin, status reopened, priority 2.
+Ticket T-3262: customer reports trouble with password reset. Owner Jovan, team Falcon, status waiting on customer, priority 2.
+Ticket T-3263: customer reports trouble with email digests. Owner Ilse, team Falcon, status open, priority 1.
+Ticket T-3264: customer reports trouble with the billing page. Owner Casimir, team Heron, status resolved, priority 4.
+Ticket T-3265: customer reports trouble with the dark theme. Owner Gunnar, team Falcon, status open, priority 3.
+Ticket T-3266: customer reports trouble with search latency. Owner Delphine, team Osprey, status escalated, priority 2.
+Ticket T-3267: customer reports trouble with the onboarding flow. Owner Emeka, team Falcon, status reopened, priority 1.
+Ticket T-3268: customer reports trouble with the audit log. Owner Delphine, team Lynx, status reopened, priority 4.
+Ticket T-3269: customer reports trouble with the onboarding flow. Owner Arjun, team Marlin, status resolved, priority 1.
+Ticket T-3270: customer reports trouble with the admin dashboard. Owner Arjun, team Heron, status waiting on customer, priority 2.
+Ticket T-3271: customer reports trouble with the mobile layout. Owner Arjun, team Marlin, status reopened, priority 2.
+Ticket T-3272: customer reports trouble with the audit log. Owner Arjun, team Lynx, status escalated, priority 4.
+Ticket T-3273: customer reports trouble with the dark theme. Owner Emeka, team Lynx, status open, priority 2.
+Ticket T-3274: customer reports trouble with password reset. Owner Jovan, team Marlin, status resolved, priority 3.
+Ticket T-3275: customer reports trouble with password reset. Owner Hiroko, team Falcon, status waiting on customer, priority 1.
+Ticket T-3276: customer reports trouble with search latency. Owner Casimir, team Osprey, status resolved, priority 2.
+Ticket T-3277: customer reports trouble with the onboarding flow. Owner Emeka, team Lynx, status reopened, priority 3.
+Ticket T-3278: customer reports trouble with the billing page. Owner Farida, team Heron, status resolved, priority 3.
+Ticket T-3279: customer reports trouble with password reset. Owner Beatrix, team Falcon, status resolved, priority 3.
+Ticket T-3280: customer reports trouble with email digests. Owner Delphine, team Lynx, status waiting on customer, priority 4.
+Ticket T-3281: customer reports trouble with export to CSV. Owner Farida, team Marlin, status resolved, priority 1.
+Ticket T-3282: customer reports trouble with export to CSV. Owner Arjun, team Osprey, status waiting on customer, priority 2.
+Ticket T-3283: customer reports trouble with search latency. Owner Beatrix, team Marlin, status escalated, priority 2.
+Ticket T-3284: customer reports trouble with email digests. Owner Hiroko, team Lynx, status waiting on customer, priority 2.
+Ticket T-3285: customer reports trouble with the audit log. Owner Farida, team Marlin, status resolved, priority 4.
+Ticket T-3286: customer reports trouble with the dark theme. Owner Delphine, team Osprey, status resolved, priority 2.
+Ticket T-3287: customer reports trouble with the mobile layout. Owner Hiroko, team Marlin, status escalated, priority 4.
+Ticket T-3288: customer reports trouble with the dark theme. Owner Farida, team Heron, status waiting on customer, priority 4.
+Ticket T-3289: customer reports trouble with the dark theme. Owner Ilse, team Marlin, status waiting on customer, priority 1.

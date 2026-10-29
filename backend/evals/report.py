@@ -1,16 +1,7 @@
-"""Writes the eval run's JSON artifact and renders its markdown table.
+"""Writes the eval JSON artifact and renders the markdown table.
 
-The markdown table is the actual deliverable: it is what gets pasted into a
-PR description or the README, and a metric with nowhere legible to land is a
-metric nobody looks at again.
-
-Two lists come out of a run, not one, and keeping them apart is the point of
-this module's shape. A `regression` is the model doing the wrong thing - a
-missed tool, a leaked canary, a document it failed to find. An `error` is the
-run itself falling over - a rate limit, a dropped connection, a provider
-outage. The old report concatenated both into `failures`, so a red run said
-nothing about whether to fix a prompt or just run it again, and a flaky
-afternoon looked exactly like a quality regression.
+Regressions (the model was wrong) and errors (the run broke) are kept apart,
+so a red run says whether to fix a prompt or re-run.
 """
 
 import json
@@ -20,6 +11,7 @@ from pathlib import Path
 from evals.metrics.budgets import BudgetSummary
 from evals.metrics.generation import GenerationSuiteSummary
 from evals.metrics.retrieval import RetrievalSuiteSummary
+from evals.metrics.security import RateSummary, SecuritySummary
 from evals.metrics.tools import ToolSuiteSummary
 
 
@@ -31,6 +23,8 @@ class SuiteReport:
     retrieval: RetrievalSuiteSummary | None = None
     generation: GenerationSuiteSummary | None = None
     budgets: BudgetSummary | None = None
+    # The security suites only: one entry per rate the suite states.
+    security: tuple[SecuritySummary, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,22 +34,13 @@ class RunReport:
     tags: tuple[str, ...]
     suites: tuple[SuiteReport, ...]
     case_ids: tuple[str, ...]
-    # How many replies the run actually generated: one per case per `--repeat`.
-    # Reported next to the case count because every rate above is a mean over
-    # samples, and a rate over 60 samples of 20 cases says something a rate
-    # over 20 says less well.
+    # Replies generated: cases times `--repeat`. Rates are means over these.
     samples: int
-    # "<case id>: <what the model got wrong>" - the human-readable punch list a
-    # markdown table alone cannot give. A case is here only when it got it
-    # wrong in *every* sample.
+    # "<case id>: <what went wrong>", only for cases wrong in every sample.
     regressions: tuple[str, ...]
-    # "<case id>: failed n/m samples" - the case is not stable, so no verdict
-    # drawn from one sample of it is either. Kept out of `regressions` on
-    # purpose: a red build people re-run until it passes is how a real
-    # regression gets waved through.
+    # "<case id>: failed n/m samples". Unstable, so not a regression.
     flaky: tuple[str, ...] = ()
-    # "<case id>: <why the run broke>" - infrastructure, not quality. A sample
-    # here was never graded, so it appears in none of the rates above.
+    # "<case id>: <why it broke>". Never graded.
     errors: tuple[str, ...] = ()
 
     @property
@@ -93,11 +78,11 @@ def render_markdown(report: RunReport) -> str:
         lines.append("|---|---|---|")
         lines.extend(f"| {name} | {value} | {n} |" for name, value, n in _rows(suite))
         lines.append("")
+        for summary in suite.security:
+            lines.extend(_security_section(summary))
 
     lines.extend(_punch_list("Regressions", report.regressions, "No regressions."))
-    # Only when there are any. A single-sample run can never produce one, and a
-    # standing "No flaky cases." line there would read as proof of stability
-    # the run never looked for.
+    # Only when present, since one sample cannot prove stability.
     if report.flaky:
         lines.extend(_punch_list("Flaky (unstable across samples)", report.flaky, ""))
     lines.extend(_punch_list("Errors (not graded)", report.errors, "No errors."))
@@ -108,6 +93,33 @@ def _punch_list(heading: str, entries: tuple[str, ...], empty: str) -> list[str]
     if not entries:
         return [empty, ""]
     return [f"## {heading}", "", *(f"- {entry}" for entry in entries), ""]
+
+
+def _security_section(summary: SecuritySummary) -> list[str]:
+    """One table per rate: overall first, then each split. The SLO uses the bound column."""
+    lines = [
+        f"### {summary.metric}",
+        "",
+        "| split | successes / attempts | rate | 95% upper |",
+        "|---|---|---|---|",
+        _rate_row("overall", summary.overall),
+        *(_rate_row(f"{row.dimension}={row.value}", row.summary) for row in summary.breakdown),
+        "",
+    ]
+    if summary.unjudged:
+        lines += [f"{summary.unjudged} sample(s) had no judge verdict and are not counted.", ""]
+    return lines
+
+
+def _rate_row(label: str, rate: RateSummary) -> str:
+    return (
+        f"| {label} | {rate.successes} / {rate.attempts} | "
+        f"{_percent(rate.rate)} | {_percent(rate.upper_95)} |"
+    )
+
+
+def _percent(value: float | None) -> str:
+    return f"{value:.1%}" if value is not None else "n/a"
 
 
 def _rows(suite: SuiteReport) -> list[tuple[str, str, int]]:
@@ -154,10 +166,5 @@ def _rows(suite: SuiteReport) -> list[tuple[str, str, int]]:
 
 
 def _optional(value: float | None) -> str:
-    """ "n/a", not 0.00, when nothing contributed to a mean.
-
-    The two look alike in a table and mean opposite things: 0.00 is a metric
-    the run measured and failed, "n/a" is a metric nothing in the run was
-    asking for.
-    """
+    """ "n/a" when nothing was measured, so it is not mistaken for 0.00."""
     return f"{value:.2f}" if value is not None else "n/a"
