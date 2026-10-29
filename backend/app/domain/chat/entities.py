@@ -34,9 +34,8 @@ class Conversation:
 
     title: str
     model_type: str
-    # Required, not `int | None`. A conversation with no owner is exactly the
-    # state this field exists to make impossible: it would be readable and
-    # deletable by anyone, which is what the ownerless version of this app was.
+    # Required, so no conversation is ever ownerless.
+
     owner_id: int
     id: int | None = None
     created_at: datetime | None = None

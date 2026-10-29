@@ -1,11 +1,7 @@
 """The agent loop, end to end, with a scripted model and fake tools.
 
-Everything here runs through `GenerateReply`, because the graph and the use case
-are one contract: the nodes write payloads onto a custom stream and the use case
-is the only thing that reads them. Testing the graph alone would prove the loop
-runs and nothing about whether the user ever sees it.
-
-No Postgres: the checkpointer is `InMemorySaver` or absent entirely.
+Runs through `GenerateReply`, the only reader of the nodes' custom stream.
+No Postgres: the checkpointer is `InMemorySaver` or absent.
 """
 
 from collections.abc import Sequence
@@ -58,9 +54,7 @@ def make_guard() -> ToolOutputGuard:
     return ToolOutputGuard(strip_instructions=True, max_scan_chars=50_000)
 
 
-# The thread every test here runs in. A document belongs to one conversation,
-# so a turn with no conversation has nothing to retrieve - which is a real
-# shape, but not the one most of these tests are about.
+# The thread most tests run in, since a turn without one retrieves nothing.
 THREAD = 42
 
 
@@ -141,12 +135,9 @@ def build_graph(
     tracer: RecordingTracer | None = None,
     routing: ToolRoutingPolicy | None = None,
 ) -> Any:
-    """The compiled graph itself, for tests that read the raw custom stream.
+    """The compiled graph, for tests that read the raw custom stream.
 
-    `GenerateReply` drops any payload `_to_event` does not recognise - which is
-    exactly what happens to a `usage` payload today - so a test that wants to
-    see one on the wire has to run the graph directly rather than through the
-    use case.
+    `GenerateReply` does not pass `usage` payloads through, so those tests run the graph.
     """
     return build_agent_graph(
         model=model,
@@ -168,12 +159,7 @@ def run_config(
     document_scoped: bool = False,
     conversation_id: int | None = THREAD,
 ) -> Any:
-    """What `GenerateReply` puts on the wire, for a test that drives the graph.
-
-    `document_scoped` is a parameter here for the same reason it is a config
-    key in production: the routing gate's input is settled by the caller, once,
-    and the nodes never re-derive it from the history.
-    """
+    """The run config `GenerateReply` builds, for tests that drive the graph."""
     return {
         "configurable": {
             "model": model,
@@ -246,8 +232,7 @@ class TestPlainAnswer:
 
         events = await collect(build_use_case(model))
 
-        # The response body was already open, so the failure is reported as an
-        # event rather than raised through a half-written stream.
+        # The stream is open, so the failure is an event, not a raise.
         failures = [event for event in events if isinstance(event, ReplyFailed)]
         assert len(failures) == 1
         assert "boom" in failures[0].detail
@@ -270,9 +255,7 @@ class TestOneToolCall:
         assert text_of(events) == "it is sunny"
         assert isinstance(events[-1], ReplyCompleted)
 
-        # The point of the loop: the tool's output is in the conversation the
-        # model sees on its second turn, paired to the call that asked for it.
-        # The output is fenced as untrusted content; assert it is present inside the fence.
+        # The fenced tool output reaches the model's second turn, paired to its call.
         second_turn = model.seen_messages[1]
         tool_messages = [message for message in second_turn if message.role == "tool"]
         assert len(tool_messages) == 1
@@ -341,8 +324,7 @@ class TestTwoToolCallsInOneTurn:
 
 class TestFailingTool:
     async def test_the_failure_is_flagged_and_the_reply_still_finishes(self) -> None:
-        # This fake raises rather than returning, which is what a tool bypassing
-        # `BaseTool.run` would do. The registry has to survive it.
+        # Raises like a tool that bypasses `BaseTool.run`. The registry must survive.
         tool = FakeAgentTool(name="fake_tool", fail_with=RuntimeError("upstream is down"))
         model = FakeChatModel(
             turns=[
@@ -375,11 +357,7 @@ class TestIterationCeiling:
         assert isinstance(events[-1], ReplyCompleted)
 
     async def test_the_final_lap_is_called_with_no_tools_bound(self) -> None:
-        # A model that never sees tools on the last lap cannot ask for one, so
-        # a well-behaved provider answers in text instead of the reply ending
-        # on a discarded tool call. `FakeChatModel` always plays its script
-        # regardless of what it was called with, so this asserts on
-        # `seen_tools` directly rather than on the reply text.
+        # No tools on the last lap. The fake ignores its input, so check `seen_tools`.
         tool = FakeAgentTool(name="fake_tool")
         model = FakeChatModel(turns=[[asking_for("fake_tool", n=index)] for index in range(20)])
 
@@ -390,8 +368,7 @@ class TestIterationCeiling:
         assert model.seen_tools[2] == []
 
     async def test_the_ceiling_is_per_reply_not_per_thread(self) -> None:
-        # A checkpointed thread that kept counting would refuse to use tools
-        # after five messages, forever.
+        # Without a reset, a long thread would stop using tools forever.
         tool = FakeAgentTool(name="fake_tool")
         model = FakeChatModel(
             turns=[
@@ -423,8 +400,7 @@ class TestUnknownTool:
 
         tool_messages = [message for message in model.seen_messages[1] if message.role == "tool"]
         assert len(tool_messages) == 1
-        # Telling the model which tools are real costs one round trip; raising
-        # would cost the whole reply.
+        # The model is told which tools exist, instead of the reply failing.
         assert "does_not_exist" in tool_messages[0].content
         assert "fake_tool" in tool_messages[0].content
 
@@ -434,13 +410,7 @@ class TestUnknownTool:
 
 
 def questions_in(messages: Sequence[ChatMessage]) -> list[str]:
-    """What the user actually typed on each turn, without what we appended.
-
-    A user turn carries notes as well as the question - the document digest,
-    the linked-URLs line - each in its own paragraph after the text. These
-    tests are about which turns were replayed, not about what was attached to
-    them, so they compare the first paragraph and let the rest change.
-    """
+    """The first paragraph of each user turn: what the user typed, without our notes."""
     return [message.content.split("\n\n")[0] for message in messages if message.role == "user"]
 
 
@@ -472,8 +442,7 @@ class TestMemory:
 
 class TestSpendLimit:
     async def test_a_reply_past_the_budget_is_refused_before_the_model_is_called(self) -> None:
-        # The point of the limit: every reply spends tokens at the provider, so
-        # the refusal has to land before the graph runs, not while it streams.
+        # The refusal must land before the graph spends any tokens.
         model = FakeChatModel(turns=[[ModelChunk(text="one")], [ModelChunk(text="two")]])
         limiter = FakeRateLimiter(max_attempts=1)
         use_case = build_use_case(model, limiter=limiter)
@@ -511,9 +480,7 @@ class TestSpendLimit:
         assert limiter.hits == {}, "the per-user limit must not be spent on a refused request"
 
     async def test_the_daily_budget_is_shared_across_every_account(self) -> None:
-        # Unlike the per-user limiter above, one key ("global") is hit by every
-        # caller regardless of who is signed in - the backstop registering a new
-        # account cannot get around.
+        # One "global" key for every caller, so new accounts cannot get around it.
         model = FakeChatModel(turns=[[ModelChunk(text="one")], [ModelChunk(text="two")]])
         daily_budget = FakeRateLimiter(max_attempts=1)
         use_case = build_use_case(model, daily_budget=daily_budget)
@@ -544,9 +511,7 @@ class TestSummarization:
         assert condenser_model.calls == 0
 
     async def test_the_user_is_told_while_the_thread_is_being_condensed(self) -> None:
-        # The point of the events: condensing is a whole model call in the
-        # middle of a reply, during which no text arrives. Without them a long
-        # thread looks like a stalled one.
+        # Condensing sends no text, so without these a long thread looks stalled.
         condenser_model = FakeChatModel(turns=[[ModelChunk(text="SUMMARY")]])
         use_case = build_use_case(
             FakeChatModel(turns=[[ModelChunk(text="hi")]]),
@@ -565,9 +530,7 @@ class TestSummarization:
         assert reported[0].tokens_before == reported[1].tokens_before
 
     async def test_a_failed_condenser_still_closes_the_notice(self) -> None:
-        # The chip must not sit on "condensing" forever. A condenser that broke
-        # still shortened the thread, and the failure is not the user's
-        # business - the wait ending is.
+        # "done" is still sent when the condenser fails, so the chip never hangs.
         use_case = build_use_case(
             FakeChatModel(turns=[[ModelChunk(text="hi")]]),
             condenser=make_condenser(FakeChatModel(fail_with=RuntimeError("boom"))),
@@ -615,8 +578,7 @@ class TestSummarization:
         messages = result["messages"]
         # The sentinel tells the reducer to replace, not append.
         assert messages[0] is RESET
-        # The system prompt is kept verbatim, the head is one summary, the tail
-        # (the most recent exchange) is intact.
+        # System prompt kept, head summarized, recent tail intact.
         assert messages[1] == ChatMessage(role="system", content="SYS")
         assert "SUMMARY" in messages[2].content
         assert messages[3:] == [
@@ -640,17 +602,14 @@ class TestSummarization:
 
         head, tail = _split(messages, counter, recent_token_budget=1_500)
 
-        # The tail must not start on a tool message - that would orphan it from
-        # the assistant call that asked for it.
+        # The tail must not start on an orphaned tool message.
         assert not tail or tail[0].role != "tool"
         # The assistant and its tool reply stay together in the head.
         assert head[-2].role == "assistant" and head[-1].role == "tool"
         assert tail == [ChatMessage(role="user", content="two")]
 
     async def test_an_oversized_tail_is_shrunk_against_the_request_ceiling(self) -> None:
-        # A history budget so high it never triggers on its own - only the
-        # request ceiling below does. Mirrors a lap with two concurrent tool
-        # calls whose replies alone already exceed it.
+        # Only the request ceiling triggers here: two tool replies already exceed it.
         condenser_model = FakeChatModel(turns=[[ModelChunk(text="CONDENSED")]])
         node = make_summarize_node(
             FakeTokenCounter(tokens_per_message=1_000),
@@ -717,10 +676,7 @@ class TestSummarization:
         assert result["summary"] == ""
 
     async def test_a_failing_condenser_still_shrinks_the_tail_by_truncating(self) -> None:
-        # The request ceiling is the one budget that is not optional - past it
-        # the provider rejects the whole request. So when the condenser cannot
-        # rewrite an oversized tool reply, the tail is cut down by hand rather
-        # than sent as it stands.
+        # If the condenser fails, oversized tool replies are truncated, not sent as is.
         node = make_summarize_node(
             FakeTokenCounter(tokens_per_message=1_000),
             make_condenser(FakeChatModel(fail_with=RuntimeError("boom")), max_chars=5),
@@ -754,16 +710,10 @@ class TestSummarization:
 
 
 class TestTheRequestCeiling:
-    """What the provider will accept, as opposed to what reads well.
-
-    `agent_history_token_budget` is a quality knob; this one maps to the 400 a
-    provider returns when a request is too big, so everything that rides along
-    with the messages has to be counted against it.
-    """
+    """The provider's request limit, which must count tool schemas too."""
 
     def _state(self) -> AgentState:
-        # Three messages, so at 1,000 tokens each the thread sits at 3,000 -
-        # between the ceiling with the tool schema subtracted and without it.
+        # 3,000 tokens: between the ceiling with and without the tool schema.
         return AgentState(
             messages=[
                 ChatMessage(role="system", content="SYS"),
@@ -780,9 +730,7 @@ class TestTheRequestCeiling:
             condenser=make_condenser(condenser_model),
             counter=FakeTokenCounter(tokens_per_message=1_000),
             max_request_tokens=3_500,
-            # Small enough that the oldest message lands in the head rather
-            # than the verbatim tail, so a summarization that fires reaches
-            # the condenser instead of being handed nothing to compress.
+            # Small, so the head is not empty when summarization fires.
             recent_token_budget=500,
         )
 
@@ -792,15 +740,11 @@ class TestTheRequestCeiling:
         return condenser_model.seen_messages
 
     async def test_the_tool_schemas_count_against_it(self) -> None:
-        # The schemas are sent with every request but never appear in
-        # `state.messages`, so nothing else would ever charge the thread for
-        # them - and a thread sitting just under the ceiling would 400 anyway.
+        # Schemas are sent but not in `state.messages`, so they must be counted.
         assert await self._condenser_calls([FakeAgentTool(name="fake_tool")]) != []
 
     async def test_a_thread_under_the_ceiling_is_left_alone(self) -> None:
-        # The control: the same thread, the same ceiling, no tools registered.
-        # Summarizing here would cost a model call and the thread's history for
-        # nothing.
+        # Control: no tools, so no summarization.
         assert await self._condenser_calls([]) == []
 
 
@@ -871,8 +815,7 @@ class TestFriendlyRateLimit:
 
 class TestFriendlyAuthFailure:
     async def test_a_rejected_api_key_never_reaches_the_user(self) -> None:
-        # The provider's own message names the key and links to its dashboard.
-        # That is an operator's problem, and nothing a reader can act on.
+        # The provider's text names the key. Users must not see it.
         model = FakeChatModel(
             turns=[[ModelChunk(text="x")]],
             fail_with=RuntimeError(
@@ -919,9 +862,7 @@ class TestUsageStream:
         ]
 
     async def test_emit_usage_outside_a_graph_run_does_not_raise(self) -> None:
-        # The condenser is unit-tested outside any graph run, so this helper
-        # must survive being called with no stream writer in context - never
-        # be the reason a reply dies.
+        # Must not raise outside a graph run.
         emit_usage(model="condenser", usage=TokenUsage(prompt_tokens=1, completion_tokens=1))
 
 
@@ -980,9 +921,7 @@ class TestToolTracing:
         assert span.attributes["arguments"] == {"query": "x"}
         assert span.attributes["ok"] is True
         assert span.attributes["sources"] == 0
-        # Length of what actually went back to the model, not a literal on the
-        # fixture - the output guard is free to wrap tool content, and this
-        # span must track whatever it produced rather than the raw fixture.
+        # Measure what the model got, since the guard wraps the content.
         tool_message = next(m for m in model.seen_messages[1] if m.role == "tool")
         assert span.attributes["output_chars"] == len(tool_message.content)
         latency_ms = span.attributes["latency_ms"]
@@ -998,8 +937,7 @@ class TestToolTracing:
 
         await collect(build_use_case(model, [tool], tracer=tracer))
 
-        # `ToolRegistry.invoke` never raises, so the failure surfaces as `ok=False`
-        # rather than a recorded error - the span still gets its full attributes.
+        # `invoke` never raises, so failure shows as `ok=False` with full attributes.
         spans = tracer.named("tool.fake_tool")
         assert len(spans) == 1
         assert spans[0].attributes["ok"] is False
@@ -1007,9 +945,7 @@ class TestToolTracing:
 
 class TestCondenserUsage:
     async def test_the_condensers_own_spend_is_emitted_too(self) -> None:
-        # This is the one most likely to be silently dropped: a reply that
-        # called a tool and condensed its output paid for both, and the total
-        # must reflect the condenser's call, not just the agent's.
+        # The total must include the condenser's tokens, not just the agent's.
         condenser_model = FakeChatModel(
             turns=[
                 [
@@ -1088,8 +1024,7 @@ DOCS_BEFORE_WEB = ToolRoutingPolicy(
     document_tool="retrieve_documents", web_search_tool="search_web"
 )
 
-# What a user asks when they mean their own files. `is_document_scoped` is what
-# recognises it; these tests are about what the graph then does with that.
+# A question about the user's own files.
 DOCUMENT_QUESTION = "Based on the documents I uploaded, when was Aurora founded?"
 
 
@@ -1097,8 +1032,7 @@ class TestTurnHelpers:
     """The one pure read of the history the tool node still makes."""
 
     def test_only_the_tools_answered_since_the_last_question_count(self) -> None:
-        # A search run on an earlier question says nothing about whether this
-        # one has been looked up yet.
+        # Tools from an earlier question do not count.
         messages = [
             ChatMessage(role="user", content="first question"),
             ChatMessage(
@@ -1117,8 +1051,7 @@ class TestTurnHelpers:
         assert tools_run_this_turn(messages) == frozenset({"retrieve_documents"})
 
     def test_a_tool_that_was_only_asked_for_has_not_run(self) -> None:
-        # The same lap's own requests: launched concurrently, so nothing they
-        # produced is readable yet.
+        # Calls requested in this lap have not answered yet.
         messages = [
             ChatMessage(role="user", content="a question"),
             ChatMessage(
@@ -1140,11 +1073,9 @@ class TestTurnHelpers:
 
 
 class TestDocumentQuestionsDoNotReachTheWeb:
-    """The routing policy, seen from where the user is: through the reply.
+    """The routing policy, seen through the reply, for accounts with documents.
 
-    Every case here is an account that has actually uploaded something. That is
-    not scene-setting: docs-before-web is only a rule while there are docs, and
-    the empty-shelf case is its own class below.
+    The no-documents case is its own class below.
     """
 
     @staticmethod
@@ -1172,8 +1103,7 @@ class TestDocumentQuestionsDoNotReachTheWeb:
         assert [(event.name, event.ok) for event in finished] == [("search_web", False)]
         assert isinstance(events[-1], ReplyCompleted)
 
-        # And the model is told what to do instead, in the tool turn it is
-        # already reading.
+        # The refusal tells the model what to do instead.
         tool_messages = [message for message in model.seen_messages[1] if message.role == "tool"]
         assert len(tool_messages) == 1
         assert "retrieve_documents" in tool_messages[0].content
@@ -1219,9 +1149,7 @@ class TestDocumentQuestionsDoNotReachTheWeb:
         assert text_of(events) == "here is the news"
 
     async def test_two_tools_in_one_lap_still_put_the_retrieval_first(self) -> None:
-        # They run concurrently, so the search cannot see the retrieval's result
-        # and is held back. The model gets both answers on its next turn and can
-        # search then if it still needs to.
+        # Run together, so the search is held back. The model can search next turn.
         search = FakeAgentTool(name="search_web", result="WEB-RESULTS")
         retrieve = FakeAgentTool(name="retrieve_documents", result="DOC-PASSAGES")
         model = FakeChatModel(
@@ -1253,11 +1181,8 @@ class TestDocumentQuestionsDoNotReachTheWeb:
         assert isinstance(events[-1], ReplyCompleted)
 
     async def test_summarized_thread_holds_the_search(self) -> None:
-        # A document turn whose question the summarize node compressed away:
-        # while the gate read its input back out of the history, this matched
-        # nothing, and "no match" means "not about their files" - so the search
-        # ran, silently. Driven through the graph because the use case cannot
-        # produce a history with no user turn in it.
+        # The question was summarized away, but the gate reads the config, not
+        # history. Run on the graph, since the use case always adds a user turn.
         search = FakeAgentTool(name="search_web", result="WEB-RESULTS")
         retrieve = FakeAgentTool(name="retrieve_documents", result="DOC-PASSAGES")
         model = FakeChatModel(
@@ -1290,23 +1215,14 @@ class TestDocumentQuestionsDoNotReachTheWeb:
 
 
 class FailingUnitOfWork:
-    """A unit of work factory whose documents cannot be read.
-
-    Not a flag on `UnitOfWorkSpy`: the point is that `GenerateReply` catches
-    whatever the repository raises, so what it raises has to be real.
-    """
+    """A unit of work factory whose document read raises a real exception."""
 
     def __call__(self) -> Any:
         raise RuntimeError("the database is not answering")
 
 
 class TestAnEmptyShelfIsNotSearched:
-    """What happens on an account that has uploaded nothing at all.
-
-    The pair to the digest above, at the other end of the same decision: the
-    note tells the model not to bother, and this is what happens on the turns
-    where it asks anyway.
-    """
+    """Accounts with no documents: what happens when the model asks anyway."""
 
     async def test_the_retrieval_is_refused_without_touching_the_index(self) -> None:
         search = FakeAgentTool(name="search_web", result="WEB-RESULTS")
@@ -1328,11 +1244,8 @@ class TestAnEmptyShelfIsNotSearched:
         assert text_of(events) == "answered from what I know"
 
     async def test_a_document_question_on_an_empty_shelf_may_still_search(self) -> None:
-        # The deadlock this rule exists to avoid. `is_document_scoped` matches
-        # on phrasing, so a user with nothing uploaded can still ask about
-        # "the documents I uploaded" - and holding the search back until a
-        # retrieval that can never run has run would bounce the model between
-        # two refusals until its lap budget ran out.
+        # A document-phrased question with no documents must not deadlock
+        # between two refusals.
         search = FakeAgentTool(name="search_web", result="WEB-RESULTS")
         retrieve = FakeAgentTool(name="retrieve_documents", result="DOC-PASSAGES")
         model = FakeChatModel(
@@ -1349,8 +1262,7 @@ class TestAnEmptyShelfIsNotSearched:
         assert text_of(events) == "here is what the web says"
 
     async def test_a_document_read_that_failed_leaves_the_retrieval_open(self) -> None:
-        # Unknown is not empty. A slow query must not cost a user with a shelf
-        # full of files the tool that reads it.
+        # A failed read is unknown, not empty, so retrieval stays open.
         retrieve = FakeAgentTool(name="retrieve_documents", result="DOC-PASSAGES")
         model = FakeChatModel(
             turns=[
@@ -1401,10 +1313,7 @@ def user_turn(model: FakeChatModel) -> str:
 
 
 class TestDocumentsBelongToOneThread:
-    """A file attached in one chat must not surface in another.
-
-    The owner check cannot catch this: it is the same person on both sides.
-    """
+    """A file in one chat must not surface in another chat of the same user."""
 
     async def test_another_threads_document_is_not_named_in_the_digest(self) -> None:
         model = FakeChatModel()
@@ -1438,8 +1347,7 @@ class TestDocumentsBelongToOneThread:
         assert "lease.pdf" not in turn
 
     async def test_a_turn_with_no_thread_is_told_it_has_nothing(self) -> None:
-        # Not a failed read: a request that opened no conversation owns no
-        # documents, so the gate closes rather than leaving a retrieval open.
+        # No conversation owns no documents, so the gate closes.
         model = FakeChatModel()
         use_case = build_use_case(
             model, uow_factory=with_documents(an_upload("budget.pdf", "The Q3 budget."))
@@ -1451,12 +1359,7 @@ class TestDocumentsBelongToOneThread:
 
 
 class TestTheModelIsToldWhatWasUploaded:
-    """The digest - the thing that stops the agent guessing what it can search.
-
-    Without it the model knows a `retrieve_documents` tool exists but never
-    whether this person has anything in it, so a question about their own file
-    competes on equal terms with a web search.
-    """
+    """The digest, which tells the model what the user's files contain."""
 
     async def test_the_documents_are_named_in_the_user_turn(self) -> None:
         model = FakeChatModel()
@@ -1475,11 +1378,7 @@ class TestTheModelIsToldWhatWasUploaded:
         assert "Quarterly travel and staffing budget" in turn
 
     async def test_an_account_with_no_documents_is_told_so(self) -> None:
-        # Silence used to be the answer here, and silence is not the same
-        # message: the system prompt tells the model to try a retrieval
-        # whenever a question names something it does not know, so an absent
-        # digest reads as "unknown, try anyway" - and it did, spending an
-        # embedding and a vector-store round trip to be told nothing matched.
+        # Silence would read as "unknown, try retrieval anyway".
         model = FakeChatModel()
 
         await collect(build_use_case(model), user_input="what did we spend?")
@@ -1487,15 +1386,11 @@ class TestTheModelIsToldWhatWasUploaded:
         turn = user_turn(model)
         assert "what did we spend?" in turn, "the user's own question must survive intact"
         assert "uploaded no documents" in turn
-        # Our own sentence about our own row count - nothing external shaped
-        # it, so fencing it would tell the model to distrust the one fact on
-        # this turn it has no reason to.
+        # Our own sentence, so it is not fenced.
         assert "<untrusted_content" not in turn
 
     async def test_a_document_read_that_failed_says_nothing_either_way(self) -> None:
-        # The one case that must stay silent. "No documents" is a claim, and a
-        # database that did not answer is no grounds to make it - saying it
-        # here would tell a user with a full shelf that they have none.
+        # A failed read says nothing, rather than claim "no documents".
         model = FakeChatModel()
         use_case = build_use_case(model, uow_factory=cast(UnitOfWorkSpy, FailingUnitOfWork()))
 
@@ -1504,9 +1399,7 @@ class TestTheModelIsToldWhatWasUploaded:
         assert user_turn(model) == "what did we spend?"
 
     async def test_a_document_still_being_indexed_is_listed_by_name(self) -> None:
-        # Indexing runs behind the upload response, so a file the user just
-        # attached has no summary yet. Omitting it would make what they are
-        # looking at appear not to exist.
+        # A file still indexing has no summary, but is still listed.
         model = FakeChatModel()
         use_case = build_use_case(model, uow_factory=with_documents(an_upload("fresh.pdf")))
 
@@ -1515,8 +1408,7 @@ class TestTheModelIsToldWhatWasUploaded:
         assert "fresh.pdf" in user_turn(model)
 
     async def test_only_the_newest_documents_are_listed(self) -> None:
-        # This rides on every message, so it is a per-turn cost for the whole
-        # conversation. A prolific uploader must not crowd out their question.
+        # Sent every turn, so it is capped.
         uploads = [an_upload(f"doc-{index}.pdf", f"summary {index}") for index in range(1, 11)]
         model = FakeChatModel()
         use_case = build_use_case(model, uow_factory=with_documents(*uploads))
@@ -1539,9 +1431,7 @@ class TestTheModelIsToldWhatWasUploaded:
         assert user_turn(model).count("z") == 200
 
     async def test_a_hostile_summary_is_fenced_and_stripped(self) -> None:
-        # A summary is written *from* an uploaded file, so whoever wrote the
-        # PDF writes part of it - and unlike a tool result it is replayed on
-        # every single turn. It gets the same fence tool output gets.
+        # Summaries come from uploaded files, so they are fenced like tool output.
         model = FakeChatModel()
         use_case = build_use_case(
             model,
@@ -1558,9 +1448,7 @@ class TestTheModelIsToldWhatWasUploaded:
         assert "Ignore all previous instructions" not in turn
 
     async def test_a_linked_url_survives_alongside_the_digest(self) -> None:
-        # The two notes are composed into one user turn. Each is proved alone
-        # elsewhere; this is the combination, where a turn that carries both
-        # could quietly lose one and still look right in every other test.
+        # Both notes in one turn. Each is tested alone elsewhere.
         model = FakeChatModel()
         use_case = build_use_case(
             model, uow_factory=with_documents(an_upload("budget-q3.pdf", "The Q3 budget."))
@@ -1571,8 +1459,7 @@ class TestTheModelIsToldWhatWasUploaded:
         turn = user_turn(model)
         assert "budget-q3.pdf" in turn
         assert "[The user linked: https://example.com/prices" in turn
-        # The fenced digest is closed before our own trusted sentence follows
-        # it, or the link note would read as part of the document's content.
+        # The fence closes before our link note starts.
         assert turn.index("</untrusted_content>") < turn.index("[The user linked:")
 
     async def test_a_database_failure_costs_the_digest_not_the_reply(self) -> None:
@@ -1593,8 +1480,7 @@ class TestNamingAnUploadHoldsTheSearch:
     """The routing gate, fed by the names the digest query already returned."""
 
     async def test_naming_an_owned_document_holds_the_search_back(self) -> None:
-        # "What is in budget-q3.pdf" has no possessive and no document noun, so
-        # the phrase patterns alone would let the search run first.
+        # No possessive or document noun, so only the name match catches it.
         search = FakeAgentTool(name="search_web", result="WEB-RESULTS")
         retrieve = FakeAgentTool(name="retrieve_documents", result="DOC-PASSAGES")
         model = FakeChatModel(
@@ -1616,10 +1502,7 @@ class TestNamingAnUploadHoldsTheSearch:
         assert isinstance(events[-1], ReplyCompleted)
 
     async def test_a_document_too_old_for_the_digest_still_holds_the_search(self) -> None:
-        # The digest cap is a token budget. A name costs no tokens, so the gate
-        # is offered every document the account owns - holding a search back
-        # because the user named their tenth-newest file is exactly as right as
-        # doing it for their first.
+        # The gate sees every document name, not just the capped digest.
         uploads = [an_upload(f"report-{index}.pdf", f"summary {index}") for index in range(1, 11)]
         search = FakeAgentTool(name="search_web", result="WEB-RESULTS")
         retrieve = FakeAgentTool(name="retrieve_documents", result="DOC-PASSAGES")
@@ -1635,8 +1518,7 @@ class TestNamingAnUploadHoldsTheSearch:
 
         await collect(use_case, user_input="what is in report-1.pdf?")
 
-        # Only the digest block, not the whole turn - the user's own question
-        # names the file, which is the entire point of the case.
+        # Only the digest block, since the question itself names the file.
         digest = user_turn(model).split("<untrusted_content")[1]
         assert "report-1.pdf" not in digest, "too old to fit in the digest"
         assert "report-10.pdf" in digest, "the newest ones still are"

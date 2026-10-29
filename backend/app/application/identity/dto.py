@@ -10,10 +10,7 @@ class RegisterInput(BaseModel):
 
     email: str
     password: str
-    # Only ever used as a rate-limit key. It is `None` whenever the deployment
-    # cannot vouch for it — behind a proxy that does not set forwarded headers,
-    # the address the app sees is the proxy's, and limiting on that would
-    # throttle everyone at once.
+    # Rate-limit key only. `None` when untrusted, so a proxy IP never limits everyone.
     client_ip: str | None = None
 
 
@@ -42,11 +39,7 @@ class IssuedAccessToken(BaseModel):
 
 
 class TokenClaims(BaseModel):
-    """What a verified access token asserts.
-
-    Carries the email as well as the id so that identifying a request costs no
-    database round trip — this runs on every authenticated call.
-    """
+    """A verified token's claims. Includes the email, so no database call is needed."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -64,10 +57,9 @@ class UserContext(BaseModel):
 
 
 class SessionTokens(BaseModel):
-    """One freshly minted pair, plus the user they belong to.
+    """A new token pair and its user.
 
-    The refresh token is the raw secret and appears exactly here: the API puts
-    it straight into a cookie, and only its fingerprint reaches the database.
+    The raw refresh secret goes only into the cookie. The database gets its fingerprint.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -80,11 +72,7 @@ class SessionTokens(BaseModel):
 
 
 class RefreshCookiePolicy(BaseModel):
-    """How the refresh cookie is written, decided by configuration.
-
-    Lives in the application layer for the same reason `chat_models` does: the
-    API needs it and may not read settings, so it arrives through the container.
-    """
+    """How the refresh cookie is written. Reaches the API through the container."""
 
     model_config = ConfigDict(frozen=True)
 

@@ -1,9 +1,4 @@
-"""Wiring: two nodes, one loop, one exit condition.
-
-Deliberately the shortest file in the package. Adding a capability to the agent
-should mean one `add_node` and one `add_edge` here, and nothing else - which is
-only true while this stays a wiring diagram rather than a place logic accretes.
-"""
+"""Wiring for the agent graph. Keep logic out of here."""
 
 import json
 from typing import Any
@@ -48,24 +43,13 @@ def build_agent_graph(
         if last is None or not last.tool_calls:
             return END
         if state.iterations >= max_iterations:
-            # Should be unreachable in practice: `make_agent_node` withholds
-            # tools on the final lap, so a well-behaved model has nothing to
-            # call `tool_calls` with here. Kept as a safety net for a model
-            # that emits a tool call anyway despite no tools being bound - a
-            # provider quirk, not something this app can prevent. A model
-            # that keeps asking for tools is looping, and every lap is a
-            # request the user is already waiting on, so stopping here still
-            # ends the reply rather than looping forever.
+            # Safety net. The last lap has no tools, but a model may call one anyway.
             logger.warning(f"Agent hit its ceiling of {max_iterations} iterations; stopping")
             return END
         return "tools"
 
-    # Tool schemas are sent to the model on every request but never appear in
-    # `state.messages`, so the token counter driving the summarize node would
-    # never see their cost without this. Measured once here, with the same
-    # counter everything else uses, rather than hardcoded: the registry is
-    # fixed for the process lifetime, so this number is too, and it stays
-    # accurate if a tool is ever added or its schema grows.
+    # Tool schemas are sent every request but are not in `state.messages`.
+    # Measure them once and subtract from the request limit.
     tool_schema_tokens = counter.count(
         [
             ChatMessage(
@@ -101,9 +85,8 @@ def build_agent_graph(
         ),
     )
 
-    # Summarize runs on both entry paths - the start of a reply and after every
-    # tool lap - because that is where the growth actually happens: history
-    # carried in from the checkpointer, and a tool result landing mid-reply.
+    # Summarize at the start of a reply and after every tool lap.
+
     builder.add_edge(START, "summarize")
     builder.add_edge("summarize", "agent")
     builder.add_conditional_edges("agent", route_after_agent, {"tools": "tools", END: END})

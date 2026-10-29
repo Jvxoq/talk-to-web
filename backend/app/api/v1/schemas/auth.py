@@ -5,9 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.application.identity.dto import SessionTokens, UserContext
 from app.domain.identity.value_objects import MAX_PASSWORD_LENGTH
 
-# The bounds here are not the password policy - `RawPassword` in the domain owns
-# that, and it is what returns a readable "too short" to the user. These are the
-# edge's own job: refusing a megabyte string before it reaches an Argon2 call.
+# Not the password policy (`RawPassword` owns that). Just stops huge strings early.
 _PASSWORD_FIELD = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
 
 
@@ -30,17 +28,11 @@ class UserOut(BaseModel):
 
 
 class SessionOut(BaseModel):
-    """What a successful sign-in returns.
-
-    The refresh token is absent on purpose. It goes into an httpOnly cookie the
-    page's JavaScript cannot read, which is the entire reason for splitting the
-    pair: a script that manages to run on this origin can steal the access token
-    and hold it for its remaining minutes, not the session for a fortnight.
-    """
+    """What a sign-in returns. The refresh token goes in an httpOnly cookie instead."""
 
     access_token: str
-    # Not a secret, despite the name: it is the RFC 6750 scheme the client must
-    # put in front of the token, and it is the same string for every response.
+    # The RFC 6750 scheme name, not a secret.
+
     token_type: str = "bearer"  # noqa: S105
     expires_in: int
     user: UserOut

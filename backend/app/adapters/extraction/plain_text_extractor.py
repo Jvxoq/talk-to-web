@@ -4,13 +4,9 @@ import aiofiles
 
 
 class PlainTextExtractor:
-    """
-    Reads a stored `.txt` or `.md` file as UTF-8.
+    """Reads a `.txt` or `.md` file as UTF-8. Implements `TextExtractor`.
 
-    Satisfies `app.application.ingestion.ports.TextExtractor`. Markdown is
-    embedded as-is - stripping its syntax would throw away structure (headings,
-    lists) that is still useful signal once chunked and embedded, and the
-    extra parsing step buys nothing the chat model needs.
+    Markdown is kept as-is, since its structure helps retrieval.
     """
 
     async def extract(self, reference: str) -> str:

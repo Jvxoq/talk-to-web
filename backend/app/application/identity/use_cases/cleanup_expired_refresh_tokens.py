@@ -1,8 +1,6 @@
-"""Housekeeping: purge refresh_tokens rows long past their expiry.
+"""Housekeeping: delete refresh_tokens rows long past expiry.
 
-Not reachable through the API - nothing about "delete old session rows" is a
-user-facing action - so nothing in `app/api/` calls this. It exists to be run
-on a schedule; see `app/cleanup_expired_refresh_tokens.py` for the entry point.
+Not in the API. Run on a schedule via `app/cleanup_expired_refresh_tokens.py`.
 """
 
 from datetime import timedelta
@@ -14,15 +12,9 @@ from app.application.common.uow import UnitOfWorkFactory
 
 
 class CleanupExpiredRefreshTokens:
-    """
-    Delete every refresh token whose `expires_at` is older than the retention
-    window.
+    """Delete refresh tokens that expired before the retention window.
 
-    The window is not zero: `RefreshSession` treats a *revoked* row turning up
-    again as reuse and revokes the whole family, and that detection only works
-    while the row still exists. Retention keeps that signal alive for a while
-    past ordinary expiry, rather than deleting a row the moment it stops being
-    usable.
+    Not zero, because reuse detection in `RefreshSession` needs the old rows.
     """
 
     def __init__(

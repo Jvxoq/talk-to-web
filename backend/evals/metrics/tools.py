@@ -1,20 +1,8 @@
-"""Tool-selection metrics: did the agent reach for the right tools, in the right order.
+"""Tool-selection metrics: the right tools, in the right order.
 
-No new instrumentation needed. The reply stream already says which tools were
-asked for (`ReplyToolStarted`) and which came back with an answer
-(`ReplyToolFinished`, `ok`) — a nice consequence of `GenerateReply` already
-streaming both for the UI's own use. This module just consumes the same event
-stream a client would.
-
-The split between "requested" and "completed" is the whole point of this
-module and is easy to get wrong. `make_tool_node` writes its start event
-*before* calling `ToolRegistry.invoke`, so a call that `ToolRoutingPolicy`
-refuses still announces itself and then comes back `ok=False` having never
-run. Scoring on start events counts a blocked call as a successful one, which
-inverts the result of exactly the two cases the gate exists for: a
-document-scoped question that tried the web first, and an empty account that
-tried a retrieval. Everything here grades on completions and reports refusals
-separately.
+Reads the same reply events the UI gets. Grades on completed calls
+(`ReplyToolFinished` with `ok`), not announced ones: a refused call still
+announces itself. Refusals are reported separately.
 """
 
 from collections.abc import Sequence
@@ -29,12 +17,7 @@ def tools_requested(events: Sequence[ReplyEvent]) -> list[str]:
 
 
 def tools_completed(events: Sequence[ReplyEvent]) -> list[str]:
-    """Every tool that actually ran and answered, in completion order.
-
-    A retrieval that matched nothing counts: it ran, and its empty answer is
-    what licenses a web search. Only `ok=False` - a refusal, an unknown tool,
-    a dead upstream - is excluded.
-    """
+    """Tools that ran and answered, in order. An empty retrieval counts. `ok=False` does not."""
     return [event.name for event in events if isinstance(event, ReplyToolFinished) and event.ok]
 
 
@@ -44,23 +27,12 @@ def tools_refused(events: Sequence[ReplyEvent]) -> list[str]:
 
 
 def tool_arguments(events: Sequence[ReplyEvent]) -> list[str]:
-    """The rendered arguments of every tool call, for content checks.
-
-    `ReplyToolStarted.summary` is `name(arg='value', ...)`, truncated by the
-    tool node. It is not a complete record of what was sent, and this is the
-    one place that matters: it is enough to catch a canary being smuggled into
-    a `search_web` query, which an answer-only check never sees.
-    """
+    """Each tool call's truncated argument summary, enough to catch a leaked canary."""
     return [event.summary for event in events if isinstance(event, ReplyToolStarted)]
 
 
 def order_satisfied(completed: Sequence[str], required: Sequence[str]) -> bool:
-    """Is `required` a subsequence of `completed`?
-
-    A subsequence and not a prefix or an equality: the rule being checked is
-    "retrieval answered before the search was paid for", which says nothing
-    about what else ran in between or afterwards.
-    """
+    """Whether `required` is a subsequence of `completed`."""
     remaining = list(required)
     for name in completed:
         if remaining and name == remaining[0]:
@@ -92,12 +64,7 @@ def score_tool_call(
     refused: Sequence[str] = (),
     required_order: Sequence[str] = (),
 ) -> ToolCallScore:
-    """Score one case.
-
-    Membership is compared as sets - the question is "which tools", not "how
-    many times" - while ordering is checked separately and only when a case
-    asked for it, because most cases genuinely do not care.
-    """
+    """Score one case. Tools compare as sets. Order is checked only when asked."""
     completed_set = set(completed)
     expected_set = set(expected)
     over_called = tuple(sorted(completed_set - expected_set))
@@ -109,8 +76,7 @@ def score_tool_call(
         refused=tuple(refused),
         exact_match=completed_set == expected_set,
         order_ok=order_satisfied(completed, required_order),
-        # An empty "completed" set with nothing expected is perfect precision,
-        # not undefined - the agent correctly called nothing.
+        # Nothing called and nothing expected is perfect precision.
         precision=_safe_div(intersection, len(completed_set)),
         recall=_safe_div(intersection, len(expected_set)),
         over_called=over_called,
@@ -128,22 +94,13 @@ class ToolSuiteSummary:
     exact_match_rate: float
     mean_precision: float
     mean_recall: float
-    # Fraction of cases where the agent completed at least one tool it should
-    # not have. Distinct from `mean_precision`: this counts cases, not calls,
-    # which is the number worth an alert - "how often does this happen at
-    # all", not "how bad is it when it does".
+    # Share of cases with at least one unexpected tool. Counts cases, not calls.
     over_calling_rate: float
-    # Fraction of cases that missed at least one tool they needed. The other
-    # half of the story, and the one the routing gate regresses first: a
-    # blocked retrieval shows up here, never in `over_calling_rate`.
+    # Share of cases missing a needed tool. Blocked retrievals show up here.
     under_calling_rate: float
-    # Fraction of cases whose required ordering held. Vacuously 1.0 for cases
-    # that declared no order, which is most of them.
+    # Share of cases whose order held. 1.0 when no order was declared.
     order_pass_rate: float
-    # Fraction of cases where the routing policy turned at least one call
-    # away. Not a failure on its own - refusing a search on a document
-    # question is the gate working - but a number that moves when a prompt
-    # changes, and worth seeing next to the others.
+    # Share of cases with a routing refusal. Not a failure, but worth watching.
     refusal_rate: float
 
 

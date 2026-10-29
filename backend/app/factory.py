@@ -1,10 +1,7 @@
-"""Builds the application. No routes, no handlers, no logic.
+"""Builds the application.
 
-Importing this module is side-effect free: nothing here reads the environment
-until `create_app` is called. The eager `app = create_app()` lives in
-`app.main`, the ASGI entrypoint - which is why a test (or CI, which has no
-`.env`) can import `create_app` and pass explicit settings without the import
-itself demanding a configured environment.
+Importing this has no side effects, so tests and CI can call `create_app`
+without an environment. The eager `app = create_app()` is in `app.main`.
 """
 
 from fastapi import FastAPI
@@ -30,14 +27,10 @@ from app.settings import Settings, get_settings
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
-    """
-    A factory rather than a module-level app, so a test can build an instance
-    with a substituted container instead of monkey-patching globals.
-    """
+    """Build the app. A factory, so tests can swap the container without patching."""
     settings = settings or get_settings()
     configure_logging(level=settings.log_level, json_logs=settings.environment != "local")
-    # Before the app exists: the SDK's integrations hook Starlette by patching
-    # its classes when `init` runs, and anything already constructed misses them.
+    # Before the app exists, because the SDK patches Starlette at init.
     configure_sentry(
         dsn=settings.sentry_dsn.get_secret_value() if settings.sentry_dsn else None,
         environment=settings.environment,
@@ -50,24 +43,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        # Exact origins from settings. The old wildcard could never carry
-        # credentials, and browsers reject the combination outright.
+        # Exact origins, because a wildcard cannot carry credentials.
         allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["Content-Type", "Authorization"],
-        # `Retry-After` is not on the CORS safelist, so a cross-origin caller
-        # cannot read it unless it is named here. A frontend pointed straight at
-        # this host - rather than through the proxy rewrites - needs it to know
-        # how long a 429 lasts. The request id is here for the same reason: a
-        # correlation id the browser cannot read correlates nothing.
+        # Not CORS-safelisted, so cross-origin callers need them exposed.
         expose_headers=["Retry-After", REQUEST_ID_HEADER],
     )
 
-    # Added last, so it wraps everything above: Starlette builds the stack with
-    # the most recently added middleware outermost. That is what puts an id on a
-    # CORS preflight and on a response written by the error handlers, and what
-    # makes the id available to every log line either of them emits.
+    # Added last, so it is outermost and tags preflights and error responses too.
     app.add_middleware(RequestIdMiddleware)
 
     register_exception_handlers(app)
@@ -83,7 +68,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.include_router(router)
     app.include_router(health.router)
 
-    # Mounting a missing directory raises at startup, and this one is optional.
+    # Optional, and mounting a missing directory raises.
+
     if settings.static_pages_dir.is_dir():
         app.mount("/pages", StaticFiles(directory=settings.static_pages_dir), name="pages")
 

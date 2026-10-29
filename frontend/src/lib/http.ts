@@ -4,9 +4,7 @@ export class ApiError extends Error {
     public readonly status: number,
     message: string,
     /**
-     * How long to wait before this can succeed, on a 429. Optional because it
-     * is the only failure that has an answer: everything else here fails again
-     * at the same speed no matter how long you wait.
+     * Seconds to wait, set only on a 429.
      */
     public readonly retryAfterSeconds?: number,
   ) {
@@ -25,9 +23,7 @@ export function messageFrom(error: unknown, fallback: string): string {
 }
 
 /**
- * Narrows an unknown JSON body to a record with the given string fields.
- * Responses are untrusted input — parse once at the boundary, then trust the
- * type downstream rather than optional-chaining through the app.
+ * Narrows an untrusted JSON body to a record with these string fields.
  */
 export function requireStringFields<K extends string>(
   raw: unknown,

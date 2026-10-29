@@ -1,9 +1,4 @@
-"""Value objects for the chat context: the rules for reading what a user said.
-
-Composing the model's prompt used to live here too. It does not any more: the
-agent builds a message list and lets the model decide what context it needs,
-so there is no single "final text" left to assemble.
-"""
+"""Value objects for the chat context: the rules for reading what a user said."""
 
 import ipaddress
 import re
@@ -14,15 +9,11 @@ from app.domain.chat.errors import EmptyUserMessage, UnsafeUrl
 
 _URL_PATTERN = re.compile(r"https?://[^\s]+")
 
-# Trailing punctuation is almost always sentence punctuation rather than part of
-# the address, and a stray "." or "," turns a good fetch into a 404.
+# Sentence punctuation stuck to the end of a URL.
 _URL_TRAILING_NOISE = ".,;:!?\"'"
 
-# A closing bracket is the exception: it may genuinely belong to the address.
-# Wikipedia disambiguates titles with them - "/wiki/Hexagonal_architecture_(software)"
-# - and stripping that ")" unconditionally requested a page that does not exist,
-# so every such link silently contributed nothing. A closer is only noise when
-# nothing earlier in the URL opened it.
+# A closing bracket is noise only when unbalanced. Wikipedia URLs like
+# "/wiki/Hexagonal_architecture_(software)" need theirs.
 _URL_BRACKET_PAIRS = {")": "(", "]": "[", "}": "{", ">": "<"}
 
 
@@ -64,24 +55,17 @@ _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
 def is_blocked_address(ip: str) -> bool:
-    """
-    Whether an IP is somewhere the server must never be talked into reaching.
+    """Whether an IP is off-limits. Only public internet addresses are allowed.
 
-    "Public internet only" is the whole rule. Everything else an attacker gets
-    by naming an address is infrastructure that trusts anything already inside
-    the network: 169.254.169.254 hands out cloud credentials, 127.0.0.1 and the
-    private ranges reach Qdrant, Postgres and every other unauthenticated
-    service on this host or in this VPC.
+    Private ranges reach internal services. 169.254.169.254 hands out cloud credentials.
     """
     try:
         address = ipaddress.ip_address(ip)
     except ValueError:
-        # Not an address at all. The caller resolves hostnames before asking,
-        # so anything unparseable here is refused rather than assumed safe.
+        # Not an address. Refuse rather than assume safe.
         return True
 
-    # "::ffff:10.0.0.1" is 10.0.0.1 wearing an IPv6 costume, and none of the
-    # v6 predicates below would call it private.
+    # Unwrap IPv4-mapped IPv6, which the v6 checks would miss.
     if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
         address = address.ipv4_mapped
 
@@ -97,13 +81,9 @@ def is_blocked_address(ip: str) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class FetchableUrl:
-    """
-    A URL the server is allowed to open, once it has been read carefully.
+    """A URL the server may open, checked without network access.
 
-    Everything checkable without touching the network is checked here; the
-    hostname still has to be resolved, which is I/O and therefore an adapter's
-    job. Ports are deliberately not restricted - a legitimate article can live
-    on :8080, and the address is what decides safety, not the port.
+    The adapter still resolves the host. Ports are not restricted.
     """
 
     value: str
@@ -122,15 +102,14 @@ class FetchableUrl:
             hostname = parts.hostname
             port = parts.port
         except ValueError as error:
-            # urlsplit defers parsing the authority, so a malformed port only
-            # blows up on access.
+            # urlsplit raises on a bad port only when accessed.
             raise UnsafeUrl(raw, "malformed host or port") from error
 
         if not hostname:
             raise UnsafeUrl(raw, "no host")
 
-        # A literal address skips name resolution entirely, so it is the one
-        # case the domain can settle on its own.
+        # A literal IP needs no DNS, so it is checked here.
+
         if _looks_like_ip(hostname) and is_blocked_address(hostname):
             raise UnsafeUrl(raw, f"address {hostname} is not on the public internet")
 

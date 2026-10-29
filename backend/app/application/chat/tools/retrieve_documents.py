@@ -25,20 +25,10 @@ class RetrieveDocumentsArgs(BaseModel):
 
 
 class RetrieveDocuments(BaseTool[RetrieveDocumentsArgs]):
-    """
-    Searches the passages indexed from the files the user uploaded.
+    """Searches passages from the user's uploaded files.
 
-    Takes `KnowledgeRetriever` and nothing else: the tool has no idea an
-    embedding model or a vector store is involved, which is what lets either be
-    replaced without touching this file.
-
-    "The user's documents" in the description below is load-bearing, not
-    marketing: the owner comes from the run context, never from the model, so
-    the only documents this can reach are the ones the person asking uploaded.
-    The conversation comes from the same place and narrows it further, to the
-    files attached to this thread - a file the same person uploaded in another
-    chat is out of reach here, which is what stops one document bleeding into
-    an unrelated conversation.
+    Owner and thread come from the context, never the model, so it only
+    reaches this user's files in this conversation.
     """
 
     name: ClassVar[str] = "retrieve_documents"
@@ -62,9 +52,7 @@ class RetrieveDocuments(BaseTool[RetrieveDocumentsArgs]):
             args.query, context.owner_id, context.conversation_id
         )
         if not passages:
-            # An empty string reads to the model as a broken tool, and it tends
-            # to retry the same call. A sentence saying "nothing matched" is what
-            # tells it to answer from what it already knows instead.
+            # A sentence, not "", or the model retries the same call.
             return ToolResult(
                 content=(
                     f"No passages in the uploaded documents matched {args.query!r}. "
@@ -74,9 +62,8 @@ class RetrieveDocuments(BaseTool[RetrieveDocumentsArgs]):
                 )
             )
 
-        # Deduplicated, in first-seen order: several passages routinely come
-        # from the same document, and the citation list is about which
-        # documents grounded the answer, not how many chunks each contributed.
+        # One citation per document, in first-seen order.
+
         seen: dict[str, None] = {}
         for passage in passages:
             seen.setdefault(passage.source, None)

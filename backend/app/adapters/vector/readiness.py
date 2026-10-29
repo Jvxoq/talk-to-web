@@ -4,20 +4,10 @@ from qdrant_client import AsyncQdrantClient
 
 
 class QdrantProbe:
-    """
-    Lists collections through the application's own Qdrant client.
+    """Lists collections with the app's Qdrant client. Implements `ReadinessProbe`.
 
-    Structurally satisfies `app.application.health.ports.ReadinessProbe`.
-
-    `get_collections` is the cheapest call that proves both halves of what
-    readiness means here: the host is reachable, and the API key is accepted. A
-    rejected key is otherwise indistinguishable from a healthy deployment until
-    the first retrieval fails.
-
-    Deliberately *not* a check that the configured collection exists. It is
-    created on first upload, so a brand-new deployment legitimately has none,
-    and gating readiness on it would mean a fresh environment never passes its
-    own rollout.
+    Proves the host answers and the key works. Does not require the collection,
+    which a new deployment does not have yet.
     """
 
     name = "qdrant"

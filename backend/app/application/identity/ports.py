@@ -1,11 +1,4 @@
-"""What the identity use cases need from the outside world.
-
-Structural `Protocol`s: an adapter satisfies one by having the methods, without
-importing or inheriting from anything here. Cryptography, token formats and
-attempt counting are all infrastructure — the use cases below know only that
-passwords can be hashed and compared, that a token can be issued and read back,
-and that some attempts are too many.
-"""
+"""Ports the identity use cases need. Crypto and token formats stay in adapters."""
 
 from datetime import datetime
 from typing import Protocol
@@ -23,12 +16,9 @@ class PasswordHasher(Protocol):
     def verify(self, plain: str, hashed: str) -> bool: ...
 
     def dummy_hash(self) -> str:
-        """A real hash of nothing in particular.
+        """A real hash to verify against when the account does not exist.
 
-        Exists so a login for an address with no account can still pay the cost
-        of a verification. Skipping the work is measurable from outside, and a
-        login that answers faster for unknown addresses is an account
-        enumeration oracle.
+        Same timing either way, so login cannot reveal which emails exist.
         """
         ...
 
@@ -69,12 +59,8 @@ class RefreshTokenRepository(Protocol):
     async def revoke_all_for_user(self, user_id: int, at: datetime) -> None: ...
 
     async def delete_expired_before(self, cutoff: datetime) -> int:
-        """Delete every row whose `expires_at` is older than `cutoff`.
+        """Delete rows that expired before `cutoff`. Returns the count removed."""
 
-        A real DELETE, unlike `revoke` - these rows are old enough that reuse
-        detection has nothing left to gain from keeping them. Returns the count
-        removed, for the cleanup job to log.
-        """
         ...
 
 

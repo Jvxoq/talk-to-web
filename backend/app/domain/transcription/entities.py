@@ -5,12 +5,9 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class Transcript:
-    """
-    One transcript the provider emitted.
+    """One transcript from the provider.
 
-    `is_final` false means an interim guess that will be revised, so the client
-    should overwrite rather than append. `speech_final` additionally says the
-    speaker paused, which is where an utterance ends.
+    `is_final=False` is an interim guess to overwrite. `speech_final` marks a pause.
     """
 
     text: str

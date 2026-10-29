@@ -1,15 +1,8 @@
 name: evals
 
-# The only workflow that spends money and talks to a model provider, which is
-# why it is its own file rather than a fourth job in `backend.yml`: it needs
-# secrets none of those jobs need, it fails for reasons none of them fail for,
-# and its path filter is much narrower than theirs.
-#
-# Narrower on purpose. A regression this catches comes from a prompt, a model
-# name, a tool definition or a guardrail — not from a repository change, a
-# migration or a README fix — so those are the only paths that pay for a run.
-# Same caveat as `backend.yml`: a filtered workflow reports no status at all
-# when it is skipped, so this must not be marked required in branch protection.
+# The only workflow that spends money on a model provider, so it is its own
+# file with its own secrets. It runs only on prompt, model, tool or guardrail
+# changes. Path-filtered, so do not mark it required.
 on:
   pull_request:
     branches: [main]
@@ -33,24 +26,18 @@ defaults:
 
 jobs:
   evals:
-    # A pull request from a fork gets no secrets, so this job could only fail
-    # there, and confusingly — the run would look like a model regression and
-    # actually be an empty API key.
+    # Fork PRs get no secrets, so the run would fail for the wrong reason.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
     services:
-      # `evals.harness._require_local_qdrant` refuses any non-local Qdrant, so
-      # the free-tier cloud instance can never be filled by a run from here.
-      # A service container published on localhost satisfies that check.
+      # The harness refuses non-local Qdrant, so this service container is used.
       qdrant:
         image: qdrant/qdrant:latest
         ports:
           - 6333:6333
-        # No curl, wget or shell utilities in the image, but bash can open a
-        # TCP socket — the same trick `docker-compose.yml` and the integration
-        # job use for this service.
+        # No curl or wget in the image, so bash opens a TCP socket.
         options: >-
           --health-cmd "timeout 2 bash -c '</dev/tcp/localhost/6333' || exit 1"
           --health-interval 5s
@@ -69,10 +56,8 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-groups --locked
 
-      # `build_harness` constructs a `Settings()`, which requires every field
-      # without a default — including several this run never uses. Checking the
-      # two that matter here separately is what keeps a missing repository
-      # secret from looking like a model regression.
+      # `Settings()` needs every required field. Check the two that matter here, so
+      # a missing secret does not look like a model regression.
       - name: Check secrets are present
         env:
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
@@ -83,26 +68,16 @@ jobs:
             exit 1
           fi
 
-      # `--tag ci` selects only the cases that are deterministic and offline:
-      # the two that reach the live internet (`fetch_web_pages` against
-      # example.com, `search_web` for today's headline) are deliberately left
-      # untagged, because they fail for the internet's reasons rather than this
-      # repository's. `tests/evals/test_datasets.py` is what stops the tag from
-      # quietly disappearing and leaving a green job that ran nothing.
-      #
-      # Concurrency 2, not 4: Groq's free tier throttles, and the harness only
-      # retries a 429 once per case.
-      #
-      # loguru writes to stderr, so stdout carries nothing but the markdown
-      # report — which makes it safe to tee straight into the job summary.
-      # `pipefail` keeps the CLI's exit code from being swallowed by the pipe.
+      # `--tag ci` selects only offline, deterministic cases.
+      # `tests/evals/test_datasets.py` makes sure the tag still selects something.
+      # Concurrency 2, since the provider's free tier throttles. Logs go to stderr,
+      # so stdout is just the report. `pipefail` keeps the exit code.
       - name: Run eval suites
         env:
           QDRANT_URL: http://localhost:6333
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          # Required by `Settings`, unread by a `ci`-tagged case. A real value
-          # would only widen what a compromised run could reach.
+          # Required by `Settings`, unused by `ci` cases. Dummy values on purpose.
           DATABASE_URL: postgresql+psycopg://unused:unused@localhost:5432/unused
           TAVILY_API_KEY: unused
           DEEPGRAM_API_KEY: unused

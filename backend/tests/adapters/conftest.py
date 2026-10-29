@@ -1,23 +1,9 @@
-"""A real database for the persistence adapters, with no infrastructure to start.
+"""An in-memory SQLite database for the persistence adapters.
 
-SQLite rather than Postgres because `uv run pytest` is meant to need nothing
-running. That trade is worth naming, because it is not free:
-
-- What these tests *do* prove is everything the repositories actually author -
-  the owner predicate on every read and delete, `flush()` populating an id
-  without committing, the partial `WHERE revoked_at IS NULL`, the FK cascade,
-  and the unit of work's rollback-unless-committed rule. All of that is
-  dialect-independent SQL and SQLAlchemy behaviour.
-- What they cannot prove is anything Postgres-specific: `DateTime(timezone=True)`
-  is a real timestamptz there and a naive string here, so nothing below asserts
-  on the tzinfo of a value that has been round-tripped through the database.
-  Unique-violation semantics and index usage are likewise Postgres's business.
-- Every session here shares one connection, because that is what an in-memory
-  SQLite database is. So "a second session cannot see it yet" is not a claim
-  these tests can make; isolation between concurrent transactions is not
-  testable this way, and no test below pretends otherwise. What a second
-  session does still distinguish is committed from rolled back, which is the
-  unit of work's actual contract.
+SQLite, so `uv run pytest` needs nothing running. It proves the SQL we write:
+owner filters, flush, revoke, FK cascade, rollback. It cannot prove Postgres
+behaviour: timezones, unique violations, or isolation between sessions (they
+share one connection). `tests/integration/` covers those.
 """
 
 from collections.abc import AsyncIterator
@@ -39,14 +25,10 @@ from app.domain.identity.value_objects import Email
 @pytest.fixture
 async def engine() -> AsyncIterator[AsyncEngine]:
     """A fresh in-memory database per test, with foreign keys actually enforced."""
-    # `StaticPool` is implied by the shared in-memory URL SQLAlchemy builds for
-    # aiosqlite; every connection sees the same database, so a session opened
-    # later in the test still finds the schema created here.
+    # Every connection shares this in-memory database and its schema.
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
 
-    # SQLite ignores `ondelete="CASCADE"` unless this pragma is on, and the
-    # cascade is the reason deleting a conversation does not strand its
-    # messages. Without this the test would pass while proving nothing.
+    # SQLite ignores FK cascades without this pragma.
     @event.listens_for(engine.sync_engine, "connect")
     def _enforce_foreign_keys(connection: Any, _record: Any) -> None:
         cursor = connection.cursor()
@@ -77,11 +59,7 @@ async def session(
 
 @pytest.fixture
 async def owner(session: AsyncSession) -> UserModel:
-    """A persisted user to hang conversations off.
-
-    Conversations carry a real FK to `users`, so a test that invents an owner id
-    would be testing against a row the database would have refused.
-    """
+    """A saved user, since conversations have a real FK to `users`."""
     return await make_user(session, "owner@example.com")
 
 

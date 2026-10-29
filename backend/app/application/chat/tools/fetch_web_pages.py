@@ -8,9 +8,7 @@ from app.application.chat.models import Source
 from app.application.chat.ports import WebContentFetcher
 from app.application.chat.tools.base import BaseTool, ToolContext, ToolResult
 
-# A ceiling on how many pages one call may open. Without it, a model that
-# hallucinates a list of thirty links turns one turn into thirty outbound
-# requests the user is waiting on.
+# Max pages per call, so a model cannot open thirty invented links.
 MAX_URLS_PER_CALL = 10
 
 
@@ -19,11 +17,8 @@ class FetchWebPagesArgs(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    # `HttpUrl`, not `str`, quite deliberately. The model writes these, and a
-    # model that half-remembers an address writes something that is not a URL at
-    # all. Pydantic rejects it here, before the scraper opens a socket, and
-    # `BaseTool.run` feeds the validation error back as a tool result - so the
-    # model sees exactly which entry was wrong and can correct it.
+    # `HttpUrl`, so a malformed URL is rejected before any request and the
+    # model sees which entry was wrong.
     urls: list[HttpUrl] = Field(
         min_length=1,
         max_length=MAX_URLS_PER_CALL,
@@ -35,12 +30,7 @@ class FetchWebPagesArgs(BaseModel):
 
 
 class FetchWebPages(BaseTool[FetchWebPagesArgs]):
-    """
-    Reads the visible text of specific pages.
-
-    The counterpart to `search_web`: this one is told what to read, that one is
-    asked what is worth reading.
-    """
+    """Reads the visible text of given pages. `search_web` finds pages instead."""
 
     name: ClassVar[str] = "fetch_web_pages"
     description: ClassVar[str] = (
@@ -54,15 +44,11 @@ class FetchWebPages(BaseTool[FetchWebPagesArgs]):
 
     def __init__(self, web: WebContentFetcher, max_urls: int = MAX_URLS_PER_CALL) -> None:
         self._web = web
-        # `MAX_URLS_PER_CALL` on `FetchWebPagesArgs` is the hard ceiling Pydantic
-        # enforces before a request is even considered; this is a tighter,
-        # configurable bound underneath it, for trimming context size without
-        # touching what counts as a malformed call.
+        # A configurable limit below the hard `MAX_URLS_PER_CALL`.
         self._max_urls = max_urls
 
     async def _run(self, args: FetchWebPagesArgs, context: ToolContext) -> ToolResult:
-        # Back to plain strings at the boundary: `HttpUrl` is a validation type,
-        # and the port speaks `Sequence[str]`.
+        # The port takes plain strings.
         urls = [str(url) for url in args.urls[: self._max_urls]]
         content = await self._web.fetch_all(urls)
         if not content.strip():
@@ -72,9 +58,7 @@ class FetchWebPages(BaseTool[FetchWebPagesArgs]):
                     "unreachable, empty, or blocked to automated readers."
                 )
             )
-        # The sources are exactly the URLs asked for, not ones parsed back out
-        # of `content`: the fetcher already flattens several pages into one
-        # blob, and re-deriving per-page addresses from that text would be
-        # guesswork `fetch_all`'s own port has no way to settle.
+        # Cite the requested URLs. The fetched text is one merged blob.
+
         sources = tuple(Source(label=url, url=url) for url in urls)
         return ToolResult(content=content, sources=sources)

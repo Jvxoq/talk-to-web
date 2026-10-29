@@ -22,11 +22,7 @@ async def test_reports_ready_when_every_probe_answers() -> None:
 
 
 async def test_one_failure_fails_the_whole_check() -> None:
-    """And the healthy component is still reported as healthy.
-
-    The point of the per-component detail: a failed rollout should name the
-    dependency that was missing rather than only that something was.
-    """
+    """The healthy component is still reported healthy, so the failing one is named."""
     check = CheckReadiness(
         probes=[
             FakeReadinessProbe("postgres"),
@@ -45,12 +41,7 @@ async def test_one_failure_fails_the_whole_check() -> None:
 
 
 async def test_a_hanging_probe_fails_instead_of_hanging() -> None:
-    """The property the endpoint exists for.
-
-    An orchestrator that never gets an answer keeps routing traffic to a process
-    that cannot serve it, so a probe that outruns its budget has to count as a
-    failure rather than as a wait.
-    """
+    """A probe past its timeout counts as not ready."""
     check = CheckReadiness(probes=[FakeReadinessProbe("qdrant", delay=10.0)], timeout_seconds=0.01)
 
     report = await check()
@@ -59,12 +50,7 @@ async def test_a_hanging_probe_fails_instead_of_hanging() -> None:
 
 
 async def test_probes_run_concurrently() -> None:
-    """Two slow probes must cost one wait, not two.
-
-    Sequential probing is the failure that only shows up in production: each
-    dependency is inside the timeout on its own, and the endpoint as a whole is
-    outside the orchestrator's.
-    """
+    """Slow probes run concurrently, so they cost one wait, not the sum."""
     probes = [FakeReadinessProbe(f"slow-{index}", delay=0.05) for index in range(4)]
     check = CheckReadiness(probes=probes, timeout_seconds=1.0)
 

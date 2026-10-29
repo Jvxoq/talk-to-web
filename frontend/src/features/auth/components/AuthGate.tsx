@@ -6,12 +6,9 @@ import { useAuth } from '../hooks/useAuth'
 import { AuthForm } from './AuthForm'
 
 /**
- * Shows the app to whoever is signed in, and the form to everyone else.
+ * Shows the app when signed in, the form otherwise.
  *
- * The third state matters as much as the other two: on a reload the access
- * token is gone and the refresh cookie has not been tried yet. Rendering the
- * form during that moment would flash a sign-in screen at someone who is
- * already signed in, so `restoring` renders neither.
+ * `restoring` renders neither, so a reload does not flash the sign-in form.
  */
 export function AuthGate({ children }: { children: ReactNode }) {
   const { status } = useAuth()
@@ -21,8 +18,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
       <motion.div
         className="auth-restoring"
         initial={{ opacity: 0 }}
-        // Held back deliberately: the refresh usually answers in well under
-        // this, and an indicator that appears and vanishes reads as a glitch.
+        // Delayed, so a fast refresh never flashes the indicator.
         animate={{ opacity: 1, transition: { delay: 0.4, duration: timing.standard } }}
         aria-live="polite"
         aria-busy
@@ -41,9 +37,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        // A crossfade rather than a slide: signing in replaces the whole screen,
-        // and there is no spatial relationship between the two to preserve.
-        // The exit is the faster half, so nothing waits on what is leaving.
+        // A crossfade, since the whole screen changes. The exit is faster.
         transition={{ duration: timing.fast, ease: easeStandard }}
       >
         {status === 'signed-in' ? children : <AuthForm />}

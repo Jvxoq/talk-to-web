@@ -19,9 +19,7 @@ async def generate_text(
     user: CurrentUserDep,
 ) -> StreamingResponse:
     request = body.validated_against(models)
-    # Awaited, not just called: the use case spends the caller's rate-limit
-    # budget before it returns the stream, so a refusal reaches the error
-    # handler as a 429 instead of truncating a response that already sent 200.
+    # Awaited first, so a rate-limit refusal is a 429, not a cut-off 200.
     events = await use_case(
         GenerateReplyInput(
             model=request.model,
@@ -36,9 +34,7 @@ async def generate_text(
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
-            # nginx buffers proxied responses by default, which holds every SSE
-            # frame until the buffer fills — the stream then arrives in one lump
-            # long after the model finished, which reads to users as a hang.
+            # Stops proxy buffering, which would deliver the stream in one lump.
             "X-Accel-Buffering": "no",
         },
     )

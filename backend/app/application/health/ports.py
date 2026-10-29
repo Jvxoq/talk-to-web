@@ -4,17 +4,12 @@ from typing import Protocol
 
 
 class ReadinessProbe(Protocol):
-    """One dependency, and a cheap way of asking whether it is answering.
-
-    `check` reports by raising: any exception means "not ready". A boolean
-    return would force every adapter to swallow its own driver errors, and the
-    one thing worth logging - what actually went wrong - would be gone by the
-    time the use case saw the result.
-    """
+    """One dependency's cheap health check. `check` raises when not ready."""
 
     @property
     def name(self) -> str:
-        """What this dependency is called in the response. Stable; operators alert on it."""
+        """The dependency's name in the response. Keep it stable."""
+
         ...
 
     async def check(self) -> None:

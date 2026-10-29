@@ -1,8 +1,7 @@
 import { motion, useReducedMotion } from 'motion/react'
 
 /**
- * The "thinking" state before the first token lands — three ink squares that
- * rise and fade in sequence. Falls back to static squares under reduced motion.
+ * Three rising squares before the first token. Static under reduced motion.
  */
 export function TypingDots() {
   const reduce = useReducedMotion()

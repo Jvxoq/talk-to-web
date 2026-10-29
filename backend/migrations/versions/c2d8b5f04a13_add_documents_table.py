@@ -4,11 +4,7 @@ Revision ID: c2d8b5f04a13
 Revises: b1c7a4e93d52
 Create Date: 2026-08-09 00:00:00.000000
 
-Uploads had no row of their own before this: `IndexDocument` wrote straight to
-the vector store and nothing recorded what a person had uploaded, so a second
-upload could only ever replace the first. This table is what makes an upload a
-thing with an identity - listable, and deletable on its own - instead of a side
-effect of indexing.
+Gives each upload its own row, so it can be listed and deleted on its own.
 
 """
 

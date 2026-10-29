@@ -16,11 +16,7 @@ interface SidebarProps {
 }
 
 /**
- * The conversation list, new-chat control and per-row delete.
- *
- * `deleteConversation` in `lib/conversation.ts` existed before this component
- * did and was never called from anywhere - this is the UI that finally calls
- * it.
+ * The conversation list, new-chat button and per-row delete.
  */
 export function Sidebar({
   conversations,

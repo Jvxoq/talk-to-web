@@ -5,9 +5,7 @@ import type { ApiError } from './http'
 type SessionModule = typeof import('./session')
 
 /**
- * The access token and the in-flight refresh are module-level state, which is
- * the point of the design — so every test gets a fresh copy of the module
- * rather than trying to reset that state from the outside.
+ * The module holds state, so each test imports a fresh copy.
  */
 let session: SessionModule
 let fetchMock: ReturnType<typeof vi.fn>
@@ -119,8 +117,7 @@ describe('refreshSession', () => {
 
     const results = await Promise.all(calls)
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    // Rotation spends the presented refresh token, so a second request would
-    // look like reuse to the server and revoke every session the user has.
+    // One rotation only, or the server sees reuse and revokes every session.
     expect(results.map((r) => r.accessToken)).toEqual(['fresh', 'fresh', 'fresh'])
   })
 
@@ -251,8 +248,7 @@ describe('authorizedFetch', () => {
       ),
     )
 
-    // Three requests fail at once. Each wants a token; only one rotation may
-    // happen, or the server sees the spent token replayed and revokes the lot.
+    // Three 401s at once must cause only one rotation.
     await Promise.all([
       session.authorizedFetch('/a'),
       session.authorizedFetch('/b'),

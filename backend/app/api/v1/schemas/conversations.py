@@ -1,8 +1,6 @@
-"""Wire shapes for conversations and the exchanges recorded against them.
+"""Wire shapes for conversations and their messages.
 
-The `Out` models validate straight off the domain dataclasses via
-`from_attributes`, so a route never returns an entity and the storage shape is
-free to drift from the wire shape.
+`Out` models read from domain objects, so routes never return entities.
 """
 
 from datetime import datetime
@@ -11,8 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.chat.entities import Conversation, Message
 
-# `model_type` trips Pydantic's reserved `model_` namespace. The field name is
-# part of the frozen frontend contract, so the namespace guard goes instead.
+# Allows the `model_type` field name without Pydantic's warning.
 _WIRE = ConfigDict(protected_namespaces=())
 _FROM_DOMAIN = ConfigDict(from_attributes=True, protected_namespaces=())
 
@@ -39,8 +36,7 @@ class ConversationOut(BaseModel):
 
 
 class MessageCreate(BaseModel):
-    # Deliberately not `extra="forbid"`: the frontend echoes back message objects
-    # it already holds, so an unknown key is not worth a 422.
+    # Extra keys allowed: the frontend echoes whole message objects back.
     model_config = _WIRE
 
     prompt_content: str = Field(min_length=1, max_length=32_000)
@@ -68,8 +64,8 @@ class MessageOut(BaseModel):
     @classmethod
     def from_domain(cls, message: Message) -> "MessageOut":
         out = cls.model_validate(message)
-        # The entity knows how to derive a total the provider omitted; the raw
-        # attribute would report null where the halves are both known.
+        # Derive the total when the provider left it out.
+
         out.total_tokens = message.token_total()
         return out
 

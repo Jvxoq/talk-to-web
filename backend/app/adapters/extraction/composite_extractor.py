@@ -7,12 +7,9 @@ from app.domain.ingestion.errors import UnsupportedDocumentType
 
 
 class CompositeTextExtractor:
-    """
-    Routes a stored file to the extractor that understands its suffix.
+    """Routes a file to the extractor for its suffix. Is a `TextExtractor` itself.
 
-    Satisfies `app.application.ingestion.ports.TextExtractor` itself, so
-    `IndexDocument` needs no changes to gain support for a new file type -
-    only a new row in the map this is constructed with.
+    A new file type is one more map entry.
     """
 
     def __init__(self, extractors: dict[str, TextExtractor]) -> None:

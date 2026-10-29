@@ -1,10 +1,7 @@
 import './ui.css'
 
 /**
- * Three ink blocks marching in step. The app's one "wait" indicator.
- *
- * No text and no percentage: neither wait it covers has honest progress to
- * report.
+ * Three ink blocks in step. The app's one "wait" indicator, with no progress shown.
  */
 export function PulseBlocks() {
   return (

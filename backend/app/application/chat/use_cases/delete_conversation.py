@@ -8,21 +8,10 @@ from app.domain.chat.errors import ConversationNotFound
 
 
 class DeleteConversation:
-    """
-    Delete a thread, failing loudly when there was nothing to delete.
+    """Delete a thread. Raises `ConversationNotFound` if there is none.
 
-    A silent no-op would let a client believe it removed someone else's
-    conversation, so the missing case is reported rather than swallowed.
-
-    The owner is passed all the way down to the DELETE rather than checked here
-    and dropped: a scoped read followed by an unscoped write is still a way to
-    delete a stranger's thread the moment the two drift apart.
-
-    Attachments go first, one at a time and completely. The `documents` row
-    would fall to the foreign key cascade on its own, but a cascade reaches
-    only as far as the database: the passages in the vector store and the file
-    on disk are outside it, and deleting the row first would leave both
-    orphaned with nothing left naming them.
+    The owner scopes the DELETE too, not just the read. Attachments go first,
+    because the database cascade cannot reach vectors or files.
     """
 
     def __init__(self, uow_factory: UnitOfWorkFactory, remove_document: DocumentRemover) -> None:
@@ -41,10 +30,9 @@ class DeleteConversation:
                 continue
             try:
                 await self._remove_document(document.id, owner_id)
-            except Exception as exc:
-                # Logged, not raised. A vector store that will not answer must
-                # not leave the user unable to delete their own conversation;
-                # the cascade still removes the row behind it.
+            except Exception as exc:  # noqa: BLE001
+                # Logged, not raised, so an outage cannot block deletion.
+
                 logger.warning(
                     f"Could not remove document {document.id} "
                     f"while deleting conversation {conversation_id}: {exc}"

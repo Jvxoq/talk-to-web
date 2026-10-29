@@ -3,16 +3,10 @@ import { ApiError } from './http'
 const AUTH_URL = import.meta.env.VITE_AUTH_URL ?? '/auth'
 
 /**
- * The access token, held in a module variable and nowhere else.
+ * The access token, kept only in this module variable.
  *
- * Deliberately not `localStorage`. The refresh token lives in an httpOnly
- * cookie precisely so that a script running on this page cannot read it; putting
- * the access token in storage would hand a script the other half and undo the
- * split. In memory, an XSS gets at most whatever is live in this tab right now.
- *
- * The cost is that a reload starts with nothing, which is what `restore()`
- * below is for: the cookie survives, so one call to /auth/refresh gets a new
- * access token without the user typing anything.
+ * Not `localStorage`, so a script cannot read it. A reload starts empty, and
+ * `restore()` gets a new one from the refresh cookie.
  */
 let accessToken: string | null = null
 
@@ -77,10 +71,8 @@ export function authEndpoint(path: string): string {
 /**
  * Exchanges the refresh cookie for a new access token.
  *
- * `credentials: 'include'` is what sends the cookie at all — `fetch` omits
- * cookies cross-origin by default, and this is the one call that depends on it.
- * A plain `fetch`, not `authorizedFetch`: this *is* how a token is obtained, so
- * going through the wrapper would be a loop.
+ * `credentials: 'include'` sends the cookie. Plain `fetch`, since
+ * `authorizedFetch` would loop.
  */
 async function requestRefresh(): Promise<Session> {
   const response = await fetch(authEndpoint('refresh'), {
@@ -95,12 +87,10 @@ async function requestRefresh(): Promise<Session> {
 }
 
 /**
- * The refresh in flight, if there is one.
+ * The refresh in flight, if any.
  *
- * Single-flight, and it has to be. Rotation invalidates the token it was given,
- * so two concurrent refreshes would race: the second presents a token the first
- * already spent, the server reads that as reuse, and it revokes every session
- * the user has. Sharing one promise turns a burst of 401s into one rotation.
+ * Shared, because two concurrent refreshes look like token reuse and revoke
+ * every session.
  */
 let inFlight: Promise<Session> | null = null
 
@@ -122,12 +112,7 @@ export function refreshSession(): Promise<Session> {
 }
 
 /**
- * `fetch`, with the bearer token attached and one silent retry after a refresh.
- *
- * Access tokens are short-lived by design, so a 401 mid-session is the ordinary
- * case rather than an error: refresh once, replay the request, and only give up
- * — signed out — if that fails too. Retrying more than once would loop against a
- * server that simply does not accept us.
+ * `fetch` with the bearer token, plus one retry after a refresh on a 401.
  */
 export async function authorizedFetch(url: string, init: RequestInit = {}): Promise<Response> {
   const send = (token: string | null): Promise<Response> =>
@@ -146,9 +131,7 @@ export async function authorizedFetch(url: string, init: RequestInit = {}): Prom
     const session = await refreshSession()
     return await send(session.accessToken)
   } catch {
-    // The refresh failed, so there is no session left to speak of. Cleared here
-    // rather than left to the caller: every caller would have to remember, and
-    // one that forgot would leave the app rendering a signed-in shell.
+    // The refresh failed, so clear the session here for every caller.
     clearAccessToken()
     return response
   }

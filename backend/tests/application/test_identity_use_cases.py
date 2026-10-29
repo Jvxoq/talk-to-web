@@ -89,10 +89,7 @@ class TestRegisterUser:
         assert harness.factory.issued[0].committed
 
     async def test_stores_what_the_hasher_produced_not_what_was_typed(self) -> None:
-        # That the stored value is unrecoverable is the *hasher's* property, and
-        # `tests/adapters/test_security.py` is where Argon2 is held to it. What
-        # this asserts is the use case's part: the password goes through the port
-        # rather than into the column.
+        # The password goes through the hasher port, not into the column.
         harness = Harness()
         await registered(harness)
 
@@ -101,8 +98,7 @@ class TestRegisterUser:
         assert harness.hasher.verify(PASSWORD, stored.password_hash)
 
     async def test_stores_only_a_fingerprint_of_the_refresh_secret(self) -> None:
-        # A database that held the secret would hand over every live session to
-        # anyone who read a backup.
+        # Only the fingerprint is stored, never the secret.
         harness = Harness()
         secret = await registered(harness)
 
@@ -163,8 +159,7 @@ class TestAuthenticateUser:
     async def test_an_unknown_or_malformed_address_looks_identical_to_a_wrong_password(
         self, email: str
     ) -> None:
-        # Same exception for all three cases: a distinguishable answer would turn
-        # the login form into a way to test whether an address has an account.
+        # One error for all cases, so login reveals no accounts.
         harness = Harness()
         await registered(harness)
 
@@ -198,8 +193,7 @@ class TestAuthenticateUser:
             await harness.login(LoginInput(email=EMAIL, password="wrong password entirely"))
         await harness.login(LoginInput(email=EMAIL, password=PASSWORD))
 
-        # Without the reset, one earlier typo would count against the next
-        # window and lock a legitimate user out of their own account.
+        # A good login clears earlier failures.
         assert harness.limiter.hits.get(f"login:{EMAIL}") is None
 
 
@@ -222,12 +216,7 @@ class TestRefreshSession:
             await harness.refresh_session(RefreshInput(refresh_token=first))
 
     async def test_reusing_a_spent_token_kills_every_session(self) -> None:
-        """Reuse means two parties hold one token, and only one of them should.
-
-        There is no way to tell which is the real client, so neither keeps the
-        session. That is deliberately harsher than ignoring it: the alternative
-        lets whoever stole the token ride along indefinitely.
-        """
+        """Token reuse revokes every session, since we cannot tell who is real."""
         harness = Harness()
         first = await registered(harness)
         second = await harness.refresh_session(RefreshInput(refresh_token=first))
@@ -274,8 +263,7 @@ class TestRevokeSession:
 
     @pytest.mark.parametrize("token", ["never issued", ""])
     async def test_signing_out_an_unknown_session_is_not_an_error(self, token: str) -> None:
-        # A client that has been signed out must never be left believing it is
-        # still signed in because its token had already expired.
+        # Logout with an expired token still succeeds.
         await Harness().logout(token)
 
     async def test_signing_out_twice_is_not_an_error(self) -> None:
@@ -306,8 +294,7 @@ class TestCleanupExpiredRefreshTokens:
     async def test_deletes_rows_past_the_retention_window(self) -> None:
         harness = Harness()
         await registered(harness)
-        # Expired well outside the retention window - old enough that reuse
-        # detection has nothing left to gain from keeping the row.
+        # Past the retention window.
         harness.clock.advance(REFRESH_TTL + CLEANUP_RETENTION + 1)
 
         deleted = await harness.cleanup()
@@ -318,8 +305,7 @@ class TestCleanupExpiredRefreshTokens:
     async def test_leaves_rows_still_inside_the_retention_window(self) -> None:
         harness = Harness()
         await registered(harness)
-        # Expired, but not long enough ago for the grace period to have lapsed:
-        # a replay of this token would still trip reuse detection.
+        # Expired, but still inside the retention window.
         harness.clock.advance(REFRESH_TTL + 1)
 
         deleted = await harness.cleanup()

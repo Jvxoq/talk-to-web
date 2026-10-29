@@ -24,12 +24,9 @@ class SearchWebArgs(BaseModel):
 
 
 class SearchWeb(BaseTool[SearchWebArgs]):
-    """
-    Answers an open question with passages from the live web.
+    """Answers an open question with passages from the live web.
 
-    `max_results` arrives from settings through the constructor rather than from
-    the model: how much the search costs is an operator's decision, and a model
-    given the dial will ask for twenty results on a question that needed three.
+    `max_results` comes from settings, not the model, since it sets the cost.
     """
 
     name: ClassVar[str] = "search_web"

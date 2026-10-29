@@ -22,24 +22,16 @@ class Document:
 
     @staticmethod
     def clean(text: str) -> str:
-        """
-        Normalise extracted text so chunk boundaries fall on real words.
-
-        PDF extraction leaves hard-wrapped lines and the ". ," debris of
-        column-split sentences; collapsing them first keeps a chunk from
-        spending its budget on whitespace.
-        """
+        """Collapse whitespace and PDF debris so chunks hold real text."""
         collapsed = _WHITESPACE.sub(" ", text.replace("\n", " "))
         for noisy, fixed in ((". ,", ""), ("..", "."), (". .", ".")):
             collapsed = collapsed.replace(noisy, fixed)
         return collapsed.strip()
 
     def chunks(self, size: int, overlap: int) -> Iterator[Chunk]:
-        """
-        Slice the cleaned content into overlapping windows.
+        """Slice the cleaned text into overlapping windows.
 
-        The overlap is what stops a sentence that straddles a boundary from
-        being unretrievable: it appears whole in one of the two windows.
+        The overlap keeps a sentence on a boundary whole in one window.
         """
         if size <= 0:
             raise ValueError("Chunk size must be positive")
@@ -61,35 +53,17 @@ class Document:
 
 @dataclass(slots=True)
 class UploadedDocument:
-    """
-    The persisted record of one upload: what it is, whose it is, and how much
-    of it made it into the vector index.
-
-    Distinct from `Document` above, which is the extracted text of one upload
-    at index time and is never stored. This is the row a document manager
-    lists and deletes - it survives the request that created it.
-    """
+    """The stored record of one upload. `Document` is the text, never stored."""
 
     name: str
     reference: str
     owner_id: int
-    # The conversation this upload belongs to. A document is attached to one
-    # thread, never to the account as a whole: two chats about two different
-    # PDFs must not retrieve each other's passages. `None` is the pre-scoping
-    # shape - rows that existed before documents were owned by a conversation -
-    # and such a row matches no conversation filter, so it is invisible to
-    # retrieval until it is deleted.
+    # The owning thread. `None` only on old rows, which retrieval never matches.
     conversation_id: int | None = None
     id: int | None = None
     chunks_indexed: int = 0
-    # A few sentences saying what is in this document, written by the condenser
-    # when the upload was indexed. Empty until indexing finishes, and empty
-    # forever if the condenser could not answer - a digest is an enhancement,
-    # and a document with no summary is still fully searchable.
-    #
-    # It exists so the agent can tell, before searching anything, whether this
-    # user's files are likely to hold the answer. Without it the model is
-    # guessing, and a guess that goes the wrong way sends a private question to
-    # a web search.
+    # Written at indexing, so the agent knows what the file covers. Empty until
+    # then, or if the condenser failed. The file is still searchable either way.
+
     summary: str = ""
     created_at: datetime | None = None

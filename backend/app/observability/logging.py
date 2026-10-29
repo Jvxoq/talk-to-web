@@ -7,8 +7,7 @@ from loguru import logger
 
 from app.observability.context import NO_REQUEST_ID, get_request_id
 
-# The default loguru format with the request id spliced in before the message.
-# Only the human-readable sink uses it; the JSON sink serializes `extra` itself.
+# Loguru's default format plus the request id. JSON logs ignore it.
 _CONSOLE_FORMAT = (
     "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
     "<level>{level: <8}</level> | "
@@ -19,13 +18,7 @@ _CONSOLE_FORMAT = (
 
 
 def _add_request_id(record: Any) -> None:
-    """Stamp every record with the request being served, if there is one.
-
-    A patcher rather than `logger.bind()` at each call site: the whole value of
-    a correlation id is that nobody has to remember to attach it. `setdefault`
-    so an explicit `bind(request_id=...)` - a background job replaying one, say
-    - still wins.
-    """
+    """Add the current request id to every record. An explicit `bind` still wins."""
     record["extra"].setdefault("request_id", get_request_id() or NO_REQUEST_ID)
 
 
@@ -37,8 +30,7 @@ def configure_logging(level: str, json_logs: bool) -> None:
         level=level.upper(),
         serialize=json_logs,
         format=_CONSOLE_FORMAT,
-        # `diagnose` prints the local variables of every frame in a traceback,
-        # which happily includes API keys and connection strings.
+        # Off: it prints local variables, including secrets.
         diagnose=False,
         backtrace=False,
     )

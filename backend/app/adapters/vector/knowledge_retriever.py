@@ -11,14 +11,9 @@ if TYPE_CHECKING:
 
 
 class EmbeddedKnowledgeRetriever:
-    """
-    Answers "what do we know about this?" with plain passages.
+    """Returns passages for a query. Implements `KnowledgeRetriever`.
 
-    Satisfies `app.application.chat.ports.KnowledgeRetriever`. This is the seam
-    that keeps the chat context ignorant of embeddings: chat asks a question in
-    text and gets text back, while the choice of embedding model, vector store
-    and thresholds lives entirely on this side of the line. Swapping Qdrant for
-    keyword search would not change a line of chat code.
+    Chat sends text and gets text back. Embeddings and the vector store stay here.
     """
 
     def __init__(
@@ -36,16 +31,11 @@ class EmbeddedKnowledgeRetriever:
     async def retrieve(
         self, query: str, owner_id: int, conversation_id: int | None
     ) -> list[Passage]:
-        """Embed the query and return this thread's passages closest to it.
+        """Embed the query and return this thread's closest passages.
 
-        No conversation means no attached documents, so the embedding call is
-        skipped entirely - it would be paid for and then filtered to nothing.
-
-        Translates the ingestion context's `Chunk` into chat's own `Passage`
-        here, at the seam - the one place allowed to know both shapes - so
-        that a source name earned by a vector search reaches the tool above it
-        as chat's own vocabulary, not ingestion's.
+        No conversation skips the paid embedding call. Converts `Chunk` to `Passage`.
         """
+
         if conversation_id is None:
             return []
 

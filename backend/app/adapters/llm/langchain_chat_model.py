@@ -1,9 +1,6 @@
-"""LangChain-backed streaming chat model: the one place a vendor is named.
+"""LangChain streaming chat model, implementing `ChatModel`.
 
-Satisfies `app.application.chat.ports.ChatModel`. Everything LangChain knows how
-to do - provider resolution, tool binding, chunk accumulation - stops at this
-file, so the agent graph above it never imports `langchain` and never learns
-which company answered.
+LangChain stays in this file, so the agent graph never imports it.
 """
 
 import uuid
@@ -41,8 +38,7 @@ def _to_langchain_message(message: ChatMessage) -> BaseMessage:
     if message.role == "user":
         return HumanMessage(content=message.content)
     if message.role == "tool":
-        # A tool result that cannot be paired back to its request is rejected by
-        # every provider, so the id is not optional in practice.
+        # Providers reject a tool result without its call id.
         return ToolMessage(content=message.content, tool_call_id=message.tool_call_id or "")
 
     tool_calls: list[LangChainToolCall] = [
@@ -65,13 +61,9 @@ def _to_langchain_tool(spec: ToolSpec) -> dict[str, Any]:
 
 
 class LangChainChatModel:
-    """
-    Streams tool-calling turns from any provider `init_chat_model` can resolve.
+    """Streams tool-calling turns from any provider `init_chat_model` supports.
 
-    One `BaseChatModel` is built per configured model name at startup: building
-    one per request would re-create an HTTP client on every message. The provider
-    is a plain string ("groq", "openai", "anthropic", ...), so changing vendor is
-    an environment change rather than a code change.
+    One client per model, built at startup. The provider is an env string.
     """
 
     def __init__(
@@ -95,9 +87,7 @@ class LangChainChatModel:
                 max_tokens=max_tokens,
             )
             if not isinstance(built, BaseChatModel):
-                # `init_chat_model` returns a late-bound configurable wrapper when
-                # asked for one. We never ask, and the rest of this class relies
-                # on `bind_tools`, so refuse loudly rather than fail per request.
+                # We need `bind_tools`, so fail at startup, not per request.
                 raise RuntimeError(f"Provider {provider!r} did not return a usable chat model")
             self._models[name] = built
 
@@ -118,24 +108,15 @@ class LangChainChatModel:
         runnable = self._runnable(model=model, temperature=temperature, tools=tools)
         payload = [_to_langchain_message(message) for message in messages]
 
-        # Tool call arguments arrive split across many chunks - a provider will
-        # happily send `{"que`, `ry": "wh`, `at"}` as three deltas - so nothing
-        # can be parsed until the stream ends. `AIMessageChunk.__add__` is what
-        # reassembles them; reading `.tool_calls` before the end sees fragments.
+        # Tool call arguments arrive in fragments. Adding chunks reassembles them.
         accumulated: AIMessageChunk | None = None
 
-        # A dropped connection or a 429/5xx before the first token is a
-        # provider hiccup worth one silent retry; a failure after tokens have
-        # already reached the caller is not retryable - the SSE stream is
-        # already in flight, and replaying it would duplicate text the client
-        # rendered. `started` gates the predicate on that boundary rather than
-        # on exception type, which keeps this generic across whatever provider
-        # `init_chat_model` resolved.
+        # Retry only before the first token. After that, a retry would
+        # duplicate text the client already shows.
         started = False
 
         def _retryable(error: BaseException) -> bool:
-            # A rejected key returns the same 401 on every attempt. Retrying
-            # only spends the backoff before failing anyway.
+            # A rejected key fails the same way every time. Do not retry.
             if is_auth_failure(str(error)):
                 logger.error(f"Provider rejected our credentials for model {model}")
                 return False
@@ -158,8 +139,7 @@ class LangChainChatModel:
                         text = str(chunk.text)
                         if text:
                             started = True
-                            # `model_construct` skips validation: this runs
-                            # once per token, on data we just built ourselves.
+                            # Skips validation: runs per token on our own data.
                             yield ModelChunk.model_construct(text=text)
         except Exception as error:
             logger.warning(f"Chat stream failed for model {model}: {error}")
@@ -176,14 +156,7 @@ class LangChainChatModel:
 
     @staticmethod
     def _usage(accumulated: AIMessageChunk | None, *, model: str) -> TokenUsage | None:
-        """Read what the provider reported, if it reported anything at all.
-
-        Absence has to stay absence: not every provider fills in
-        `usage_metadata`, and a fabricated zero would look identical to "the
-        model really used no tokens" downstream, in a cost report. Reading it
-        is best-effort by design - a malformed dict here must not cost a reply
-        that has already streamed successfully.
-        """
+        """The provider's reported usage, or `None`. Never a made-up zero."""
         if accumulated is None:
             return None
         try:
@@ -194,7 +167,7 @@ class LangChainChatModel:
                 prompt_tokens=reported.get("input_tokens", 0),
                 completion_tokens=reported.get("output_tokens", 0),
             )
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001
             logger.debug(f"Could not read usage for model {model}: {error}")
             return None
 
@@ -210,8 +183,7 @@ class LangChainChatModel:
             available = ", ".join(self._models) or "none"
             raise ValueError(f"Unknown model {model!r}. Configured models: {available}.")
 
-        # Binding an empty tool list is not the same as binding none: some
-        # providers reject `tools: []` outright.
+        # Some providers reject `tools: []`, so bind none instead.
         bound: Runnable[Any, BaseMessage] = (
             chat_model.bind_tools([_to_langchain_tool(spec) for spec in tools])
             if tools
@@ -226,8 +198,7 @@ class LangChainChatModel:
             return ()
         return tuple(
             ToolCall(
-                # Some providers omit the id on a single-call turn, and a tool
-                # result with no id to pair against is unusable downstream.
+                # Some providers omit the id. Results need one.
                 id=call.get("id") or uuid.uuid4().hex,
                 name=call["name"],
                 arguments=dict(call.get("args") or {}),

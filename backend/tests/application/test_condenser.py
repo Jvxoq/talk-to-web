@@ -1,10 +1,4 @@
-"""The condenser: one cheap model, two compression jobs, one failure policy.
-
-The point of the shared `Condenser` is that a failure to condense costs the
-reply some grounding, never the reply itself - so every test here is about
-either what it returns on success or that it returns `None` (and logs) rather
-than raising on failure.
-"""
+"""The condenser: returns text on success, `None` on failure, never raises."""
 
 from app.application.chat.agent.condenser import Condenser
 from app.application.chat.models import ChatMessage, ModelChunk, TokenUsage
@@ -128,8 +122,7 @@ class TestSummarizeDocument:
         assert "travel spend rose" in sent
 
     async def test_a_summarizer_is_given_no_tools(self) -> None:
-        # Same reason the other two condenser methods pass none: a condenser
-        # that can call tools is a second agent.
+        # No tools, like the other condenser methods.
         model = FakeChatModel(turns=[[ModelChunk(text="ok")]])
 
         await make_condenser(model).summarize_document("a.pdf", "text")
@@ -144,8 +137,7 @@ class TestSummarizeDocument:
         assert model.seen_messages == [], "nothing to summarize must not cost a request"
 
     async def test_a_failing_model_returns_none_rather_than_raising(self) -> None:
-        # The contract ingestion relies on: a digest is an enhancement, so a
-        # summarizer having a bad day must never cost the user their upload.
+        # Failure returns `None`, so the upload still succeeds.
         condenser = make_condenser(FakeChatModel(fail_with=RuntimeError("boom")))
 
         assert await condenser.summarize_document("budget.pdf", "text") is None

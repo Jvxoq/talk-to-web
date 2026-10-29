@@ -18,21 +18,13 @@ from app.domain.ingestion.errors import DocumentNotIndexable
 from app.domain.ingestion.value_objects import DocumentName
 
 _EMBED_BATCH_SIZE = 16
-"""How many chunks may be embedded at once.
-
-Unbounded `gather` over a large PDF would open hundreds of simultaneous
-provider calls and earn a rate limit; batching keeps the fan-out predictable
-while still overlapping the latency.
-"""
+"""Chunks embedded at once. Unbounded fan-out on a big PDF hits rate limits."""
 
 
 class IndexDocument:
-    """
-    Make an uploaded document answerable.
+    """Make an uploaded document searchable.
 
-    Extraction, chunking and embedding are separate steps so an empty scan
-    fails as a business outcome ("no text in here") instead of silently
-    indexing nothing.
+    A file with no text fails with `DocumentNotIndexable` instead of indexing nothing.
     """
 
     def __init__(
@@ -65,11 +57,9 @@ class IndexDocument:
         owner_id: int,
         conversation_id: int,
     ) -> IndexDocumentResult:
-        """`reference` is a `TextExtractor`-readable location of the stored file.
+        """Index the stored file at `reference`.
 
-        Returns zero chunks indexed when the document was removed while this
-        was embedding: the removal won, and writing the points then would
-        orphan them - no row left for any later delete to find them by.
+        Returns zero chunks if the document was deleted during indexing.
         """
         logger.debug("Indexing {} from {} for owner {}", name, reference, owner_id)
 
@@ -78,10 +68,7 @@ class IndexDocument:
         if not document.is_indexable():
             raise DocumentNotIndexable(name)
 
-        # Tagged with `document_id` rather than clearing the owner's whole
-        # namespace first - that used to be how a second upload wiped out the
-        # first. Every owner may now hold several documents at once; only
-        # `DeleteDocument` removes one, and only its own passages.
+        # Points are tagged by document, so nothing else is cleared here.
         await self._index.ensure(self._embedding_dimensions)
 
         chunks = list(document.chunks(self._chunk_size, self._chunk_overlap))
@@ -90,16 +77,8 @@ class IndexDocument:
             batch = chunks[start : start + _EMBED_BATCH_SIZE]
             vectors.extend(await asyncio.gather(*(self._embedder.embed(c.text) for c in batch)))
 
-        # The conversation is written onto every point, because it is what
-        # every search filters on. A point without it is retrievable by nobody.
-        #
-        # The expensive part - extraction, chunking, embedding - is behind us;
-        # everything from here on is what a concurrent delete must not
-        # interleave with, so the lock is held around the writes only. The row
-        # is re-read inside the lock, because only there can "the document
-        # still exists" be trusted through to the upsert: a delete that ran
-        # first has already taken the row, and writing the points then would
-        # leave them retrievable forever with nothing to delete them by.
+        # Lock only the writes. Re-read the row inside the lock: if a delete
+        # won, upserting now would leave orphaned points.
         async with self._lock.hold(document_id):
             async with self._uow_factory() as uow:
                 if await uow.documents.get(document_id, owner_id) is None:
@@ -122,29 +101,16 @@ class IndexDocument:
         return IndexDocumentResult(chunks_indexed=len(chunks))
 
     async def _digest(self, name: str, content: str) -> str:
-        """A few sentences on what this document is, or "" if none could be had.
+        """A short summary of the document, or "" on failure. Never raises.
 
-        Never raises and never blocks the upload. The document is already
-        embedded and searchable by the time this runs; the digest only decides
-        how readily the agent *reaches* for it, so failing to write one costs
-        discoverability, not the file.
-
-        Stored exactly as the summarizer wrote it. It is derived from an
-        uploaded file, so a hostile document shapes part of it - but the fence
-        that makes that safe belongs where the model reads it, not here.
-        `GenerateReply` puts the whole digest block through the same
-        `ToolOutputGuard` every tool result goes through, which keeps fencing
-        in one place rather than storing pre-fenced text in a column.
+        Stored unfenced. `GenerateReply` fences it when the model reads it.
         """
-        # Caught, even though the port says a summarizer returns `None` rather
-        # than raising - the same belt-and-braces `ToolRegistry.invoke` applies
-        # to tools that do not extend `BaseTool`. By this point the document is
-        # embedded and upserted, so an exception escaping here would abandon the
-        # run before the chunk count was ever written: the vectors would exist
-        # while the row still claimed nothing had been indexed.
+        # Caught anyway: the vectors are written, so raising would leave the
+        # row saying nothing was indexed.
+
         try:
             summary = await self._summarizer.summarize_document(name, content)
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001
             logger.warning("Summarizer raised for {}; indexing it without one: {}", name, error)
             return ""
         if summary is None:

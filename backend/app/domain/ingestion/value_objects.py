@@ -12,13 +12,7 @@ _MAX_STEM = 100
 
 @dataclass(frozen=True, slots=True)
 class DocumentName:
-    """
-    A filename that is safe to join onto a storage directory.
-
-    A client-supplied name is untrusted input: "../../etc/passwd" and a name
-    made entirely of separators both have to stop being paths before anything
-    opens a file with them.
-    """
+    """A filename safe to join onto a storage directory. Strips any path parts."""
 
     value: str
 

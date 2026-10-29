@@ -11,16 +11,10 @@ from app.domain.identity.errors import InvalidToken
 
 
 class RefreshSession:
-    """
-    Rotate a session: the presented token is spent, and a new one replaces it.
+    """Rotate a session: spend the presented token and issue a new one.
 
-    Rotation is what makes a leaked refresh token a bounded problem, and reuse
-    detection is what turns it into a detectable one. A token that has already
-    been rotated can only be presented by someone who kept a copy - the real
-    client moved on to the new one - so the whole family is revoked and both
-    parties are forced to sign in again. That is deliberately harsher than
-    ignoring it: one interrupted session beats an attacker riding along
-    indefinitely.
+    A rotated token shown again means someone kept a copy. Every session for
+    that user is then revoked, and both sides must sign in again.
     """
 
     def __init__(
@@ -50,8 +44,7 @@ class RefreshSession:
                 raise InvalidToken("no such session")
 
             if stored.is_revoked():
-                # Two people hold this token and only one of them should. There
-                # is no way to tell which, so neither keeps the session.
+                # We cannot tell who is real, so nobody keeps the session.
                 logger.warning(f"Refresh token reuse detected for user {stored.user_id}")
                 await uow.refresh_tokens.revoke_all_for_user(stored.user_id, now)
                 await uow.commit()
@@ -64,9 +57,8 @@ class RefreshSession:
             if user is None or not user.is_active:
                 raise InvalidToken("account is unavailable")
 
-            # Spend the presented token before minting its replacement, so a
-            # crash between the two leaves the client signed out rather than
-            # holding two live sessions.
+            # Revoke first, so a crash signs the user out instead of leaving two sessions.
+
             if stored.id is not None:
                 await uow.refresh_tokens.revoke(stored.id, now)
 

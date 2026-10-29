@@ -1,13 +1,8 @@
 """Authentication routes.
 
-Two things live here that live nowhere else in the API: the split of a minted
-session across a JSON body and a Set-Cookie header, and the reading of that
-cookie back. Both are delivery decisions - the use cases return one
-`SessionTokens` and have no idea either mechanism exists.
-
-Every route is a POST, including sign-out. `app.factory` allows GET, POST and
-OPTIONS across origins, so a `DELETE /auth/session` would be blocked by CORS
-before it ever reached this module.
+Splits a session into a JSON body and a refresh cookie, and reads the cookie
+back. The use cases know nothing about cookies. Sign-out is a POST, because
+CORS allows only GET, POST and OPTIONS.
 """
 
 from typing import Annotated, Literal
@@ -35,18 +30,11 @@ from app.domain.identity.errors import InvalidToken
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-# Named so the parameter can be `refresh_token` while the cookie keeps whatever
-# name the deployment configured. FastAPI reads a `Cookie()` parameter by its
-# alias, which has to be a constant - it cannot be resolved from the container
-# per request - so the configurable name is only used when *writing* the cookie.
-# A deployment that renames it must rename it here too; the default is the one
-# both sides agree on.
+# FastAPI needs a constant alias to read a cookie. The configured name is used
+# only for writing, so a renamed cookie must be renamed here too.
 _COOKIE_ALIAS = "refresh_token"
 
-# The `= None` at each use site is load-bearing: an `Annotated[... , Cookie()]`
-# parameter with no default is *required*, so a caller with no cookie would get
-# a 422 from FastAPI's validation instead of the 401 this app means. Arriving
-# without one is the ordinary state of a first visit.
+# Use with `= None`. Without a default, a missing cookie is a 422, not our 401.
 RefreshCookie = Annotated[str | None, Cookie(alias=_COOKIE_ALIAS)]
 
 
@@ -56,8 +44,7 @@ def _attach(response: Response, tokens: SessionTokens, policy: RefreshCookiePoli
         key=policy.name,
         value=tokens.refresh_token,
         max_age=tokens.refresh_expires_in,
-        # The whole point: unreadable to any script on the page, so an XSS gets
-        # at most a short-lived access token rather than a fortnight of session.
+        # Scripts cannot read it, so XSS gets only the short-lived access token.
         httponly=True,
         secure=policy.secure,
         samesite=_samesite(policy),
@@ -68,12 +55,7 @@ def _attach(response: Response, tokens: SessionTokens, policy: RefreshCookiePoli
 
 
 def _samesite(policy: RefreshCookiePolicy) -> Literal["lax", "strict", "none"]:
-    """Narrow the configured value to what Starlette's signature accepts.
-
-    An unrecognised setting falls back to `lax` rather than raising: a typo in an
-    environment variable should not take a deployment's sign-in down, and `lax`
-    is the strictest of the three that still works same-origin.
-    """
+    """Narrow the setting to Starlette's literal type. Unknown values become `lax`."""
     value = policy.samesite.lower()
     if value == "strict":
         return "strict"
@@ -115,9 +97,7 @@ async def refresh(
     refresh_token: RefreshCookie = None,
 ) -> SessionOut:
     if not refresh_token:
-        # No cookie at all is the ordinary state of a first visit, not an
-        # anomaly. It is still a 401, because the answer to "am I signed in?"
-        # is no.
+        # Normal on a first visit, but still a 401.
         raise InvalidToken("no session cookie")
 
     tokens = await use_case(RefreshInput(refresh_token=refresh_token, client_ip=ip))
@@ -134,10 +114,7 @@ async def logout(
         await use_case(refresh_token)
 
     response = Response(status_code=status.HTTP_204_NO_CONTENT)
-    # Cleared whether or not there was anything to revoke, and with the same
-    # attributes it was written with: a browser matches a deletion to a cookie
-    # by name, path and domain, so a mismatch here leaves it in place and the
-    # user "signed out" into a session that still works.
+    # Always cleared, with the same attributes it was set with, or the browser keeps it.
     response.delete_cookie(
         key=policy.name,
         path=policy.path,
@@ -151,10 +128,6 @@ async def logout(
 
 @router.get("/me")
 async def me(user: CurrentUserDep) -> UserOut:
-    """Who the presented access token belongs to.
+    """Who the access token belongs to, read from its claims without a database call."""
 
-    Answered from the token's own claims, with no database round trip - which
-    also makes this the cheapest way for a client to find out whether the token
-    it is holding is still good.
-    """
     return UserOut.from_context(user)

@@ -6,17 +6,12 @@ from docx import Document as DocxDocument
 
 
 class DocxTextExtractor:
-    """
-    Reads the paragraph text out of a stored `.docx` file.
-
-    Satisfies `app.application.ingestion.ports.TextExtractor`.
-    """
+    """Reads the paragraph text of a `.docx` file. Implements `TextExtractor`."""
 
     async def extract(self, reference: str) -> str:
         """Extract the text of a stored .docx file."""
-        # python-docx is entirely blocking, so it runs off the event loop; a
-        # large document would otherwise stall every other request in the
-        # process, the same reasoning as the pypdf extractor.
+        # python-docx blocks, so it runs in a thread.
+
         return await asyncio.to_thread(self._read, reference)
 
     @staticmethod

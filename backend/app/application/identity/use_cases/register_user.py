@@ -12,12 +12,9 @@ from app.domain.identity.value_objects import Email, RawPassword
 
 
 class RegisterUser:
-    """
-    Create a user and hand back their first session.
+    """Create a user and return their first session.
 
-    Registration is rate limited as well as login: without it the endpoint is a
-    free way to burn Argon2 memory on every request, and a way to discover which
-    addresses are taken one 409 at a time.
+    Rate limited, since each call costs an Argon2 hash and a 409 reveals taken emails.
     """
 
     def __init__(
@@ -42,9 +39,8 @@ class RegisterUser:
 
         async with self._uow_factory() as uow:
             if await uow.users.get_by_email(email) is not None:
-                # The unique index is the real guarantee - two simultaneous
-                # registrations both pass this check - but losing that race
-                # should be rare, not routine.
+                # The unique index is the real guarantee. This catches the common case.
+
                 raise EmailAlreadyRegistered(email.value)
 
             user = await uow.users.add(

@@ -34,12 +34,9 @@ def _parse_frame_type(raw: str) -> str | None:
 
 
 class TranscribeStream:
-    """
-    Carry audio one way and transcripts the other for as long as the client talks.
+    """Send audio to the provider and transcripts back, while the client talks.
 
-    The two directions run as concurrent tasks because neither may block the
-    other: audio arriving must not wait on a transcript being delivered, or the
-    provider starves and the transcript drifts behind the speaker.
+    The two directions run as separate tasks so neither blocks the other.
     """
 
     def __init__(
@@ -53,10 +50,7 @@ class TranscribeStream:
         self._daily_budget = daily_budget
 
     async def __call__(self, transport: ClientTransport) -> None:
-        # One counter shared with every chat reply, upload and URL ingestion in
-        # the deployment - see `Settings.global_daily_call_budget`. Checked
-        # before the handshake is negotiated, so a spent budget costs no
-        # Deepgram session at all, only a socket that was already open.
+        # Global budget, checked before a Deepgram session is opened.
         await self._daily_budget.hit("global")
 
         audio_format = await self._negotiate(transport)
@@ -119,17 +113,12 @@ class TranscribeStream:
                             "Provider did not flush within {}s; ending anyway",
                             self._finalize_timeout,
                         )
-                    # Let the relay deliver what the provider already sent before
-                    # the socket is torn down. Dropping straight through to the
-                    # `finally` cancelled it instead, which threw away the very
-                    # finalized transcript the client had just waited for.
+                    # Let the relay deliver the final transcript before teardown.
                     await self._drain(relay, session)
                     await transport.done()
                     return
         finally:
-            # Nothing more will arrive, so the relay would hang on an iterator
-            # that never ends. A child cancelled from inside the group is not
-            # reported as a group error, so this CancelledError stops here.
+            # Stop the relay, or it waits forever. The TaskGroup ignores this cancel.
             relay.cancel()
 
     async def _drain(self, relay: asyncio.Task[None], session: TranscriptionSession) -> None:
@@ -138,9 +127,8 @@ class TranscribeStream:
         try:
             await asyncio.wait_for(relay, self._finalize_timeout)
         except TimeoutError:
-            # `wait_for` has already cancelled the relay; the session is ending
-            # regardless, so a slow client costs it the tail of the transcript
-            # rather than holding the socket open.
+            # `wait_for` cancelled the relay. A slow client loses the tail.
+
             logger.debug("Relay did not drain within {}s", self._finalize_timeout)
 
     async def _relay(self, session: TranscriptionSession, transport: ClientTransport) -> None:

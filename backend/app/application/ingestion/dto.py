@@ -10,9 +10,8 @@ class UploadDocumentInput:
     content_type: str | None
     stream: AsyncIterator[bytes]
     owner_id: int
-    # The thread the file is attached to. Required, not optional: a document
-    # with no conversation is one no retrieval can ever reach, so accepting the
-    # upload would be accepting a file the user can never ask about.
+    # Required: retrieval can never reach a document without a thread.
+
     conversation_id: int
 
 

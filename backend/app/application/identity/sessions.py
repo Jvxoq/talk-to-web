@@ -1,9 +1,7 @@
-"""Minting a session — the one piece of work register, login and refresh share.
+"""Mints a session for register, login and refresh.
 
-Not a use case: nothing calls it from outside, and it does not own a
-transaction. It is given the caller's unit of work precisely so the refresh
-token row lands in the same transaction as whatever caused it, and rolls back
-with it.
+Not a use case. It writes through the caller's unit of work, so it shares
+that transaction.
 """
 
 from datetime import timedelta
@@ -33,9 +31,8 @@ class SessionMinter:
     async def mint(self, uow: UnitOfWork, user: User) -> SessionTokens:
         """Issue a pair for `user`, writing the refresh fingerprint through `uow`."""
         if user.id is None:
-            # Unreachable through the use cases, which all mint after the insert.
-            # Named anyway, because a session pointing at no user would only be
-            # discovered as a foreign key violation at commit.
+            # Unreachable today. Fails early instead of at commit.
+
             raise ValueError("Cannot mint a session for an unpersisted user")
 
         now = await self._clock.now()

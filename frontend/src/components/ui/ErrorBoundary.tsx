@@ -6,16 +6,9 @@ type Props = { children: ReactNode }
 type State = { error: Error | null }
 
 /**
- * Last line of defence for a render-time throw.
+ * Catches render errors and offers a reload, instead of a blank page.
  *
- * Without one, React 19 unmounts the whole tree on an uncaught error and the
- * user is left staring at a blank white document with no way back — the worst
- * possible failure, because it looks like the site is down rather than like
- * something went wrong. Everything recoverable (a failed fetch, a 401, a
- * rejected upload) is already handled where it happens; what reaches here is a
- * bug, so the only honest offer is a reload.
- *
- * Still a class: `getDerivedStateFromError` has no hook equivalent in React 19.
+ * A class, since `getDerivedStateFromError` has no hook equivalent.
  */
 export class ErrorBoundary extends Component<Props, State> {
   state: State = { error: null }
@@ -25,8 +18,7 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    // The browser console is the only sink the frontend has. Sentry is wired on
-    // the backend only, so a render crash leaves no trace anywhere else.
+    // The console is the frontend's only error sink.
     console.error('Unhandled render error', error, info.componentStack)
   }
 

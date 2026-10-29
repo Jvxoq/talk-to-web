@@ -13,74 +13,45 @@ import {
 import type { Model } from '../types'
 
 /**
- * Owns the sidebar's list and which conversation is active.
+ * Owns the sidebar list and the active conversation.
  *
- * The pinned id in `localStorage` is now a starting hint rather than the
- * whole story - it picks up where the browser left off on first load, but
- * `select`, `startNew` and `remove` are what change it from here on.
+ * The `localStorage` pin is only the starting point on load. An empty list
+ * opens a fresh conversation. `enabled` stays false until a user is signed in.
  *
- * An account with no conversations yet still needs one to talk into, so an
- * empty list on first load - or after deleting the last one - opens a fresh
- * conversation the same way this app always has, just from here instead of
- * from `useChat`.
- *
- * `enabled` gates the bootstrap: the caller passes `false` until there is a
- * signed-in user, so this never fires `GET /conversations/` before there is a
- * token to send with it.
- *
- * The bootstrap fetches the list and the pinned conversation's transcript *in
- * parallel*, and hands the transcript out as `preloaded`. That is worth the
- * slightly awkward shape: the pinned id is read synchronously from
- * `localStorage`, so on every visit after the first we already know which
- * conversation is wanted before any request goes out. Fetching the list first
- * and only then its messages made the two round trips serial for no reason,
- * and that wait is the whole of the "it takes a while before the chat shows
- * up" delay on load.
+ * The bootstrap fetches the list and the pinned transcript in parallel, and
+ * hands the transcript out as `preloaded`. That removes a serial round trip
+ * from page load.
  */
 export function useConversations(model: Model, enabled: boolean) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
   const [activeId, setActiveId] = useState<number | null>(null)
   const [isLoading, setIsLoading] = useState(true)
-  // The transcript fetched alongside the list, for `useChat` to start from
-  // instead of fetching it again. Null whenever there was nothing to preload —
-  // a first-ever visit, or a pin that turned out to be stale.
+  // The transcript fetched with the list, so `useChat` need not refetch it.
+  // Null on a first visit or a stale pin.
   const [preloaded, setPreloaded] = useState<ConversationOut | null>(null)
-  // Why the last "new chat" did nothing. The server caps how many
-  // conversations an account may hold and answers 409 past it, so this is a
-  // state the user has to act on - delete one - rather than a failure to log.
+  // Why the last "new chat" failed, for example the 409 conversation cap.
   const [error, setError] = useState<string | null>(null)
 
-  // Read at bootstrap and inside `startNew` via a ref, so neither re-runs
-  // when the user switches models mid-session.
+  // A ref, so switching models does not re-run the bootstrap.
   const modelRef = useRef(model)
   useEffect(() => {
     modelRef.current = model
   }, [model])
 
-  // Mirrors `conversations` so `remove` can compute what is left without
-  // making every callback depend on (and be rebuilt by) the list itself.
+  // Mirrors `conversations`, so callbacks need not depend on the list.
   const conversationsRef = useRef<ConversationSummary[]>([])
   useEffect(() => {
     conversationsRef.current = conversations
   }, [conversations])
 
   const bootstrapped = useRef(false)
-  // Bumped on sign-out and nowhere else. A bootstrap that was still in flight
-  // when the account left compares its own number against this before it
-  // writes anything, so a late answer cannot land in the account that arrived.
-  // Bumping on every run of this effect instead would break the ordinary load:
-  // StrictMode runs it twice on mount, and the second run would discard the
-  // first run's fetch while `bootstrapped` stopped it starting another.
+  // Bumped only on sign-out, so a late bootstrap answer cannot reach the next
+  // account. Not bumped per effect run, which would break StrictMode's double mount.
   const generation = useRef(0)
 
   useEffect(() => {
     if (!enabled) {
-      // Signed out, so everything held here belongs to the account that just
-      // left. The titles, the active id and the preloaded transcript are all
-      // readable text, and without this the next person to sign in on this tab
-      // would read them before a single request of their own answered. The
-      // server does refuse that person a 404, but only once they ask, which is
-      // after the previous account's messages are already on screen.
+      // Signed out: clear the last account's data so the next user never sees it.
       generation.current += 1
       bootstrapped.current = false
       setConversations([])
@@ -91,8 +62,7 @@ export function useConversations(model: Model, enabled: boolean) {
       return
     }
 
-    // Waits for `enabled`, then the ref survives StrictMode's remount so
-    // exactly one bootstrap runs from that point on.
+    // One bootstrap only, even under StrictMode's remount.
     if (bootstrapped.current) return
     bootstrapped.current = true
 
@@ -100,16 +70,12 @@ export function useConversations(model: Model, enabled: boolean) {
     /** False once the account this bootstrap belongs to has signed out. */
     const current = () => run === generation.current
 
-    // Read before either request goes out — `localStorage` is synchronous, so
-    // the id we are most likely to want costs nothing to know up front.
+    // Synchronous, so it is known before any request.
     const pinned = getOrCreateConversationId()
 
     Promise.all([
       listConversations(),
-      // Speculative: it races the list rather than waiting to be told the pin
-      // is still valid. A stale pin makes this a wasted request, which is far
-      // cheaper than making every load pay for two serial round trips. A
-      // rejection here must not fail the pair, so it resolves to null instead.
+      // Speculative. A stale pin wastes one request. Failure resolves to null.
       pinned === null ? Promise.resolve(null) : getConversation(pinned).catch(() => null),
     ])
       .then(async ([items, pinnedConversation]) => {
@@ -120,9 +86,7 @@ export function useConversations(model: Model, enabled: boolean) {
             pinned !== null && items.some((c) => c.id === pinned) ? pinned : items[0].id
           storeConversationId(active)
           setConversations(items)
-          // Only usable if the speculative fetch was for the conversation that
-          // actually won. When the pin was stale, `useChat` fetches the one we
-          // fell back to, exactly as it did before.
+          // Only if the pin won. Otherwise `useChat` fetches the fallback.
           if (pinnedConversation !== null && pinnedConversation.id === active) {
             setPreloaded(pinnedConversation)
           }
@@ -131,9 +95,7 @@ export function useConversations(model: Model, enabled: boolean) {
         }
 
         const created = await createConversation(modelRef.current)
-        // Checked again: the account can change while this request is open,
-        // and the conversation just created belongs to whoever was signed in
-        // when it started, not to whoever is signed in now.
+        // Checked again, since the account may have changed meanwhile.
         if (!current()) return
         storeConversationId(created.id)
         setConversations([created])
@@ -141,8 +103,7 @@ export function useConversations(model: Model, enabled: boolean) {
         setActiveId(created.id)
       })
       .catch(() => {
-        // Swallowed: an empty sidebar is the worst case, and it is still a
-        // usable (if conversation-less) shell rather than a broken page.
+        // Swallowed: an empty sidebar is still a usable page.
       })
       .finally(() => {
         if (current()) setIsLoading(false)
@@ -160,16 +121,13 @@ export function useConversations(model: Model, enabled: boolean) {
     try {
       created = await createConversation(modelRef.current)
     } catch (err) {
-      // 409 is the cap, and its detail is the server's own sentence about how
-      // many threads are allowed. Anything else is a real failure and is
-      // surfaced in the same place rather than disappearing.
+      // 409 is the cap, with the server's own message. Other errors show here too.
       setError(
         err instanceof ApiError ? err.message : 'Could not start a new chat. Try again.',
       )
       return
     }
-    // A brand new conversation has no messages, so hand it over as its own
-    // preload rather than letting `useChat` fetch an empty transcript.
+    // A new conversation is empty, so preload it instead of fetching.
     setPreloaded(created)
     setConversations((prev) => [created, ...prev])
     storeConversationId(created.id)
@@ -191,9 +149,7 @@ export function useConversations(model: Model, enabled: boolean) {
         return
       }
 
-      // The last conversation is gone - open a fresh one rather than leaving
-      // the composer with nothing to send into. `deleteConversation` already
-      // cleared the pin; `storeConversationId` below sets the new one.
+      // The last one is gone, so open a fresh one to type into.
       const created = await createConversation(modelRef.current)
       setConversations([created])
       setPreloaded(created)

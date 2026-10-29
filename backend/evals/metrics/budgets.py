@@ -1,9 +1,6 @@
-"""Latency and tokens: p50/p95 latency and mean tokens off `ReplyUsage`.
+"""p50/p95 latency and mean tokens.
 
-Latency is measured by the harness's own wall clock around each case; tokens
-come from the single `ReplyUsage` event `GenerateReply` emits at the end of a
-successful reply - already totalled across every model call the reply made,
-condenser included (see `GenerateReply._total_tokens`).
+Latency is the harness's wall clock. Tokens come from `ReplyUsage`, condenser included.
 """
 
 from collections.abc import Sequence
@@ -13,8 +10,7 @@ from app.application.chat.dto import ReplyUsage
 
 
 def percentile(values: Sequence[float], p: float) -> float:
-    """Linear-interpolated percentile, the same method `numpy.percentile`
-    defaults to. Good enough for a report; not worth a dependency."""
+    """Linear-interpolated percentile, like `numpy.percentile`'s default."""
     if not values:
         return 0.0
     ordered = sorted(values)

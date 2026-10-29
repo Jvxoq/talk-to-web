@@ -3,10 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { normalizeStreamingMarkdown } from './markdown'
 
 /**
- * The unit is about the *frames in between*: what the user sees while a token
- * boundary happens to fall in the middle of a block. Each case below is a
- * snapshot of a stream mid-flight, so the assertion is always "this frame does
- * not look broken", not "this is the final document".
+ * Each case is a stream cut mid-block. The check is "this frame does not look broken".
  */
 describe('normalizeStreamingMarkdown', () => {
   it('leaves settled text alone', () => {
@@ -78,8 +75,7 @@ describe('normalizeStreamingMarkdown', () => {
     })
 
     it('hides a table whose last line is the delimiter row', () => {
-      // The final line is always the one truncation cut in half, so a delimiter
-      // in that position is not yet known to be complete.
+      // A delimiter on the last line may still be incomplete.
       expect(normalizeStreamingMarkdown('Intro\n| a | b |\n| --- | --- |')).toBe('Intro')
     })
 

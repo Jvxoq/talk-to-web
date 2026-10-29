@@ -25,8 +25,7 @@ function toolLabel(name: string): string {
 }
 
 /**
- * The chip's text carries the state, not just its color — a screen reader (or
- * a colorblind reader) gets "failed" or "done" from the words alone.
+ * The chip's text states the status, not just its color, for accessibility.
  */
 function toolChipText(tool: ToolActivity): string {
   switch (tool.status) {
@@ -40,12 +39,7 @@ function toolChipText(tool: ToolActivity): string {
 }
 
 /**
- * Every source behind this turn's tool calls, deduplicated across tools and
- * across repeat calls to the same one.
- *
- * Keyed by URL when there is one, by label otherwise - two different
- * documents can share no other identity, but two web results never share a
- * URL.
+ * Every source behind this turn's tool calls, deduplicated by URL or label.
  */
 function collectSources(tools: ToolActivity[] | undefined): Source[] {
   if (!tools) return []
@@ -58,11 +52,8 @@ function collectSources(tools: ToolActivity[] | undefined): Source[] {
   return [...seen.values()]
 }
 
-// Memoised because every delta re-renders the whole transcript, and reparsing
-// the markdown of settled turns on each token is the expensive part of that.
-// `tools` fits this untouched: useChat only ever replaces `message` with a
-// fresh object (never mutates it in place), so the default shallow prop
-// comparison still short-circuits every render that didn't touch this turn.
+// Memoised, so settled turns do not reparse markdown on every token. `useChat`
+// replaces `message` objects, never mutates them, so shallow compare works.
 export const MessageBubble = memo(function MessageBubble({
   message,
   pending,
@@ -90,9 +81,7 @@ export const MessageBubble = memo(function MessageBubble({
     >
       <span className="message-role">{isUser ? 'You' : 'Assistant'}</span>
       {hasChips && (
-        // Polite, and separate from the transcript's own (deliberately
-        // unannounced) log region — tool chips change a handful of times per
-        // turn, not once per token, so announcing them doesn't spam.
+        // Announced politely. Chips change rarely, so this does not spam.
         <div className="tool-chips" aria-live="polite">
           <AnimatePresence initial={false}>
             {/* First in the row, because it happens before any tool call this
@@ -144,8 +133,7 @@ export const MessageBubble = memo(function MessageBubble({
         ) : null}
       </div>
       {sources.length > 0 && (
-        // A RAG answer with no visible source doesn't read as RAG - this is
-        // what turns "the model said so" into "here is what it read."
+        // Shows what the answer was based on.
         <ul className="source-list" aria-label="Sources">
           {sources.map((source) => (
             <li key={source.url ?? source.label}>
@@ -170,8 +158,7 @@ export const MessageBubble = memo(function MessageBubble({
         </ul>
       )}
       {message.usage && !pending && (
-        // Quiet, dev-facing detail — plain text, not a chip with a border like
-        // tool/source chips, so it reads as a footnote rather than a headline.
+        // Plain text, so it reads as a footnote.
         <span className="usage-note" title={message.usage.model}>
           {formatTokens(message.usage)} · {formatDuration(message.usage)}
         </span>

@@ -18,22 +18,17 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
-# Named, not left to the server. An unnamed constraint gets a generated name
-# the downgrade cannot spell, which is how a migration ends up being
-# one-directional without anyone noticing until they try to go back.
+# Named, so the downgrade can drop it.
 _FK = "fk_documents_conversation_id_conversations"
 
 
 def upgrade() -> None:
     """Upgrade schema.
 
-    The column is nullable, and stays that way. Rows written before documents
-    belonged to a thread have no thread to name, and a NULL matches no
-    conversation filter - such a document is invisible to retrieval rather than
-    shared with every chat, which is the safe direction. Backfilling them onto
-    someone's oldest conversation would be inventing an attachment the user
-    never made.
+    Nullable on purpose. Older rows match no thread, so retrieval never sees
+    them. No backfill, since that would invent attachments.
     """
+
     op.add_column("documents", sa.Column("conversation_id", sa.Integer(), nullable=True))
     op.create_index(
         "ix_documents_owner_id_conversation_id",

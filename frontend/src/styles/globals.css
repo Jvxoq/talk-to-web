@@ -4,23 +4,18 @@
 
 :root {
   /* --- Color ---------------------------------------------------------------
-     Pure black on white. `primary` is ink: borders, text, fills. `surface` is
-     paper. `neutral` is whatever sits on top of an ink fill. Dark mode swaps
-     the ink/paper roles — both hexes are declared by the system, so inverting
-     introduces no new value. */
+     Black on white. `primary` is ink, `surface` is paper, `neutral` sits on
+     ink. Dark mode swaps ink and paper. */
   --color-primary: #000000;
   --color-secondary: #555555;
   --color-tertiary: #000000;
   --color-neutral: #ffffff;
   --color-surface: #ffffff;
 
-  /* Error state only, from the Pro token set. Carried on borders and hard
-     shadows — never as body text, so the 4.5:1 text floor doesn't apply. */
+  /* Errors only, on borders and shadows, never body text. */
   --color-danger: #b91c1c;
 
-  /* De-emphasised meta only, never body copy. Light mode is the declared
-     #555555 (7.46:1 on white). Dark mode mixes ink into the surface to hold the
-     same contrast rather than inventing a second grey. */
+  /* Muted meta text only. #555555 is 7.46:1 on white. Dark mode mixes to match. */
   --color-muted: var(--color-secondary);
 
   /* --- Type ---------------------------------------------------------------- */
@@ -56,11 +51,8 @@
   --level-error: 4px 4px 0 0 var(--color-danger);
 
   /* --- Motion ---------------------------------------------------------------
-     Deliberate deviation from the system's `transition: none`. The brief is
-     brutalist surfaces carrying the existing smooth choreography, so these
-     mirror the tween timings in lib/motion.ts. Transform is never animated
-     here — Motion owns transform on every interactive element, and an inline
-     style from Motion would silently win over a CSS rule anyway. */
+     A deliberate exception to `transition: none`. Mirrors lib/motion.ts.
+     Never animate transform here: Motion owns it. */
   --duration-fast: 140ms;
   --duration-base: 200ms;
   --easing: cubic-bezier(0.22, 1, 0.36, 1);
@@ -100,7 +92,7 @@
 body {
   margin: 0;
   min-height: 100svh;
-  /* Flat. No ambient wash, no gradient — the border carries the separation. */
+  /* Flat. Borders do the separation. */
   background: var(--color-surface);
   color: var(--color-primary);
 }
@@ -116,8 +108,7 @@ body {
   color: var(--color-neutral);
 }
 
-/* The focus ring is part of the design, not an afterthought. Every interactive
-   element inherits it; nothing may set `outline: none` without a replacement. */
+/* The focus ring is part of the design. Never remove it without a replacement. */
 :focus-visible {
   outline: var(--border-width) solid var(--color-primary);
   outline-offset: 3px;

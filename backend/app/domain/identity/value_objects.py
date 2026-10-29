@@ -5,30 +5,18 @@ from dataclasses import dataclass
 
 from app.domain.identity.errors import InvalidEmail, WeakPassword
 
-# Deliberately permissive. RFC 5321 allows addresses that no regex reads
-# correctly, and a strict pattern's only measurable effect is turning away real
-# people with unusual-but-valid addresses. Confirming an address is a job for a
-# confirmation email; this only rejects what obviously cannot be delivered to.
+# Permissive on purpose. A strict regex rejects real addresses. This only
+# rejects what clearly cannot receive mail.
 _EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$")
 
 _MAX_EMAIL_LENGTH = 254
-"""The longest address SMTP will carry, and the ceiling the column is sized to."""
+"""The SMTP maximum, and the column size."""
 
 MIN_PASSWORD_LENGTH = 12
-"""How short a password may be.
-
-A business rule, not configuration: it belongs with the other rules about who
-may hold an account, and a deployment that could lower it by setting an
-environment variable would eventually be a deployment that had.
-"""
+"""Minimum password length. A business rule, not a setting."""
 
 MAX_PASSWORD_LENGTH = 256
-"""A ceiling, so a megabyte 'password' cannot be handed to the hasher.
-
-Argon2 costs memory and CPU proportional to nothing the caller controls except
-the input length; without a bound, the login endpoint hashes whatever it is
-sent.
-"""
+"""Maximum password length, so a huge input cannot reach the hasher."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,12 +27,7 @@ class Email:
 
     @classmethod
     def sanitize(cls, raw: str | None) -> "Email":
-        """Normalise an untrusted address, or refuse it.
-
-        Case folding happens here rather than at the database, because two
-        people typing the same address in different cases are one person, and
-        which layer decides that must not depend on which query ran.
-        """
+        """Normalise an untrusted address, or refuse it. Lowercased here, once."""
         candidate = (raw or "").strip().lower()
         if not candidate or len(candidate) > _MAX_EMAIL_LENGTH:
             raise InvalidEmail(raw)
@@ -55,12 +38,7 @@ class Email:
 
 @dataclass(frozen=True, slots=True)
 class RawPassword:
-    """A password as the user typed it, checked but never stored.
-
-    Exists so that "is this acceptable?" is answered once, in the domain, rather
-    than in whichever route happens to accept a password next. Only the hash of
-    this ever leaves the use case.
-    """
+    """A password as typed, checked once here and never stored."""
 
     value: str
 
@@ -70,6 +48,6 @@ class RawPassword:
         if len(self.value) > MAX_PASSWORD_LENGTH:
             raise WeakPassword(f"it must be at most {MAX_PASSWORD_LENGTH} characters")
         if self.value.strip() != self.value:
-            # Leading or trailing whitespace is almost always a copy-paste
-            # accident, and it locks the account out on the next manual typing.
+            # Usually a copy-paste accident that locks the user out later.
+
             raise WeakPassword("it must not start or end with whitespace")

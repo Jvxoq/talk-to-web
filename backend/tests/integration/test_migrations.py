@@ -1,10 +1,7 @@
-"""The Alembic history, against a real Postgres it has never seen before.
+"""The Alembic history, against a fresh real Postgres.
 
-Migrations own the schema in every environment, so nothing else checks any of
-this. `Base.metadata.create_all` - which the SQLite adapter suite uses - builds
-the schema from the models and therefore agrees with them by construction; it
-cannot notice that a migration was never written for the column somebody added
-last week.
+`create_all` agrees with the models by construction, so only this catches a
+missing migration.
 """
 
 import os
@@ -28,11 +25,7 @@ from tests.integration.conftest import (
 
 
 def include_name(name: str | None, type_: str, _parents: object) -> bool:
-    """The same filter `migrations/env.py` installs.
-
-    Copied rather than imported: `env.py` is a script Alembic executes, not a
-    module, and importing it would run a migration as a side effect.
-    """
+    """The same filter as `migrations/env.py`. Copied, since importing it runs a migration."""
     if type_ == "table":
         return name in Base.metadata.tables
     return True
@@ -51,10 +44,7 @@ def schema_diff(url: str, **opts: object) -> list[object]:
         engine.dispose()
 
 
-# Every table the application owns. Named here rather than derived from
-# `Base.metadata` on purpose: the question is whether the *migrations* produce
-# them, and reading the answer off the models would make the test agree with
-# itself.
+# Listed by hand, not read from the models, so the test cannot agree with itself.
 APPLICATION_TABLES = {"conversations", "messages", "users", "refresh_tokens", "documents"}
 
 
@@ -73,11 +63,7 @@ class TestUpgrade:
             await engine.dispose()
 
     def test_it_lands_on_a_single_head(self, upgraded: str) -> None:
-        """Two heads is a merge nobody noticed, and `upgrade head` then fails.
-
-        It fails at deploy time rather than at review time, which is the worst
-        moment to discover that two branches each added a migration.
-        """
+        """Two heads would make `upgrade head` fail at deploy time."""
         heads = alembic("heads", database_url=upgraded).stdout.strip().splitlines()
 
         assert len(heads) == 1, f"expected one head, found: {heads}"
@@ -91,11 +77,7 @@ class TestUpgrade:
 
 class TestRoundTrip:
     def test_downgrade_to_base_then_upgrade_again(self, upgraded: str) -> None:
-        """The claim that makes a rollback survivable.
-
-        A `downgrade` nobody runs is a `downgrade` that does not work, and the
-        moment it matters is the moment a bad release is already live.
-        """
+        """Downgrade must work, or a bad release cannot be rolled back."""
         alembic("downgrade", "base", database_url=upgraded)
         alembic("upgrade", "head", database_url=upgraded)
 
@@ -108,19 +90,13 @@ class TestRoundTrip:
         finally:
             await engine.dispose()
 
-        # `alembic_version` survives, and should: it is Alembic's bookkeeping,
-        # not ours.
+        # `alembic_version` is Alembic's own and stays.
         assert not (APPLICATION_TABLES & remaining), (
             f"left behind: {APPLICATION_TABLES & remaining}"
         )
 
     async def test_the_second_upgrade_rebuilds_the_same_schema(self, upgraded: str) -> None:
-        """A round trip that ends somewhere else is not a round trip.
-
-        The usual cause is a downgrade that drops a table but not its index or
-        its enum type, so the next upgrade either fails or builds something
-        subtly different.
-        """
+        """Upgrade, downgrade, upgrade must end at the same schema."""
         engine = create_async_engine(upgraded)
         try:
             before = await table_names(engine)
@@ -137,16 +113,10 @@ class TestDrift:
     """Do the migrations and the models still describe the same schema?"""
 
     def test_autogenerate_against_a_migrated_database_finds_nothing(self, upgraded: str) -> None:
-        """The check that catches a model change nobody wrote a migration for.
+        """Catches a model change with no migration.
 
-        Run through Alembic's comparison API rather than by generating a
-        revision file, because the assertion is about the diff, and a test that
-        writes a file into `migrations/versions/` is a test that eventually
-        leaves one there.
-
-        `compare_type` and `compare_server_default` are on, matching `env.py`:
-        without them a widened column or a changed default is invisible here and
-        therefore invisible in review.
+        Uses the comparison API, so no revision file is written. Type and
+        default comparison are on, matching `env.py`.
         """
         differences = schema_diff(upgraded, compare_type=True, compare_server_default=True)
 
@@ -155,11 +125,7 @@ class TestDrift:
 
 class TestOfflineMode:
     def test_head_can_be_emitted_as_sql(self, scratch_database: str) -> None:
-        """`--sql` is how a DBA reviews a migration before it touches production.
-
-        It breaks the first time a migration branches on live data, and it breaks
-        silently, because nobody runs it until the release that needs it.
-        """
+        """Offline `--sql` mode must keep working for review."""
         emitted = alembic("upgrade", "head", "--sql", database_url=scratch_database).stdout
 
         assert "CREATE TABLE" in emitted.upper()
@@ -170,12 +136,7 @@ class TestCheckpointTables:
 
     @pytest.fixture
     def with_a_foreign_table(self, upgraded: str) -> Iterator[str]:
-        """Stand in for `checkpoint_*` with a table Alembic has never heard of.
-
-        The real `checkpointer.setup()` would drag a psycopg pool and LangGraph's
-        own schema version into a test whose subject is one `include_name`
-        callback, and the callback cannot tell the difference.
-        """
+        """A foreign table standing in for LangGraph's `checkpoint_*` tables."""
         engine = create_engine(upgraded, poolclass=pool.NullPool)
         with engine.begin() as connection:
             connection.execute(text("CREATE TABLE checkpoint_blobs_stub (id integer PRIMARY KEY)"))
@@ -183,32 +144,21 @@ class TestCheckpointTables:
         yield upgraded
 
     def test_autogenerate_does_not_propose_dropping_them(self, with_a_foreign_table: str) -> None:
-        """Without `include_name`, every autogenerate would offer to delete them.
-
-        And someone would eventually accept, because an autogenerated diff looks
-        authoritative - which would take the agent's entire memory with it.
-        """
+        """Autogenerate must not offer to drop tables we do not own."""
         differences = schema_diff(with_a_foreign_table)
 
         assert "checkpoint_blobs_stub" not in str(differences)
 
 
 def test_the_migration_url_is_the_one_that_is_used(scratch_database: str) -> None:
-    """`DATABASE_MIGRATION_URL` overrides `DATABASE_URL`, and it has to.
-
-    Neon publishes a pooled endpoint and a direct one, and DDL through a
-    transaction pooler loses the session state a migration depends on. If this
-    precedence ever inverted, every deployment would silently run its migrations
-    down the wrong pipe.
-    """
+    """`DATABASE_MIGRATION_URL` must win over `DATABASE_URL`, so DDL skips the pooler."""
     completed = subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],
         cwd=BACKEND_ROOT,
         env={
             **os.environ,
             **DUMMY_SECRETS,
-            # Unreachable on purpose: if this one were used, the command would
-            # fail to connect, and the assertion below would never be reached.
+            # Unreachable on purpose, so using it would fail.
             "DATABASE_URL": "postgresql+psycopg://nobody:nobody@127.0.0.1:1/nowhere",
             "DATABASE_MIGRATION_URL": scratch_database,
         },
@@ -220,8 +170,7 @@ def test_the_migration_url_is_the_one_that_is_used(scratch_database: str) -> Non
 
     assert completed.returncode == 0
 
-    # The SQLAlchemy URL, not the plain DSN: `postgresql://` alone resolves to
-    # the psycopg2 dialect, which this project does not install.
+    # Plain `postgresql://` would pick psycopg2, which is not installed.
     engine = create_engine(scratch_database, poolclass=pool.NullPool)
     try:
         with engine.connect() as connection:

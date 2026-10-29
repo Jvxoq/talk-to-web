@@ -5,9 +5,7 @@ import { easeStandard, springs, timing } from '../lib/motion'
 import { waitForBackend } from '../lib/wake'
 
 /**
- * How long the screen stays hidden while the first probe runs. An awake backend
- * answers well inside this, and an indicator that appears and vanishes reads as
- * a glitch.
+ * Delay before showing the wait screen, so an awake backend never flashes it.
  */
 const REVEAL_DELAY_MS = 900
 
@@ -16,15 +14,13 @@ type GateStatus = 'checking' | 'awake' | 'unreachable'
 /**
  * Holds the app back until the backend answers.
  *
- * Wraps `AuthProvider` rather than sitting inside it: that provider's mount
- * effect is the first backend call, and a sleeping instance turns it into a
- * sign-in form nobody can get through.
+ * Wraps `AuthProvider`, whose first call would fail on a sleeping backend.
  */
 export function BackendGate({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<GateStatus>('checking')
   const [revealed, setRevealed] = useState(false)
   const [elapsed, setElapsed] = useState(0)
-  // Bumped by Retry. Changing it re-runs the effect, which is the whole restart.
+  // Bumped by Retry to re-run the effect.
   const [run, setRun] = useState(0)
 
   const retry = useCallback(() => setRun((n) => n + 1), [])
@@ -39,8 +35,7 @@ export function BackendGate({ children }: { children: ReactNode }) {
     const tick = setInterval(() => setElapsed((seconds) => seconds + 1), 1000)
 
     void waitForBackend({ signal: controller.signal }).then((result) => {
-      // Not left to the cleanup: once the gate opens this stays mounted for
-      // the life of the app, so those timers would never stop.
+      // Stop here: the gate stays mounted, so cleanup never runs.
       clearInterval(tick)
       clearTimeout(reveal)
 
@@ -67,8 +62,7 @@ export function BackendGate({ children }: { children: ReactNode }) {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: timing.standard, ease: easeStandard }}
-      // `role="alert"` is already assertive, and a stated `aria-live` would
-      // demote the failure to polite.
+      // `role="alert"` is assertive. An `aria-live` would make it polite.
       role={failed ? 'alert' : undefined}
       aria-live={failed ? undefined : 'polite'}
       aria-busy={!failed}

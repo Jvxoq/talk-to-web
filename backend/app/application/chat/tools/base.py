@@ -1,9 +1,7 @@
-"""What a tool is, and the machinery every tool gets for free.
+"""Tool base classes.
 
-The point of this module is that adding a capability to the agent costs one
-class: declare a Pydantic args model, implement `_run`, register it at the
-composition root. JSON Schema, argument validation and failure handling are
-inherited, so no tool hand-writes them and no two tools disagree about them.
+A new tool is one class: an args model, `_run`, and a line in the composition
+root. Schema, validation and error handling are inherited.
 """
 
 from abc import ABC, abstractmethod
@@ -18,38 +16,23 @@ from app.application.chat.models import Source, ToolCall
 
 
 class ToolContext(BaseModel):
-    """Who this turn belongs to, and what has already happened on it.
+    """Facts about this turn that the model cannot set.
 
-    Separate from the arguments on purpose: arguments are written by the model,
-    and none of this is negotiable by it. A model that could name the owner it
-    searched could read anyone's documents, and one that could call its own
-    question "not about the uploaded files" could talk past the routing policy.
-
-    Every field is written by the tool node. The first four come off the run
-    config, decided once per request by `GenerateReply`. `prior_tools` is read
-    out of the history, because it is the one that changes between laps.
+    Kept apart from the model-written arguments, so the model cannot name
+    another owner or bypass routing. The tool node fills it: four fields from
+    the run config, `prior_tools` from the history.
     """
 
     model_config = ConfigDict(frozen=True)
 
     owner_id: int
-    # The thread this turn belongs to, and the only documents a retrieval may
-    # read. `None` is a one-off turn, which owns no documents at all.
+    # Retrieval reads only this thread. `None` owns no documents.
     conversation_id: int | None = None
-    # Whether this turn is about files the user supplied. Decided from the
-    # request text, not the history: a summarized thread can lose the turn it
-    # is about, and a gate reading a lossy record fails open.
+    # Decided from the request text, not the history, which summarizing can lose.
     document_scoped: bool = False
-    # Whether this owner has anything to retrieve. Read once per request
-    # alongside the digest names, so it costs no extra query.
-    #
-    # Defaults to `True`, the honest answer to "we do not know". Guessing
-    # permissively costs one wasted call; guessing strictly tells a user with
-    # documents that they have none. `GenerateReply` sets it `False` only for
-    # a read that succeeded and came back empty.
+    # `True` means "unknown": a wasted call is cheaper than hiding real documents.
     has_documents: bool = True
-    # Every tool that has already run and answered since the last user
-    # message. Requested is not enough - see `tools_run_this_turn`.
+    # Tools that answered since the last user message. See `tools_run_this_turn`.
     prior_tools: frozenset[str] = frozenset()
 
 
@@ -60,17 +43,12 @@ class ToolSpec(BaseModel):
 
     name: str
     description: str
-    # JSON Schema from `model_json_schema()`, never hand-written, so what the
-    # model is shown cannot drift from what validates its arguments.
+    # Generated from the args model, so it cannot drift from validation.
     parameters: dict[str, Any]
 
 
 class ToolResult(BaseModel):
-    """What `_run` hands back on success: text for the model, sources for the user.
-
-    Separate from `ToolOutcome` because a tool never decides `ok` - reaching
-    `_run` already means it succeeded. `ok=False` is written by `run()`.
-    """
+    """What `_run` returns on success. Only `run()` sets `ok=False`."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -79,11 +57,9 @@ class ToolResult(BaseModel):
 
 
 class ToolOutcome(BaseModel):
-    """What a tool produced, and whether it worked.
+    """A tool's result. `content` goes to the model, even on failure.
 
-    Two different questions. `content` always goes back to the model, even a
-    failure, phrased so it can route around it. `ok` is for the person watching:
-    it turns the tool chip red. `sources` is for the same audience.
+    `ok` and `sources` are for the user's tool chip.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -94,24 +70,13 @@ class ToolOutcome(BaseModel):
 
 
 class ToolRoutingPolicy(BaseModel):
-    """Docs before the web, on a question that is about the user's own files.
+    """Documents before the web, on a question about the user's own files.
 
-    A policy object rather than a branch in `ToolRegistry.invoke`, because the
-    registry is deliberately ignorant of which concrete tools exist - it is the
-    one place a capability can be added without editing it. The tool *names*
-    therefore arrive from the composition root, next to where those tools are
-    listed, and the registry only knows that some ordering may apply.
+    A separate object so the registry never names concrete tools. The names
+    come from the composition root. An empty retrieval still opens the search.
 
-    This constrains the model without taking the choice away: a redirect is
-    only possible while the document tool has not run on this turn, and a
-    retrieval that came back empty still opens the search.
-
-    Two rules live here, and they are the same rule read from both ends. On an
-    account that has uploads, the document tool goes first. On an account that
-    has none, the document tool is not worth a network round trip at all - and
-    the web must *not* be held back waiting for it, because a hold-back that
-    waits on a call which can never run is a deadlock the model can only escape
-    by exhausting its lap budget.
+    With documents, retrieval goes first. With none, retrieval is refused and
+    search is not held back, or the model would deadlock.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -126,10 +91,7 @@ class ToolRoutingPolicy(BaseModel):
         if call.name == self.document_tool:
             if context.has_documents:
                 return None
-            # The prompt tells the model to try this lookup whenever a question names
-            # an unknown entity, because coming back empty costs one call. That stops
-            # holding once the account has nothing indexed: every such call is a
-            # guaranteed miss, and not a free one. Answered here from a fact instead.
+            # Nothing is indexed, so the call is a sure miss. Refuse it.
             return ToolOutcome(
                 content=(
                     "This user has not uploaded any documents, so "
@@ -145,10 +107,8 @@ class ToolRoutingPolicy(BaseModel):
         if not context.document_scoped or self.document_tool in context.prior_tools:
             return None
         if not context.has_documents:
-            # Reachable: `is_document_scoped` matches phrasing, so a user with an
-            # empty library can ask a document-scoped question. Holding the search
-            # back too would bounce the model between two refusals until the lap
-            # budget ran out.
+            # A user with no documents can still phrase a document question.
+            # Holding search back too would loop between two refusals.
             return None
         return ToolOutcome(
             content=(
@@ -171,11 +131,10 @@ class AgentTool(Protocol):
 
 
 class BaseTool[ArgsT: BaseModel](ABC):
-    """Declare the args model once; schema, validation and errors follow.
+    """Declare the args model once. Schema, validation and errors follow.
 
-    `run` never raises. A raise would kill a response the user is already
-    watching stream, over a mistake the model could have fixed. Both failure
-    modes return a string the model can read and route around.
+    `run` never raises, because a raise would kill an open stream. Failures
+    come back as text the model can act on.
     """
 
     name: ClassVar[str]
@@ -194,32 +153,29 @@ class BaseTool[ArgsT: BaseModel](ABC):
         try:
             args = self.args_model.model_validate(dict(arguments))
         except ValidationError as error:
-            # Returned rather than swallowed: the model wrote these arguments, so the
-            # model is the one who can fix them.
+            # Returned to the model, which wrote the arguments and can fix them.
             logger.debug("Tool {} got invalid arguments: {}", self.name, error)
             return ToolOutcome(content=f"Invalid arguments for {self.name}: {error}", ok=False)
 
         try:
             result = await self._run(args, context)  # type: ignore[arg-type]
             return ToolOutcome(content=result.content, sources=result.sources)
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001
             logger.warning("Tool {} failed: {}", self.name, error)
             return ToolOutcome(content=f"{self.name} is unavailable right now.", ok=False)
 
     @abstractmethod
     async def _run(self, args: ArgsT, context: ToolContext) -> ToolResult:
-        """Do the work. Arguments are already validated; exceptions are caught.
+        """Do the work. Arguments are validated and exceptions are caught.
 
-        Every tool is handed the context whether or not it reads one, because an
-        optional parameter is an invitation to forget it.
+        Context is always passed, because optional parameters get forgotten.
         """
 
 
 class ToolRegistry:
-    """Name to tool, and the only thing the graph knows about tools.
+    """Maps names to tools. The only thing the graph knows about tools.
 
-    Neither `specs()` nor `invoke()` names a concrete tool, which is what makes
-    this the single place a new capability is added.
+    It never names a concrete tool, so adding one needs no edit here.
     """
 
     def __init__(
@@ -229,20 +185,9 @@ class ToolRegistry:
         guard: ToolOutputGuard,
         routing: ToolRoutingPolicy | None = None,
     ) -> None:
-        # `guard` is required, not `ToolOutputGuard | None = None`. This
-        # module's own tools argue that "an optional parameter is an
-        # invitation to forget it" (see `BaseTool._run`'s docstring) - the same
-        # reasoning applies here with higher stakes: a guard that defaults to
-        # off is a guard that is off in production, silently, the first time a
-        # caller forgets to pass one. Forcing every call site to supply a
-        # guard means the choice to fence tool output is made once, at the
-        # composition root, and cannot be quietly skipped anywhere else.
-        #
-        # `routing` is the one collaborator here that genuinely defaults to
-        # nothing, and it is not the same kind of thing as `guard`: a fence
-        # that is off is a vulnerability, while an ordering rule that is off is
-        # a registry whose tools have no order - which is exactly the case for
-        # a deployment (or a test) that has no document tool to put first.
+        # `guard` is required, because a guard that defaults to off is off in
+        # production. `routing` may be `None`: no order is a valid setup when
+        # there is no document tool.
         self._tools = {tool.spec.name: tool for tool in tools}
         if len(self._tools) != len(tools):
             raise ValueError("Two tools share a name; the model could not tell them apart.")
@@ -250,8 +195,7 @@ class ToolRegistry:
         if routing is not None:
             missing = {routing.document_tool, routing.web_search_tool} - set(self._tools)
             if missing:
-                # A policy naming a tool that was never registered would silently
-                # never fire, which is the worst way for a routing rule to fail.
+                # Otherwise the rule would silently never fire.
                 raise ValueError(f"Routing policy names unregistered tools: {sorted(missing)}")
         self._routing = routing
 
@@ -259,34 +203,16 @@ class ToolRegistry:
         return [tool.spec for tool in self._tools.values()]
 
     async def invoke(self, call: ToolCall, context: ToolContext) -> ToolOutcome:
-        """
-        Run one requested call, on behalf of the person in `context`.
+        """Run one call for the person in `context`.
 
-        Never raises, for any reason: an unknown name, bad arguments and a dead
-        upstream all come back as a `ToolOutcome`. The response body is already
-        streaming by the time this runs, so an exception here could only
-        truncate a reply that the model was perfectly capable of finishing
-        without that tool.
-
-        This is also the single choke point every tool result passes through
-        on its way back to the model, which is why the fence is applied here
-        and nowhere else - a future caller cannot add a new tool, or a new way
-        to invoke one, that bypasses it. The routing policy is applied here for
-        the same reason: an ordering rule enforced in one node, or in one tool,
-        is an ordering rule the next caller forgets.
+        Never raises: the stream is already open. Every tool result passes
+        through here, so the fence and the routing policy live here and
+        nowhere else.
         """
         tool = self._tools.get(call.name)
         if tool is None:
-            # Models do occasionally invent a tool. Telling it which ones are
-            # real costs one round trip; raising would cost the whole reply.
-            #
-            # This string is NOT fenced. Unlike a tool's `content`, it is text
-            # this app wrote from a fixed template plus the model's own
-            # requested name and this registry's own tool names - nothing an
-            # external source shaped. Fencing it anyway would suggest to the
-            # model that its own name choice was untrusted external data,
-            # which it is not; the fence exists for content that crossed a
-            # trust boundary, and this string never did.
+            # The model invented a tool. List the real ones. Not fenced: this
+            # is our own text, not external content.
             available = ", ".join(self._tools) or "none"
             logger.warning("Model asked for unknown tool {!r}", call.name)
             return ToolOutcome(
@@ -295,44 +221,25 @@ class ToolRegistry:
             )
 
         if self._routing is not None and (redirect := self._routing.redirect(call, context)):
-            # Not fenced, and not an error the user ever sees: this is our own
-            # sentence, telling the model to spend its next lap on the cheap
-            # private lookup it skipped. The tool is never run, so nothing
-            # crossed a trust boundary here.
-            # Deliberately not spelling out which rule fired: the registry does
-            # not know what the policy's rules are, and a log line that
-            # restated one would be the first thing to go stale when a rule is
-            # added. The refusal text itself says why, and it is right there in
-            # the trace next to this line.
+            # Our own text, so not fenced. The refusal text says which rule fired.
             logger.info("Tool routing refused {}", call.name)
             return redirect
 
         try:
             outcome = await tool.run(call.arguments, context)
-        except Exception as error:
-            # `BaseTool.run` already catches, so reaching here means a tool that
-            # does not extend it. Belt and braces, because one careless tool
-            # must not be able to kill an open stream.
-            #
-            # Same reasoning as the unknown-tool message above: this string is
-            # ours, not the failed tool's output, so it is not fenced either.
+        except Exception as error:  # noqa: BLE001
+            # Only a tool that skips `BaseTool` gets here. Our own text, not fenced.
             logger.warning("Tool {} raised out of run(): {}", call.name, error)
             return ToolOutcome(content=f"{call.name} is unavailable right now.", ok=False)
 
         if not outcome.ok:
-            # A `BaseTool.run` failure path (invalid arguments, a caught
-            # exception) is also this app's own text, not the external
-            # content a tool fetched - same reasoning, no fence.
+            # Failure text is ours, not fetched content, so no fence.
             return outcome
 
         fenced_content, findings = self._guard.wrap(tool=call.name, content=outcome.content)
         if findings:
-            # Findings are for observability, never control flow: `invoke`
-            # keeps its guarantee of never raising and never blocking a
-            # successful tool call on what the fence stripped. Logged at
-            # warning so a stripped instruction line in fetched content shows
-            # up in both the trace and the log, without slowing the model
-            # down waiting on a decision nobody is making here.
+            # Findings are logged only. They never block a successful call.
+
             categories = ", ".join(sorted({finding.category.value for finding in findings}))
             logger.warning(
                 "Tool {} output contained {} finding(s) ({}); stripped before returning",

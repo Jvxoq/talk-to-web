@@ -6,13 +6,7 @@ from loguru import logger
 
 
 class GeminiEmbedder:
-    """
-    Turns text into a vector with Gemini.
-
-    Satisfies `app.application.ingestion.ports.Embedder`. The client is handed
-    in already built, so nothing here reads an API key or opens a connection at
-    import time.
-    """
+    """Turns text into a vector with Gemini. Implements `Embedder`."""
 
     def __init__(self, client: genai.Client, model: str, dimensions: int) -> None:
         self._client = client
@@ -29,8 +23,8 @@ class GeminiEmbedder:
             config=types.EmbedContentConfig(output_dimensionality=self._dimensions),
         )
 
-        # An empty response is a real failure mode (quota, safety filter, bad
-        # model name). Naming it beats an IndexError three frames up the stack.
+        # Quota, safety filter or bad model name. Fail clearly here.
+
         if not result.embeddings or result.embeddings[0].values is None:
             raise RuntimeError(f"Embedding provider returned no vector for model {self._model}")
 

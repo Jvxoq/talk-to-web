@@ -9,18 +9,11 @@ from app.application.ingestion.ports import DocumentRepository
 
 
 class UnitOfWork(Protocol):
-    """
-    One atomic piece of work, holding the repositories it spans.
-
-    Entering opens the session; leaving without an explicit `commit()` rolls
-    back, so a use case that raises halfway never half-writes.
-    """
+    """One atomic piece of work and its repositories. Leaving without `commit()` rolls back."""
 
     conversations: ConversationRepository
     users: UserRepository
-    # In the same unit of work as `users` on purpose: registration inserts a
-    # person and their first session together, and a commit that landed one
-    # without the other would leave an account nobody could sign in to.
+    # With `users`, so registration writes the user and session together.
     refresh_tokens: RefreshTokenRepository
     documents: DocumentRepository
 
@@ -34,10 +27,4 @@ class UnitOfWork(Protocol):
 
 
 UnitOfWorkFactory = Callable[[], UnitOfWork]
-"""
-Use cases receive a *factory*, not a unit of work.
-
-A single long-lived unit of work would share one database session across
-concurrent requests, and `AsyncSession` is not task-safe. Asking for a fresh one
-per call makes that mistake unrepresentable.
-"""
+"""A fresh unit of work per call, since `AsyncSession` cannot be shared."""

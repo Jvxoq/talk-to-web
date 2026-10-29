@@ -3,9 +3,7 @@ import { signOut } from './api'
 import { getOrCreateConversationId, storeConversationId } from '../../lib/conversation'
 
 /**
- * A minimal `localStorage`. The test environment is `node`, which has none, and
- * `lib/conversation.ts` treats a missing one as "nothing pinned" — so without
- * this the assertions below would pass whether the fix worked or not.
+ * A minimal `localStorage`, since node has none and the tests would pass vacuously.
  */
 function fakeStorage(): Storage {
   const entries = new Map<string, string>()

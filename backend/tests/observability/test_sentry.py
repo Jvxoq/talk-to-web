@@ -1,9 +1,6 @@
-"""Error reporting: that it stays off without a DSN, and what it sends when on.
+"""Error reporting: off without a DSN, and what it sends when on.
 
-Nothing here calls `sentry_sdk.init` for real — that installs a client on a
-process-global hub for the rest of the session, and a test suite that can phone
-home is a test suite that eventually will. `init` is patched out instead, and
-the event hook is exercised directly.
+`sentry_sdk.init` is patched, so tests never install a real client.
 """
 
 from collections.abc import Iterator
@@ -20,11 +17,7 @@ from app.observability.sentry import _tag_request, configure_sentry, report_exce
 
 @contextmanager
 def serving(request_id: str) -> Iterator[None]:
-    """A request in scope, undone afterwards.
-
-    These are synchronous tests, so they share one context: a `ContextVar` left
-    set here is still set in the next test in the file.
-    """
+    """Set a request id, and reset it after. Sync tests share one context."""
     token = set_request_id(request_id)
     try:
         yield
@@ -35,19 +28,14 @@ def serving(request_id: str) -> Iterator[None]:
 class TestConfigureSentry:
     @pytest.mark.parametrize("dsn", [None, ""])
     def test_no_dsn_means_no_initialization(self, dsn: str | None) -> None:
-        """`None` is the local and CI default; `""` is how `SENTRY_DSN=` in an env
-        file usually spells "off" by accident, and the SDK would otherwise take
-        the empty string as a configuration error. Either way, reporting must be
-        something a deployment opts into, not something a missing variable
-        half-enables."""
+        """Both `None` and an empty `SENTRY_DSN=` leave reporting off."""
         assert (
             configure_sentry(dsn=dsn, environment="local", release=None, traces_sample_rate=0.0)
             is False
         )
 
     def test_a_dsn_initializes_the_sdk_without_pii(self, monkeypatch: MonkeyPatch) -> None:
-        """The one thing worth asserting about the init call: it does not ship
-        cookies, bearer tokens or chat messages with every event."""
+        """Init never sends PII: no cookies, tokens or chat text."""
         captured: dict[str, Any] = {}
         monkeypatch.setattr(sentry_sdk, "init", lambda **kwargs: captured.update(kwargs))
 
@@ -73,8 +61,7 @@ class TestTagging:
         assert event["tags"]["request_id"] == "abc123"
 
     def test_an_event_raised_outside_a_request_is_left_untagged(self) -> None:
-        """Startup and shutdown errors are real errors, and an empty or invented
-        tag on them would only make the field unsearchable."""
+        """No request id means no tag."""
         assert _tag_request({}, {}) == {}
 
     def test_existing_tags_survive(self) -> None:
@@ -86,6 +73,5 @@ class TestTagging:
 
 class TestReporting:
     def test_reporting_with_sentry_off_is_a_no_op_rather_than_an_error(self) -> None:
-        """Every 500 goes through this. It must not turn a handled failure into
-        a second, unhandled one on a deployment that never configured a DSN."""
+        """Without a DSN, reporting is a safe no-op."""
         report_exception(RuntimeError("boom"))

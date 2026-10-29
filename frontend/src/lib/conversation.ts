@@ -67,11 +67,7 @@ function isMessageOut(raw: unknown): raw is MessageOut {
 }
 
 /**
- * Narrows an untrusted response body to the fields we actually read.
- *
- * `messages` is optional on the wire — a create response has no turns yet, and
- * an endpoint that omits the relationship should hydrate to an empty log rather
- * than crash the app on load.
+ * Narrows a response body to the fields we read. Missing `messages` means none.
  */
 function parseConversation(raw: unknown): ConversationOut {
   if (typeof raw !== 'object' || raw === null) {
@@ -110,12 +106,9 @@ function parseConversationSummary(raw: unknown): ConversationSummary {
 }
 
 /**
- * Reads the conversation id pinned to this browser.
+ * Reads the conversation id pinned to this browser, or null.
  *
- * Returns null when there is none — the caller creates one with
- * `createConversation` and pins the result via `storeConversationId`.
- * Storage access itself can throw (private browsing, blocked cookies), which
- * is treated the same as "no conversation yet" rather than a hard failure.
+ * A storage error (private browsing, blocked cookies) also returns null.
  */
 export function getOrCreateConversationId(): number | null {
   let raw: string | null
@@ -180,14 +173,7 @@ export async function appendMessage(id: number, message: MessageCreate): Promise
 }
 
 /**
- * Deletes a conversation, on purpose rather than on unload.
- *
- * This used to be a `navigator.sendBeacon` fired as the tab closed, because
- * nobody owned a conversation and leaving one behind meant leaving it readable
- * by anyone. Accounts made both halves of that wrong: a beacon cannot set an
- * `Authorization` header, and a conversation with an owner should outlive the
- * tab it was typed in. It is still a POST — the API allows GET, POST and
- * OPTIONS across origins, and nothing else.
+ * Deletes a conversation. A POST, because CORS allows only GET, POST and OPTIONS.
  */
 export async function deleteConversation(id: number): Promise<void> {
   const response = await authorizedFetch(endpoint(id, 'delete'), { method: 'POST' })

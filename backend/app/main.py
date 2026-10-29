@@ -1,10 +1,6 @@
-"""The ASGI entrypoint - `uvicorn app.main:app`, `fastapi run app/main.py`.
+"""The ASGI entrypoint (`uvicorn app.main:app`).
 
-Nothing but the eager instantiation lives here, and that is the point:
-importing this module reads the environment and fails without one, which is
-correct for a server and wrong for everything else. Code that wants the
-factory - tests above all - imports `create_app` from `app.factory`, whose
-import is side-effect free.
+Importing this reads the environment. Tests import `create_app` from `app.factory`.
 """
 
 from app.factory import create_app

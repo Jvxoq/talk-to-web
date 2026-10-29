@@ -10,25 +10,10 @@ _SWEEP_EVERY = 256
 
 
 class SlidingWindowRateLimiter:
-    """
-    Counts recent attempts per key.
+    """Counts recent attempts per key. Fits every context's `RateLimiter` port.
 
-    Satisfies the `RateLimiter` port as each context declares it -
-    `application.identity.ports`, `application.chat.ports` and
-    `application.ingestion.ports` all describe the same two methods, and
-    structural typing means one instance answers all three without importing
-    any of them.
-
-    Deliberately in-process, with the consequence stated plainly: each replica
-    keeps its own count, so N replicas allow N times the budget. That is a real
-    weakening and it is the right trade here - the alternative is running Redis
-    for a counter, and this deployment has one backend container. Swapping in a
-    shared adapter later changes this file and the composition root, and nothing
-    else, because the use cases only ever see the port.
-
-    A monotonic clock, not the `Clock` port: this measures elapsed time rather
-    than reading a business timestamp, and a wall clock stepping backwards over
-    NTP would hand out free attempts.
+    In-process, so N replicas allow N times the budget. Fine for one container.
+    Uses a monotonic clock, so a wall-clock jump cannot grant free attempts.
     """
 
     def __init__(self, max_attempts: int, window_seconds: int) -> None:
@@ -50,13 +35,11 @@ class SlidingWindowRateLimiter:
             window.popleft()
 
         if len(window) >= self._max_attempts:
-            # From the oldest attempt still counted: that is the one whose
-            # expiry frees a slot.
+            # The oldest counted attempt is the next to expire.
             retry_after = int(window[0] + self._window - now) + 1
             raise RateLimited(retry_after)
 
-        # Appended only on the allowed path, so a caller that keeps hammering a
-        # blocked key does not push its own unblock time further away.
+        # Only allowed attempts count, so retries while blocked do not extend the wait.
         window.append(now)
 
     async def reset(self, key: str) -> None:
@@ -64,13 +47,8 @@ class SlidingWindowRateLimiter:
         self._attempts.pop(key, None)
 
     def _maybe_sweep(self, now: float) -> None:
-        """Drop keys whose windows have emptied.
+        """Drop expired keys every few hundred calls, so the map cannot grow forever."""
 
-        Without this the dictionary grows one entry per address ever tried,
-        which is a memory leak an attacker controls the size of. Sweeping every
-        few hundred calls keeps it bounded without walking the whole map on a
-        hot path.
-        """
         self._since_sweep += 1
         if self._since_sweep < _SWEEP_EVERY:
             return

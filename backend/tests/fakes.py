@@ -1,8 +1,6 @@
-"""In-memory stand-ins for every port.
+"""In-memory fakes for every port.
 
-Fakes rather than mocks: these implement the behaviour a use case depends on, so
-a test asserts what happened rather than which methods were called. Nothing here
-inherits from a Protocol — structural typing is the whole point of the seam.
+Fakes, not mocks, so tests assert outcomes. They match ports by shape only.
 """
 
 import asyncio
@@ -30,12 +28,7 @@ from app.domain.usage.errors import RateLimited
 
 
 class FakeConversationRepository:
-    """In-memory conversations, scoped by owner exactly as the SQL is.
-
-    The owner check lives inside `get` and `delete` rather than in the test that
-    calls them, because that is where the real repository puts it - a fake that
-    ignored the argument would let a use case forget to pass it and still pass.
-    """
+    """In-memory conversations, filtered by owner like the SQL is."""
 
     def __init__(self) -> None:
         self.rows: dict[int, Conversation] = {}
@@ -113,8 +106,7 @@ class FakeRefreshTokenRepository:
     async def revoke(self, token_id: int, at: datetime) -> None:
         row = self.rows.get(token_id)
         if row is not None:
-            # `revoke` is idempotent on the entity, which is what stops a second
-            # rotation from moving the timestamp.
+            # Idempotent, so the first revoke time is kept.
             row.revoke(at)
 
     async def revoke_all_for_user(self, user_id: int, at: datetime) -> None:
@@ -130,11 +122,7 @@ class FakeRefreshTokenRepository:
 
 
 class FakePasswordHasher:
-    """Reversible on purpose: a test asserts on behaviour, not on Argon2.
-
-    The real hasher is exercised by its own test; here the point is only that
-    the same password verifies and a different one does not.
-    """
+    """A reversible fake hash. The real Argon2 hasher has its own test."""
 
     def hash(self, plain: str) -> str:
         return f"hashed:{plain}"
@@ -259,13 +247,7 @@ class FakeDocumentRepository:
 
 
 class FakeDocumentRemover:
-    """Satisfies `DocumentRemover` by recording what it was asked to remove.
-
-    A fake rather than the real `DeleteDocument`, because the callers under
-    test here own a different question: did they ask for the right document to
-    go, and did they carry on when it would not. What "gone" means is
-    `DeleteDocument`'s own test.
-    """
+    """A `DocumentRemover` that records what it was asked to remove."""
 
     def __init__(self, fail_with: Exception | None = None) -> None:
         self.removed: list[tuple[int, int]] = []
@@ -278,12 +260,7 @@ class FakeDocumentRemover:
 
 
 class FakeDocumentSummarizer:
-    """Satisfies `DocumentSummarizer`, without a model behind it.
-
-    `summary` is what every document gets; `fail` makes it return `None`, which
-    is the contract's "could not summarize this" and must never stop an upload
-    being indexed.
-    """
+    """A `DocumentSummarizer` with no model. `fail` makes it return `None`."""
 
     def __init__(self, summary: str = "A summary.", *, fail: bool = False) -> None:
         self._summary = summary
@@ -298,8 +275,7 @@ class FakeDocumentSummarizer:
 class FakeUnitOfWork:
     """Records whether the use case actually committed."""
 
-    # Annotated as the ports: protocol attributes are invariant, so declaring the
-    # concrete fakes here would stop this class satisfying `UnitOfWork`.
+    # Typed as the ports, or this would not satisfy `UnitOfWork`.
     conversations: ConversationRepository
     users: UserRepository
     refresh_tokens: RefreshTokenRepository
@@ -344,23 +320,16 @@ class UnitOfWorkSpy:
     issued: list[FakeUnitOfWork] = field(default_factory=list)
 
     def __call__(self) -> FakeUnitOfWork:
-        # The repositories are shared across every unit of work this hands out,
-        # which is what makes them behave like one database rather than one per
-        # call: a use case that opens a second unit of work must see the first
-        # one's writes.
+        # Shared repositories, so every unit of work sees one database.
         uow = FakeUnitOfWork(self.repository, self.users, self.refresh_tokens, self.documents)
         self.issued.append(uow)
         return uow
 
 
 class FakeChatModel:
-    """
-    Replays scripted turns, so a test can script the agent's decisions.
+    """Replays scripted model turns.
 
-    One entry in `turns` is one model turn: the chunks it streams. A turn whose
-    chunks carry `tool_calls` sends the graph round the tool loop; a turn of
-    plain text ends it. Scripting two turns is therefore how a test says "call a
-    tool, then answer".
+    Each entry in `turns` is one turn's chunks. Tool calls loop; plain text ends.
     """
 
     def __init__(
@@ -370,8 +339,7 @@ class FakeChatModel:
     ) -> None:
         self.turns = [list(turn) for turn in turns]
         self.fail_with = fail_with
-        # What the graph handed us, turn by turn - this is how a test proves a
-        # tool result actually made it back into the conversation.
+        # What the graph sent each turn.
         self.seen_messages: list[list[ChatMessage]] = []
         self.seen_tools: list[list[str]] = []
         self._call = 0
@@ -387,9 +355,7 @@ class FakeChatModel:
         self.seen_messages.append(list(messages))
         self.seen_tools.append([tool.name for tool in tools])
 
-        # Past the end of the script, keep answering with plain text. That is
-        # what lets a test drive the loop to its iteration ceiling without
-        # scripting every lap.
+        # Past the script, answer with plain text.
         turn = self.turns[self._call] if self._call < len(self.turns) else [ModelChunk(text="done")]
         self._call += 1
 
@@ -405,12 +371,7 @@ class FakeChatModel:
 
 
 class FakeTokenCounter:
-    """Counts a fixed number of tokens per message, so a test can force a threshold.
-
-    The real counter is approximate anyway; what matters here is that a test can
-    say "every message is 1,000 tokens" and drive the summarization node over or
-    under its budget without building a long thread.
-    """
+    """A fixed token count per message, so tests can cross a budget easily."""
 
     def __init__(self, tokens_per_message: int = 1) -> None:
         self.tokens_per_message = tokens_per_message
@@ -446,9 +407,7 @@ class FakeAgentTool:
         self.calls.append(dict(arguments))
         self.contexts.append(context)
         if self.fail_with is not None:
-            # Deliberately raised, not returned: real tools go through
-            # `BaseTool.run`, which catches. This one proves `ToolRegistry`
-            # survives a tool that does not.
+            # Raised on purpose, to prove `ToolRegistry` survives it.
             raise self.fail_with
         return ToolOutcome(content=self.result)
 
@@ -491,11 +450,9 @@ class FakeKnowledgeRetriever:
     ) -> None:
         self.passages = list(passages)
         self.fail_with = fail_with
-        # Recorded so a test can assert *whose* documents were searched, which is
-        # the whole isolation guarantee.
+        # Whose documents were searched.
         self.owners: list[int] = []
-        # And which thread's - the other half of the same guarantee, now that a
-        # document belongs to one conversation rather than to the account.
+        # Which thread was searched.
         self.conversations: list[int | None] = []
 
     async def retrieve(
@@ -524,8 +481,7 @@ class FakeFileStorage:
         body = b"".join([chunk async for chunk in stream])
         self.saved.append((name.value, body))
         self.owners.append(owner_id)
-        # Mirrors the real adapter's per-owner directory, so a test can see that
-        # two owners uploading the same filename get two references.
+        # Per-owner path, like the real adapter.
         return f"uploads/{owner_id}/{name.value}"
 
     async def delete(self, reference: str) -> None:
@@ -553,13 +509,9 @@ class FakeEmbedder:
 
 
 class FakeDocumentLock:
-    """Serializes indexing against deletion for real, and records who held.
+    """A real per-document `asyncio.Lock`, recording who held it.
 
-    Same mechanism as the adapter - one `asyncio.Lock` per document id - so a
-    test proves the use cases' behaviour under mutual exclusion, not under a
-    no-op. The record is for the interleaving tests: a test that starts a
-    delete while an index holds the lock can assert the delete is still
-    waiting, which is the whole guarantee.
+    The record lets interleaving tests check a delete is still waiting.
     """
 
     def __init__(self) -> None:
@@ -584,14 +536,7 @@ class FakeDocumentLock:
 
 
 class FakeVectorIndex:
-    """Passages keyed by owner and by document, so a test can prove one owner
-    cannot see another's, and one document's delete cannot touch another's.
-
-    Chunks are stored per (owner, document) rather than in one list, which is
-    what makes "deleting document A left document B's passages alone" an
-    assertion about behaviour instead of an assertion about which arguments
-    were passed.
-    """
+    """Passages stored per (owner, document), so isolation is tested by behaviour."""
 
     def __init__(self, hits: Sequence[str] = ()) -> None:
         self.hits = list(hits)
@@ -599,8 +544,7 @@ class FakeVectorIndex:
         self.deleted_documents: list[tuple[int, int]] = []
         self.by_owner: dict[int, list[Chunk]] = {}
         self._by_document: dict[tuple[int, int], list[Chunk]] = {}
-        # Keyed by (owner, conversation), so a test can prove one thread cannot
-        # read a file the same person attached to another.
+        # Per (owner, conversation), to test thread isolation.
         self.by_conversation: dict[tuple[int, int | None], list[Chunk]] = {}
 
     @property
@@ -653,9 +597,7 @@ class FakeVectorIndex:
         owner_id: int,
         conversation_id: int | None = None,
     ) -> list[Chunk]:
-        # `hits` is the scripted answer, but only where something is actually
-        # indexed - a thread with nothing attached must come back empty, the
-        # same way an owner with nothing uploaded does.
+        # `hits` only where something is indexed. Empty threads return nothing.
         indexed = (
             self.by_conversation.get((owner_id, conversation_id))
             if conversation_id is not None
@@ -716,9 +658,7 @@ class FakeTranscriptionSession:
     async def transcripts(self) -> AsyncIterator[Transcript]:
         for transcript in self._transcripts:
             yield transcript
-        # Then hang, the way a live provider does between utterances, so the
-        # test proves the pump is what ends the session — and finish, rather
-        # than hang forever, once end_stream() says nothing more is coming.
+        # Wait like a live provider, until end_stream() is called.
         await self._ended.wait()
 
 
@@ -741,12 +681,7 @@ class FakeLiveTranscriber:
 
 
 class FakeReadinessProbe:
-    """A dependency that answers, refuses or stalls, on request.
-
-    `delay` and `error` are what the readiness tests are actually about: a probe
-    is interesting when it is slow or broken, and neither is reproducible
-    against a real Postgres.
-    """
+    """A probe that answers, fails (`error`) or stalls (`delay`)."""
 
     def __init__(self, name: str, *, delay: float = 0.0, error: Exception | None = None) -> None:
         self.name = name
@@ -779,17 +714,7 @@ class RecordedSpan:
 
 
 class RecordingTracer:
-    """Collects spans in memory, so a test can prove a reply was traced.
-
-    Records rather than asserts: a test that wanted "the agent opened a
-    generation span carrying token counts" should be able to say exactly that,
-    without a network, a Langfuse key, or a mock's did-you-call-me bookkeeping.
-
-    Deliberately not nesting. The real adapter nests through OpenTelemetry
-    context, which is machinery no fake should try to reproduce; every span
-    lands in one flat list in the order it was opened, which is enough to assert
-    what ran and what it carried.
-    """
+    """Collects spans in one flat list, in the order opened. No nesting."""
 
     def __init__(self) -> None:
         self.spans: list[RecordedSpan] = []

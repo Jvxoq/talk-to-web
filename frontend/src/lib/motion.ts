@@ -1,10 +1,6 @@
-// Shared Motion presets. Keep every spring here — never hand-roll configs
-// inline per component (see .claude/skills/frontend-motion).
+// Shared Motion presets. Every spring lives here (see .claude/skills/frontend-motion).
 //
-// The brand voice is calm, considered, physical: springs are critically or
-// slightly over-damped, timing sits on the slower end of smooth. Use spring
-// physics for anything involving position / scale / size; reserve duration +
-// easeStandard tweens for pure opacity / colour fades.
+// Springs for position, scale and size. Tweens only for opacity and colour.
 
 import type { Transition } from 'motion/react'
 

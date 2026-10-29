@@ -1,11 +1,7 @@
 # Development: the whole stack on one machine, with hot reload.
 #
-# Unlike the deployed backend (`render.yaml`, on Neon and Qdrant Cloud), this
-# one runs its own Postgres and Qdrant - nobody should need a Neon project to
-# check out the repo and send a message. What it does share with production is
-# the shape of startup: migrations run as their own step, and the backend waits
-# for its dependencies instead of racing them. It does not build
-# `backend/Dockerfile`, which only a Render deploy does.
+# Runs its own Postgres and Qdrant. Migrations run first, and the backend waits
+# for its dependencies. Uses the Dockerfile.dev images, not `backend/Dockerfile`.
 #
 #   docker compose up --build
 
@@ -17,8 +13,7 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
-      # The image has no curl or wget, but it does ship the `qdrant` binary's
-      # own readiness endpoint - and bash, which can open a TCP socket.
+      # No curl or wget in the image, so bash opens a TCP socket.
       test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/localhost/6333' || exit 1"]
       interval: 5s
       timeout: 3s
@@ -36,22 +31,19 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      # `-U`/`-d` matter: without them pg_isready asks about a database named
-      # after the OS user, which does not exist, and reports failure forever.
+      # `-U` and `-d`, or pg_isready checks a database that does not exist.
       test: ["CMD-SHELL", "pg_isready -U postgres -d talk_to_the_web"]
       interval: 5s
       timeout: 3s
       start_period: 10s
       retries: 10
 
-  # Dev gets its schema the same way production does. The composition root used
-  # to call `Base.metadata.create_all` when ENVIRONMENT was "local"; it no longer
-  # does, in any environment, so this service is what creates the tables.
+  # Creates the tables, as in production. Nothing else does.
   migrate:
     build:
       context: ./backend
       dockerfile: Dockerfile.dev
-    # Shared with `backend` below so the image is built once, not twice.
+    # Shared with `backend`, so the image builds once.
     image: talk-to-web-backend:dev
     command: ["uv", "run", "alembic", "upgrade", "head"]
     env_file:
@@ -101,10 +93,7 @@ services:
     depends_on:
       - backend
 
-  # One-shot housekeeping, the same shape as `migrate`: it runs, it exits, and
-  # nothing depends on it. Not started by `docker compose up` - it needs its own
-  # profile so a routine `up` does not run it before the schema it reads even
-  # exists. Trigger it by hand or from cron:
+  # One-shot cleanup. Behind a profile, so `up` does not run it. Run it with:
   #
   #   docker compose --profile jobs run --rm cleanup-refresh-tokens
   cleanup-refresh-tokens:

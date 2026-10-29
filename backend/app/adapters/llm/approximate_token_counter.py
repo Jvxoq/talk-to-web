@@ -1,10 +1,6 @@
-"""A cheap token estimate, good enough to decide whether to condense.
+"""A cheap local token estimate. Implements `TokenCounter`.
 
-Satisfies `app.application.chat.ports.TokenCounter`. The estimate is deliberately
-approximate: it only decides *whether* to condense, and being 10% out moves the
-threshold a little rather than breaking anything. What it must not do is cost a
-model call, which is why it is a local character count rather than a request to
-the provider.
+Only decides whether to condense, so approximate is fine. Never calls a model.
 """
 
 from collections.abc import Sequence
@@ -19,7 +15,6 @@ class ApproximateTokenCounter:
     """Counts a conversation in the same shape the provider will bill it."""
 
     def count(self, messages: Sequence[ChatMessage]) -> int:
-        # `count_tokens_approximately` understands the message shape directly -
-        # role, tool calls and tool call ids all count - so the estimate tracks
-        # what the provider actually charges rather than a bare character count.
+        # Counts roles and tool calls too, not just characters.
+
         return count_tokens_approximately([_to_langchain_message(message) for message in messages])

@@ -1,9 +1,6 @@
-"""The custom-stream key for token spend, and a safe way to report it.
+"""Reports token spend on the custom stream.
 
-This lives in its own module rather than on `nodes.py` to break an import
-cycle: `nodes.py` imports `condenser.py`, and the condenser also needs to
-report usage, so the helper cannot live on the module that imports the thing
-that needs it.
+Its own module to avoid an import cycle between `nodes.py` and `condenser.py`.
 """
 
 from typing import Final
@@ -17,16 +14,14 @@ USAGE: Final = "usage"
 
 
 def emit_usage(*, model: str, usage: TokenUsage) -> None:
-    """Report one model call's spend onto the custom stream, if there is one.
+    """Report one model call's spend, if a stream writer exists.
 
-    The condenser calls this outside any graph run in its own unit tests, and
-    `get_stream_writer()` raises there - there is no run config to pull a
-    writer out of. A metrics helper must never be the reason a reply dies, so
-    the failure is swallowed and logged at debug rather than propagated.
+    Outside a graph run there is no writer, so this logs and returns.
     """
+
     try:
         writer = get_stream_writer()
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001
         logger.debug(f"No stream writer available to report usage for {model}: {error}")
         return
     writer(

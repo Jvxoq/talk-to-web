@@ -1,10 +1,6 @@
-"""The decision layer on top of the domain's detectors: what to do about
-what they find.
+"""Decides what to do about guardrail findings.
 
-`InputGuardPolicy` is deliberately the only place that turns a `Finding` into
-an action. The detectors themselves never decide to block or redact - they
-only recognize. That split is what lets `block_on_injection` flip from False
-to True later without touching a single regex.
+Detectors only recognize. This is the only place that blocks or redacts.
 """
 
 from dataclasses import dataclass
@@ -18,21 +14,14 @@ GuardAction = Literal["allow", "redact", "block"]
 
 @dataclass(frozen=True, slots=True)
 class GuardVerdict:
-    """What the policy decided about one piece of text.
-
-    `text` is the input unchanged when `action` is "allow" or "block", and the
-    redacted version when `action` is "redact" - a "block" verdict's `text` is
-    never sent anywhere, so it is left as the original rather than something a
-    caller might mistakenly forward.
-    """
+    """The policy's decision. `text` is redacted only when `action` is "redact"."""
 
     action: GuardAction
     text: str
     findings: tuple[Finding, ...]
 
     def categories(self) -> tuple[str, ...]:
-        """The distinct finding categories, in first-seen order - the shape a
-        log line or a trace attribute wants, not a `Finding` object itself."""
+        """Distinct finding categories in first-seen order, for logs and traces."""
         seen: list[str] = []
         for finding in self.findings:
             name = finding.category.value
@@ -42,16 +31,10 @@ class GuardVerdict:
 
 
 class InputGuardPolicy:
-    """Composes the domain detectors into one verdict for a user message.
+    """Combines the detectors into one verdict for a user message.
 
-    `block_on_injection` starts False in production. That is not an oversight
-    - the injection patterns here are heuristic, and shipping them with
-    blocking already on on day one means the first false positive is a user
-    with a legitimately refused message and no way to know why. With blocking
-    off, every injection finding is still attached to the verdict (so it
-    reaches the log and the trace) and the action falls through to whatever
-    the PII check decided; only once that data shows the false-positive rate
-    is low does flipping the setting turn the same findings into a block.
+    `block_on_injection` is off in production because the patterns are
+    heuristic. Findings are still logged, to measure false positives first.
     """
 
     def __init__(self, *, redact_pii: bool, block_on_injection: bool, max_scan_chars: int) -> None:

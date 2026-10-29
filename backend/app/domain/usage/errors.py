@@ -1,11 +1,6 @@
-"""Business failures about how much of this service one caller may consume.
+"""Business failures about how much one caller may use.
 
-Its own context rather than a corner of identity, because the answer to "who
-are you?" and the answer to "how often may you ask?" are different questions.
-Signing in is rate limited to stop guessing; chatting and uploading are rate
-limited because every call spends money at a model provider. One error type
-serves both - the caller is told the same thing either way - and no HTTP status
-code lives here.
+Separate from identity: "who are you" and "how often" are different questions.
 """
 
 
@@ -14,11 +9,7 @@ class UsageError(Exception):
 
 
 class RateLimited(UsageError):
-    """The budget for this key is spent, and when it will not be.
-
-    `retry_after_seconds` is part of the failure, not a hint: a caller told to
-    back off without being told for how long backs off for no time at all.
-    """
+    """The budget for this key is spent. `retry_after_seconds` says for how long."""
 
     def __init__(self, retry_after_seconds: int) -> None:
         self.retry_after_seconds = retry_after_seconds

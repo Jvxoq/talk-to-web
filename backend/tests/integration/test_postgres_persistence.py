@@ -1,13 +1,7 @@
-"""The persistence adapters against the database they will actually run on.
+"""The persistence adapters against real Postgres.
 
-`tests/adapters/test_repositories.py` covers what the repositories author, on
-SQLite, and its own docstring lists what that cannot reach. This file is that
-list: timestamptz, unique-violation semantics, real foreign-key cascades, and
-two sessions on two connections rather than one shared in-memory database.
-
-Nothing here re-tests the owner predicate or the flush-not-commit rule. Those
-are dialect-independent, they are already covered, and a second copy would only
-double the cost of changing them.
+Only what SQLite cannot show: timestamptz, unique violations, FK cascades, and
+two sessions on two connections.
 """
 
 from datetime import UTC, datetime, timedelta, timezone
@@ -36,11 +30,7 @@ def a_conversation(owner_id: int, title: str = "A thread") -> Conversation:
 
 
 def persisted_id(conversation: Conversation) -> int:
-    """The id the database assigned, narrowed for the type checker.
-
-    `Conversation.id` is `int | None` because an unsaved one has no id yet.
-    Asserting here keeps every call site below one line instead of three.
-    """
+    """The assigned id, narrowed for mypy."""
     assert conversation.id is not None
     return conversation.id
 
@@ -51,11 +41,7 @@ class TestTimestamps:
     async def test_a_stored_timestamp_comes_back_aware(
         self, session: AsyncSession, owner: UserModel
     ) -> None:
-        """SQLite hands back a naive datetime, so the adapter suite cannot ask this.
-
-        A naive timestamp that reaches the API is served as if it were local
-        time, and the frontend renders every message hours out.
-        """
+        """Timestamps come back timezone-aware. SQLite cannot show this."""
         repository = SqlAlchemyConversationRepository(session)
 
         stored = await repository.add(a_conversation(owner.id))
@@ -71,11 +57,7 @@ class TestTimestamps:
     async def test_an_offset_timestamp_is_normalised_to_utc(
         self, session: AsyncSession, owner: UserModel
     ) -> None:
-        """Postgres stores an instant, not an offset, and returns it in UTC.
-
-        Worth pinning: code that compares `expires_at` against `datetime.now(UTC)`
-        is only correct because of it.
-        """
+        """Postgres returns UTC, which `expires_at` comparisons rely on."""
         repository = SqlAlchemyRefreshTokenRepository(session)
         noon_in_tokyo = datetime(2024, 6, 1, 21, 0, tzinfo=timezone(timedelta(hours=9)))
 
@@ -95,29 +77,19 @@ class TestUniqueConstraints:
     """Enforced by the database, which is the only place worth enforcing them."""
 
     async def test_two_users_cannot_share_an_email(self, session: AsyncSession) -> None:
-        """The race the application-level check cannot close.
-
-        `RegisterUser` looks for an existing address first, but two concurrent
-        registrations both find nothing. What actually stops the duplicate is
-        this constraint, and it exists in the migration or it does not exist.
-        """
+        """The unique email constraint, which closes the race `RegisterUser` cannot."""
         repository = SqlAlchemyUserRepository(session)
         await repository.add(User(email=Email.sanitize("dup@example.com"), password_hash="h"))
         await session.commit()
 
-        # Raised by `add`, not by `commit`: the repository flushes, so the INSERT
-        # - and the constraint - happen before the transaction is closed.
+        # Raised by `add`, since flush runs the INSERT.
         with pytest.raises(IntegrityError):
             await repository.add(User(email=Email.sanitize("dup@example.com"), password_hash="h"))
 
     async def test_two_sessions_cannot_share_a_fingerprint(
         self, session: AsyncSession, owner: UserModel
     ) -> None:
-        """Two rows with one fingerprint would make rotation ambiguous.
-
-        A refresh would then revoke one session and leave the other live - a
-        stolen token that survives the rotation meant to spend it.
-        """
+        """Fingerprints are unique, so rotation is unambiguous."""
         repository = SqlAlchemyRefreshTokenRepository(session)
         await repository.add(RefreshToken(user_id=owner.id, fingerprint="b" * 64, expires_at=NOW))
         await session.commit()
@@ -150,12 +122,7 @@ class TestForeignKeys:
     async def test_deleting_a_user_takes_everything_they_own(
         self, session: AsyncSession, owner: UserModel
     ) -> None:
-        """What a real account deletion has to rely on.
-
-        Both cascades are declared `ondelete="CASCADE"` on the FK, so they are
-        the database's job. If one were only `cascade="all, delete-orphan"` at
-        the ORM level, a `DELETE FROM users` would fail on the constraint instead.
-        """
+        """Deleting a user cascades in the database, not just in the ORM."""
         conversations = SqlAlchemyConversationRepository(session)
         tokens = SqlAlchemyRefreshTokenRepository(session)
         stored = await conversations.add(a_conversation(owner.id))
@@ -198,12 +165,7 @@ class TestTransactionIsolation:
         session_factory: async_sessionmaker[AsyncSession],
         owner: UserModel,
     ) -> None:
-        """The rollback, observed from outside the transaction that did it.
-
-        On SQLite every session shares one connection, so "another connection
-        sees nothing" is not a statement that suite can make. Here it is the
-        actual guarantee: a use case that fails halfway never half-writes.
-        """
+        """Another connection sees nothing from a rolled-back unit of work."""
         with pytest.raises(RuntimeError):
             async with SqlAlchemyUnitOfWork(session_factory) as uow:
                 await uow.conversations.add(a_conversation(owner.id, "Doomed"))

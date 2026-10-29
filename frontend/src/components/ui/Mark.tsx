@@ -2,11 +2,9 @@ import { motion } from 'motion/react'
 import type { ComponentProps } from 'react'
 
 /**
- * The product's spike glyph. A brand asset, not a design-system token — it
- * renders in ink and inverts with the theme like everything else.
+ * The product's spike glyph, drawn in ink so it follows the theme.
  *
- * Built on `motion.svg` rather than `motion.create()` so callers can pass
- * variants and transitions straight through to a real animatable element.
+ * A `motion.svg`, so callers can pass variants and transitions.
  */
 export function Mark(props: ComponentProps<typeof motion.svg>) {
   return (

@@ -1,14 +1,9 @@
 import type { Summarizing } from './types'
 
 /**
- * Narrows one untrusted `summarizing` SSE frame payload, at the boundary —
- * same pattern as `parseUsage`. A payload this build doesn't recognise returns
- * `undefined` and the caller drops the frame rather than tearing the stream
- * down.
+ * Narrows a `summarizing` SSE payload, or returns `undefined` to drop it.
  *
- * `tokens_after` is absent on the `start` frame: the shortened history does
- * not exist yet, so there is no number to send. That stays `undefined` here
- * rather than becoming 0, which would read as "condensed to nothing".
+ * `tokens_after` stays `undefined` on `start`, never 0.
  */
 export function parseSummarizing(raw: unknown): Summarizing | undefined {
   if (typeof raw !== 'object' || raw === null) return undefined
@@ -22,15 +17,14 @@ export function parseSummarizing(raw: unknown): Summarizing | undefined {
   return { status, tokensBefore: tokens_before, tokensAfter: tokens_after }
 }
 
-/** `12480` -> `12.5k`. Chip-sized: the magnitude is the point, not the digits. */
+/** `12480` -> `12.5k`. */
 export function formatTokenCount(tokens: number): string {
   if (tokens < 1000) return `${tokens}`
   return `${(tokens / 1000).toFixed(1)}k`
 }
 
 /**
- * The chip's text. Carries the state in words, not colour, so it reads the
- * same to a screen reader as it does on screen.
+ * The chip's text. States the status in words, for screen readers.
  */
 export function summarizingText(summarizing: Summarizing): string {
   if (summarizing.status === 'start') return 'Condensing context…'

@@ -38,14 +38,11 @@ from app.observability.metrics import emit_reply_metrics
 
 
 class GenerateReply:
-    """Answer the user, with context if the agent can get it and without if it cannot.
+    """Answer the user, with context when available.
 
-    Context is an enhancement, not a precondition. The outer guarantee is that
-    once this stream has opened it ends with `ReplyFailed` or `ReplyCompleted`,
-    never with an exception through a half-written body.
-
-    The compiled graph is injected, never built: compiling per request would
-    reconnect the checkpointer on every message.
+    Once open, the stream always ends with `ReplyFailed` or `ReplyCompleted`,
+    never an exception. The graph is injected because compiling per request
+    reconnects the checkpointer.
     """
 
     def __init__(
@@ -69,39 +66,32 @@ class GenerateReply:
         self._guards = guards
         self._tracer = tracer
         self._uow_factory = uow_factory
-        # A digest is written from an uploaded file, so it is external content
-        # and gets the same fence every tool result gets.
+        # Digests come from uploaded files, so they get the tool-output fence.
         self._tool_output_guard = tool_output_guard
         self._max_digest_documents = max_digest_documents
         self._max_digest_summary_chars = max_digest_summary_chars
-        # A backstop in the graph's own units: three nodes per lap, plus the
-        # final answering turn. The router normally stops the loop.
+        # Backstop: three nodes per lap plus the final turn. The router normally stops first.
         self._recursion_limit = 3 * max_iterations + 3
 
     async def __call__(self, data: GenerateReplyInput) -> AsyncIterator[ReplyEvent]:
-        """Spend one of this user's requests, then hand back the stream.
+        """Spend one request, then return the stream.
 
-        A plain coroutine, not an async generator: a generator body runs nothing
-        until the first `__anext__`, by which point the 200 is on the wire and a
-        refusal could only truncate it. Awaited here, it can still be a 429.
+        A coroutine, not a generator, so refusals still become a 429 before the
+        200 is sent.
         """
-        # One counter for the whole deployment. Checked first, because a
-        # per-user budget only bounds one account and registration is open.
+        # Global budget first: registration is open, so per-user limits are not enough.
         await self._daily_budget.hit("global")
 
-        # Keyed on the account, not the address: the bill follows the user.
+        # Keyed on the account, because the bill follows the user.
         await self._limiter.hit(f"generate:{data.owner_id}")
 
-        # Here for the same reason the limits are: the last moment a refusal
-        # can still be an HTTP status. Also before anything downstream sees the
-        # text, so a pasted secret is redacted once rather than archived by the
-        # model, the checkpointer and the trace.
+        # Guard before streaming, so a refusal is still an HTTP status and a
+        # pasted secret is redacted before the model, checkpointer or trace see it.
         verdict = self._guards.inspect(data.user_input)
         if verdict.action == "block":
             raise UnsafeUserMessage(", ".join(verdict.categories()))
         if verdict.findings:
-            # Recorded even when nothing was blocked. With blocking off, this
-            # line is the dataset for deciding whether it can be turned on.
+            # Logged even when not blocked, to judge whether blocking can be turned on.
             logger.info(
                 "Guardrail {} on input for owner {}: {}",
                 verdict.action,
@@ -109,9 +99,8 @@ class GenerateReply:
                 ", ".join(verdict.categories()),
             )
 
-        # One query for three things: the digest, the names the routing gate
-        # matches on, and whether the document tool is worth offering. Outside
-        # `_stream`, so a database hiccup is still an HTTP error.
+        # One query feeds the digest, the routing gate and `has_documents`.
+        # Outside `_stream`, so a database error is still an HTTP error.
         return self._stream(
             data,
             verdict,
@@ -119,30 +108,25 @@ class GenerateReply:
         )
 
     def _digest_documents(self, documents: list[UploadedDocument]) -> list[UploadedDocument]:
-        """The newest few - all that fit in front of the model each turn."""
+        """The newest few that fit in the prompt."""
         return documents[: self._max_digest_documents]
 
     async def _owned_documents(
         self, owner_id: int, conversation_id: int | None
     ) -> list[UploadedDocument] | None:
-        """This thread's uploads, newest first, or `None` if they cannot be read.
+        """This thread's uploads, newest first, or `None` if the read failed.
 
-        Scoped to the conversation, not the account: listing another chat's
-        files would open the gate on documents this thread's search filters away.
-
-        `None` rather than `[]` on failure, because the two are not the same to
-        the gate. Collapsed together, one slow query would tell a user with a
-        full shelf that they have none, and refuse the retrieval.
+        `None` is not `[]`: treating a failed read as empty would refuse
+        retrieval to a user who has documents.
         """
-        # No conversation owns no documents, and that is a fact rather than a
-        # failed read: `[]`, not `None`, so the gate closes.
+        # No conversation means no documents. That is a fact, so `[]`.
         if conversation_id is None:
             return []
 
         try:
             async with self._uow_factory() as uow:
                 return await uow.documents.list_by_conversation(owner_id, conversation_id)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 f"Could not read documents for owner {owner_id} "
                 f"in conversation {conversation_id}: {exc}"
@@ -155,54 +139,32 @@ class GenerateReply:
         verdict: GuardVerdict,
         known: list[UploadedDocument] | None,
     ) -> AsyncIterator[ReplyEvent]:
-        # `None` means the read failed, not that the shelf is empty.
         documents = known or []
-        # False only when a read that succeeded came back empty. Unknown leaves
-        # the document tool open.
+        # False only when a successful read came back empty. Unknown keeps the tool open.
         has_documents = known is None or bool(known)
-        # `Any` on purpose: naming langchain_core's `RunnableConfig` would put
-        # LangChain in the application layer, which the import contract forbids.
+        # `Any`, because naming `RunnableConfig` would import LangChain here.
         config: Any = {
             "configurable": {
-                # The agent's memory key. No conversation means every request
-                # is its own thread and nothing is remembered.
-                #
-                # The owner is part of the key, not decoration. A bare
-                # conversation id let anyone resume anyone's thread by guessing
-                # an integer, and the checkpointer replays the whole history.
+                # The owner is in the key so nobody can resume a thread by guessing its id.
                 "thread_id": _thread_id(data.owner_id, data.conversation_id),
                 "model": data.model,
                 "temperature": data.temperature,
-                # Read back by the tool node, for the document tools.
+                # Owner and thread come from the request, never from the model.
                 "owner_id": data.owner_id,
-                # The thread whose documents a retrieval may read. Next to
-                # `owner_id` because neither is anything the model may name.
                 "conversation_id": data.conversation_id,
-                # Whether this turn is about files the user supplied - the
-                # input to the tool routing policy.
-                #
-                # Decided here once, not read back out of the history: the
-                # summarize node may replace that history, and a gate that
-                # matches on nothing fails open. That direction is the quiet
-                # one - a private question answered off the web, no log line.
-                #
-                # `verdict.text`, not `data.user_input`: the decision must be
-                # made on the text the model will actually read.
-                # Every owned document, not just the few the digest fits. That
-                # cap is a token budget, and names cost no tokens.
+                # Decided once here, not from the history, because summarizing
+                # can replace the history and the gate would fail open. Uses the
+                # guarded text and every document name (names cost no tokens).
                 "document_scoped": is_document_scoped(
                     verdict.text, document_names=[document.name for document in documents]
                 ),
-                # Whether the document tool has anything to search. Read once
-                # here; the tool node has no unit of work to look it up with.
+                # The tool node has no unit of work, so this is read here.
                 "has_documents": has_documents,
             },
             "recursion_limit": self._recursion_limit,
         }
 
-        # Every model call this reply makes, keyed by the model that made it -
-        # the answering model and the condenser both spend tokens, and a reply
-        # that condensed twice really did spend them.
+        # Tokens per model, including the condenser's calls.
         spend: dict[str, list[int]] = {}
         tools_used: list[str] = []
         started = time.perf_counter()
@@ -227,17 +189,12 @@ class GenerateReply:
                             self._digest_documents(documents),
                             known_empty=not has_documents,
                         ),
-                        # Reset per request. The count is a ceiling on this reply's tool
-                        # laps; carried over from the checkpoint it would only ever climb.
+                        # Reset per request, or the checkpointed count only climbs.
                         iterations=0,
                     )
 
                     async for payload in self._graph.astream(state, config, stream_mode="custom"):
-                        # Bookkeeping, not an event. Usage is intercepted here
-                        # rather than translated by `_to_event` because it is an
-                        # internal protocol between the nodes and this use case -
-                        # the client is told the total once, at the end, not one
-                        # model call at a time.
+                        # Usage is summed here and sent once at the end, not streamed.
                         if _record_usage(payload, spend):
                             continue
 
@@ -248,13 +205,11 @@ class GenerateReply:
                             tools_used.append(event.name)
                         yield event
                 except asyncio.CancelledError:
-                    # The client hung up. Let it propagate: swallowing it leaves the
-                    # graph running for a response nobody is reading.
+                    # Client hung up. Re-raise so the graph stops.
                     outcome = "cancelled"
                     raise
-                except Exception as exc:
-                    # The HTTP response is already open, so raising here would only
-                    # truncate the body. The client is told in-band instead.
+                except Exception as exc:  # noqa: BLE001
+                    # The response is already open, so report the error in-band.
                     outcome = "failed"
                     span.record_error(exc)
                     logger.warning(f"Agent run failed for model {data.model}: {exc}")
@@ -272,8 +227,7 @@ class GenerateReply:
                 )
 
                 if spend:
-                    # Skipped entirely when no provider reported usage. Sending
-                    # zeros would be a claim nobody made.
+                    # Skipped when no provider reported usage, rather than sending zeros.
                     yield ReplyUsage(
                         prompt_tokens=prompt_tokens,
                         completion_tokens=completion_tokens,
@@ -283,8 +237,7 @@ class GenerateReply:
 
                 yield ReplyCompleted()
         finally:
-            # In a `finally` so a cancelled reply is still counted. A user who
-            # closed the tab halfway through still spent the tokens and the time.
+            # In `finally`, so a cancelled reply still counts its spend.
             prompt_tokens, completion_tokens = self._total_tokens(spend)
             emit_reply_metrics(
                 outcome=outcome,
@@ -299,11 +252,7 @@ class GenerateReply:
             )
 
     def _total_tokens(self, spend: dict[str, list[int]]) -> tuple[int, int]:
-        """Total the tokens every model call this reply made spent.
-
-        Totalled, not per model: the split between the answering model and the
-        condenser is a detail for the trace.
-        """
+        """Total prompt and completion tokens across all models."""
         prompt_tokens = sum(tokens[0] for tokens in spend.values())
         completion_tokens = sum(tokens[1] for tokens in spend.values())
         return prompt_tokens, completion_tokens
@@ -317,18 +266,15 @@ class GenerateReply:
         *,
         known_empty: bool,
     ) -> list[ChatMessage]:
-        """Only what this turn adds - the checkpointer already holds the rest.
+        """Only this turn's messages. The checkpointer holds the rest.
 
-        `user_text` as an argument, not `data.user_input`: the guardrail may
-        have rewritten it, and this makes the original unreachable by habit.
+        Takes the guarded `user_text`, so the raw input cannot be used by mistake.
         """
         message = UserMessage(user_text)
         messages: list[ChatMessage] = []
 
         if await self._is_new_thread(config):
-            # Appended once per thread, not once per turn: the checkpointer
-            # replays the whole state, so re-sending the system prompt every
-            # message would stack a fresh copy of it in the history.
+            # Once per thread. The checkpointer replays history, so more would stack copies.
             messages.append(ChatMessage(role="system", content=self._system_prompt))
 
         messages.append(
@@ -340,15 +286,11 @@ class GenerateReply:
         return messages
 
     def _documents_note(self, documents: list[UploadedDocument], known_empty: bool) -> str:
-        """What to tell the model about this user's shelf, or "" to say nothing.
+        """The note about the user's documents, or "" for nothing.
 
-        The pair to the routing gate in `ToolRoutingPolicy`. This informs the
-        choice; the gate makes it binding when the model chooses wrongly.
-
-        Both branches open with a bracketed tag the system prompt names, so the
-        model checks for it rather than inferring it. The empty case is written
-        out because silence is not the same message: the prompt's fallback rule
-        reads an absent digest as "unknown, try anyway".
+        Informs the model. `ToolRoutingPolicy` enforces. Both notes start with a
+        tag the system prompt names. The empty case is stated, because silence
+        reads as "unknown, try retrieval anyway".
         """
         digest = self._digest(documents)
         if digest:
@@ -363,11 +305,7 @@ class GenerateReply:
                 "user just linked).\n" + digest
             )
         if known_empty:
-            # Unfenced, and bracketed like the URL note: this is our own
-            # sentence about a count from our own database, not a line written
-            # from the contents of anybody's file. Nothing crossed a trust
-            # boundary to get here, and fencing it would tell the model to
-            # distrust the one fact on this turn it has no reason to.
+            # Unfenced: our own sentence about our own row count, not file content.
             return (
                 "[NO DOCUMENTS] The user has uploaded no documents. retrieve_documents "
                 "has nothing to search - answer from what you already know, or use "
@@ -376,16 +314,10 @@ class GenerateReply:
         return ""
 
     def _digest(self, documents: list[UploadedDocument]) -> str:
-        """What the user has uploaded, as one fenced block, or "" if nothing.
+        """The user's uploads as one fenced block, or "" if none.
 
-        Without it the model knows a retrieval tool exists but never whether
-        this person has anything in it, so their own file competes with a web
-        search on equal terms.
-
-        Fenced like tool output: a summary is written from an uploaded document,
-        so an unfenced one would let a PDF issue instructions every turn. Rides
-        on the user turn, because the system prompt is written once per thread
-        and uploads arrive between turns.
+        Fenced because summaries come from uploaded files. Sent on the user
+        turn, because uploads arrive after the system prompt is written.
         """
         if not documents:
             return ""
@@ -395,10 +327,7 @@ class GenerateReply:
             summary = " ".join(document.summary.split())
             if len(summary) > self._max_digest_summary_chars:
                 summary = summary[: self._max_digest_summary_chars].rstrip() + "..."
-            # A document still being indexed has no summary yet. It is listed
-            # anyway - the name alone is enough for the model to know there is
-            # something to search, and omitting it would make a file the user
-            # just uploaded appear not to exist.
+            # Still indexing means no summary yet. List the name anyway.
             lines.append(f"- {document.name}: {summary}" if summary else f"- {document.name}")
 
         fenced, _ = self._tool_output_guard.wrap(
@@ -408,13 +337,12 @@ class GenerateReply:
 
     async def _is_new_thread(self, config: Any) -> bool:
         if self._graph.checkpointer is None:
-            # Nothing is remembered, so every turn starts the conversation.
+            # Nothing is remembered, so every turn is new.
             return True
         try:
             snapshot = await self._graph.aget_state(config)
-        except Exception as exc:
-            # A checkpointer that cannot be read must not cost the user a reply;
-            # the worst case is one duplicated system message.
+        except Exception as exc:  # noqa: BLE001
+            # Worst case is one duplicate system message, not a lost reply.
             logger.warning(f"Could not read agent state, treating thread as new: {exc}")
             return True
         return not snapshot.values.get("messages")
@@ -423,26 +351,19 @@ class GenerateReply:
 def _thread_id(owner_id: int, conversation_id: int | None) -> str:
     """The checkpointer's key for this turn, scoped to the person asking."""
     if conversation_id is None:
-        # A one-off turn remembers nothing, so it needs an unaddressable key.
+        # A one-off turn gets a random key nobody can resume.
         return uuid4().hex
     return f"{owner_id}:{conversation_id}"
 
 
 def _user_content(message: UserMessage, documents_note: str = "") -> str:
-    """The user's text, with their links and their uploaded files called out.
-
-    The note is composed by `GenerateReply._documents_note`, not here: whether
-    the user has documents, and how to say so, is a decision that needs the
-    guard and the digest budget. This function only decides where it goes.
-    """
+    """The user's text, plus the documents note and any linked URLs."""
     parts = [message.text]
 
     if documents_note:
         parts.append(documents_note)
 
-    # Models routinely answer from memory about a URL instead of reading it.
-    # Naming the addresses back is what makes `fetch_web_pages` get picked. On
-    # the user turn, because these links belong to this message only.
+    # Naming the links back makes the model read them instead of guessing.
     urls = message.urls()
     if urls:
         listed = ", ".join(urls)
@@ -456,15 +377,9 @@ def _elapsed_ms(started: float) -> int:
 
 
 def _record_usage(payload: object, spend: dict[str, list[int]]) -> bool:
-    """Add one usage payload to the running total. True if that is what it was.
+    """Add a usage payload to the total. Returns True if it was one.
 
-    Returning a flag rather than an event, because usage is not something the
-    client is told mid-reply: the model calls a reply makes are an implementation
-    detail, and streaming five separate token counts would invite a frontend to
-    add them up itself and disagree with the one number sent at the end.
-
-    Tolerant of a malformed payload on purpose. This runs on the reply path, and
-    a bookkeeping line that cannot be parsed is worth losing - the reply is not.
+    A malformed payload is dropped, never allowed to break the reply.
     """
     if not isinstance(payload, dict) or payload.get("type") != USAGE:
         return False
@@ -522,14 +437,11 @@ def _to_event(payload: object) -> ReplyEvent | None:
             return ReplySummarizing(
                 status=status,
                 tokens_before=int(payload.get("tokens_before", 0)),
-                # `None` stays `None`: it means "not known yet", and turning it
-                # into 0 would tell the client the thread was shortened to nothing.
+                # `None` means "not known yet". 0 would be wrong.
                 tokens_after=None if after is None else int(after),
             )
         except (TypeError, ValueError):
-            # Tolerant for the same reason `_record_usage` is: this runs on the
-            # reply path, and a progress notice that cannot be parsed is worth
-            # losing. The reply is not.
+            # Drop a malformed notice rather than break the reply.
             logger.debug(f"Ignoring malformed summarization payload: {payload!r}")
             return None
 
@@ -538,13 +450,11 @@ def _to_event(payload: object) -> ReplyEvent | None:
 
 
 def _friendly_error(detail: str) -> str:
-    """Turn a provider failure into a sentence a person can read.
+    """Turn a provider failure into a readable sentence.
 
-    The raw detail is the provider's JSON, which is noise in front of a user. A
-    rate limit is transient, so it becomes "try again in a moment". A rejected
-    key names the key and links to the vendor's dashboard, and the reader cannot
-    fix it either way. Anything else passes through unchanged.
+    Rate limits and auth failures get our own text. Anything else passes through.
     """
+
     lowered = detail.lower()
     if "rate_limit_exceeded" in lowered or "413" in detail or "429" in detail:
         return "The assistant is busy right now - please try again in a moment."

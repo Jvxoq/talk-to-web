@@ -8,37 +8,27 @@ function isTableLine(line: string | undefined): boolean {
 }
 
 /**
- * Hides a table that hasn't got its delimiter row yet.
- *
- * A table only becomes a table once the `|---|---|` line under the header is
- * complete. Before that the parser sees an ordinary paragraph, so the header
- * flashes on screen as a line of raw pipes.
+ * Hides a table until its `|---|` delimiter row is complete, to avoid raw pipes.
  */
 function dropIncompleteTable(lines: string[]): string[] {
   let start = lines.length
   while (start > 0 && isTableLine(lines[start - 1])) start--
   if (start === lines.length) return lines
 
-  // The delimiter is only known to be finished once a further line exists —
-  // the last line is always the one mid-stream truncation cut in half.
+  // The delimiter is finished only once another line follows it.
   const settled = DELIMITER_ROW.test(lines[start + 1] ?? '') && lines.length > start + 2
   return settled ? lines : lines.slice(0, start)
 }
 
 /**
- * Makes a half-written markdown string safe to render.
+ * Makes half-streamed markdown safe to render.
  *
- * Streaming cuts the text at an arbitrary token, which leaves blocks hanging
- * open: an unclosed code fence swallows the rest of the bubble, a lone `---`
- * retroactively turns the paragraph above it into a heading, and a table with
- * no delimiter row shows up as raw pipes. Each settles a few tokens later, so
- * the job here is only to keep the in-between frames from looking broken.
+ * Handles an unclosed code fence, a trailing `---`, and an unfinished table.
  */
 export function normalizeStreamingMarkdown(text: string): string {
   let lines = text.split('\n')
 
-  // A trailing rule is ambiguous until the line after it arrives: on its own it
-  // reads as a setext underline for the paragraph above.
+  // A trailing `---` would turn the line above into a heading.
   if (SETEXT_RULE.test(lines[lines.length - 1] ?? '')) lines = lines.slice(0, -1)
 
   lines = dropIncompleteTable(lines)

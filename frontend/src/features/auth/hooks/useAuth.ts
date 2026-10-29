@@ -12,11 +12,7 @@ export interface AuthValue {
 }
 
 /**
- * The context and its hook, kept apart from the provider component.
- *
- * A module that exports both a component and a hook defeats React Fast Refresh
- * — it cannot tell which half changed, so it reloads the whole tree and drops
- * state on every edit. The provider lives in `components/AuthProvider.tsx`.
+ * The context and hook, apart from the provider, so Fast Refresh keeps state.
  */
 export const AuthContext = createContext<AuthValue | null>(null)
 

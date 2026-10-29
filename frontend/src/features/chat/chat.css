@@ -1,8 +1,6 @@
-/* Chat surface. Every value resolves to a token in styles/globals.css — there
-   are no literal hexes below this line. */
+/* Chat surface. Every value is a token from styles/globals.css. No hex here. */
 
-/* The sidebar and the chat column side by side. Full viewport height so each
-   half scrolls independently instead of the page itself growing. */
+/* Sidebar and chat side by side, full height, each scrolling on its own. */
 .shell {
   display: flex;
   height: 100svh;
@@ -71,8 +69,7 @@
   text-align: center;
 }
 
-/* Why the last "new chat" did nothing. Same danger rule as the composer's
-   inline error, so both failures read the same way. */
+/* Why the last "new chat" failed. Styled like the composer's error. */
 .sidebar-error {
   margin: 0 var(--space-2) var(--space-2);
   padding-left: var(--space-1);
@@ -239,8 +236,7 @@
 
 /* --- Chat log -------------------------------------------------------------- */
 
-/* min-height:0 lets the log shrink inside the flex column instead of pushing
-   the composer off-screen once the transcript grows past the viewport. */
+/* min-height:0 lets the log shrink, so the composer stays on screen. */
 .main {
   flex: 1;
   min-height: 0;
@@ -258,8 +254,7 @@
   gap: var(--space-3);
 }
 
-/* Overlay scrollbar: the track always reserves its width so the transcript
-   never reflows, but nothing is painted until the user is on the log. */
+/* The track always reserves width, so text never reflows. Painted on hover. */
 .chat {
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
@@ -280,8 +275,7 @@
   background: transparent;
 }
 
-/* Padded in by a transparent border so the thumb reads as a slim bar rather
-   than filling the full 10px gutter. */
+/* A transparent border makes the thumb a slim bar. */
 .chat::-webkit-scrollbar-thumb {
   background: transparent;
   border: 3px solid transparent;
@@ -378,8 +372,7 @@
   background: var(--color-surface);
 }
 
-/* Running: a dashed border is this system's existing vocabulary for
-   "tentative" (see the outline button) — no spinner, no colour-only signal. */
+/* Running: a dashed border means "tentative" here. No spinner. */
 .tool-chip.is-start {
   border-style: dashed;
   color: var(--color-muted);
@@ -636,8 +629,7 @@ a.source-chip:hover {
   padding: var(--space-2);
 }
 
-/* The frame is the input. Everything inside — strips, textarea, controls —
-   reads as one field because this border encloses all of it. */
+/* The frame's border makes everything inside read as one field. */
 .composer {
   display: flex;
   flex-direction: column;
@@ -689,8 +681,7 @@ a.source-chip:hover {
   white-space: nowrap;
 }
 
-/* 24px of visual chrome, 44px of touch target via the expanded pseudo-element —
-   padding the chip out to 44px would bloat the strip. */
+/* 24px visible, 44px touch target via a pseudo-element. */
 .attachment-remove {
   position: relative;
   display: flex;
@@ -745,8 +736,7 @@ a.source-chip:hover {
   color: var(--color-primary);
 }
 
-/* The frame carries the focus indicator (see .composer:focus-within) — an
-   outline here would sit on top of that border and read as a double line. */
+/* The frame shows focus (.composer:focus-within), so no outline here. */
 .composer textarea:focus,
 .composer textarea:focus-visible {
   outline: none;
@@ -823,9 +813,7 @@ a.source-chip:hover {
   cursor: not-allowed;
 }
 
-/* The seconds shown in the send button while a rate limit is running down.
-   Sized to sit in the same square the arrow icon occupies, so the control does
-   not change shape when the number replaces the glyph. */
+/* Rate-limit seconds in the send button, sized like the arrow icon. */
 .send-countdown {
   font-family: var(--font-mono);
   font-size: 13px;

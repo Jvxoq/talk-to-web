@@ -1,8 +1,6 @@
-"""The Server-Sent Events wire format.
+"""The Server-Sent Events wire format. The only module that knows frame shapes.
 
-The only module that knows what a frame looks like. Each frame carries one JSON
-object rather than bare text because a model token can contain newlines, and a
-newline in an SSE `data:` line means "next field", not "next character".
+Each frame is JSON, because a raw newline would break an SSE `data:` line.
 """
 
 import json
@@ -29,27 +27,19 @@ async def to_sse(events: AsyncIterator[ReplyEvent]) -> AsyncIterator[str]:
         match event:
             case ReplyDelta(text=text):
                 yield format_frame(delta=text)
-            # Tool activity rides in its own key rather than as more `delta`
-            # text, so the client can render it as a chip beside the answer
-            # instead of splicing status lines into what the model said.
+            # Its own key, so the client shows a chip instead of mixing it into the text.
             case ReplyToolStarted(name=name, summary=summary):
                 yield format_frame(tool={"name": name, "status": "start", "summary": summary})
             case ReplyToolFinished(name=name, ok=ok, sources=sources):
-                # "failed" is not an error frame: a tool that came back empty
-                # costs the answer some grounding, and the model answers anyway.
+                # "failed" is not an error frame. The model still answers.
                 tool: dict[str, object] = {"name": name, "status": "ok" if ok else "failed"}
-                # Omitted rather than sent empty: most calls ground nothing
-                # citable (a failed search, a tool with no sources of its
-                # own), and the frontend already treats an absent key as "no
-                # sources" without needing an empty list to say so.
+                # Omitted when empty. The client treats a missing key as none.
                 if sources:
                     tool["sources"] = [
                         {"label": source.label, "url": source.url} for source in sources
                     ]
                 yield format_frame(tool=tool)
-            # Its own key, like tool activity and for the same reason: this is
-            # status about the reply, not part of what the model said, and a
-            # client that does not know the key yet simply ignores it.
+            # Its own key, like tool activity. Unknown keys are ignored by old clients.
             case ReplySummarizing(
                 status=status, tokens_before=tokens_before, tokens_after=tokens_after
             ):
@@ -57,14 +47,12 @@ async def to_sse(events: AsyncIterator[ReplyEvent]) -> AsyncIterator[str]:
                     "status": status,
                     "tokens_before": tokens_before,
                 }
-                # Omitted rather than sent as null on the start frame: it is
-                # not known yet, and the client reads an absent key that way.
+                # Omitted on the start frame, where it is not known yet.
                 if tokens_after is not None:
                     summarizing["tokens_after"] = tokens_after
                 yield format_frame(summarizing=summarizing)
-            # Its own frame rather than folded into `done`, so a frontend that
-            # does not know about usage yet ignores an unrecognised key and
-            # keeps working - nothing about the existing frames changes shape.
+            # Its own frame, so older clients can ignore it.
+
             case ReplyUsage(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,

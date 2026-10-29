@@ -8,15 +8,9 @@ from app.application.identity.ports import RefreshTokenFactory
 
 
 class RevokeSession:
-    """
-    Revoke the presented refresh token, if it is still live.
+    """Revoke the presented refresh token. Never raises, never says if it existed.
 
-    Never raises, and never reports whether there was anything to revoke.
-    Logging out is not an operation a caller can fail at, and a signed-out
-    client must not be left thinking it is still signed in because its token had
-    already expired. The access token it still holds outlives this by its own
-    (short) lifetime - that is the price of stateless verification, and the
-    reason the access TTL is minutes rather than days.
+    The access token stays valid for its short remaining lifetime.
     """
 
     def __init__(

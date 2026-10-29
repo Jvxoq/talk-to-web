@@ -6,14 +6,9 @@ from app.domain.identity.errors import InvalidToken
 
 
 class IdentifyRequest:
-    """
-    Verify an access token and say who it belongs to.
+    """Verify an access token and say who it belongs to. No database call.
 
-    No database round trip, by design: this runs on every authenticated request,
-    and the signature plus the expiry is the whole check. The cost is that a
-    deactivated account keeps working until its access token expires, which is
-    what bounds the access TTL to minutes and puts revocation on the refresh
-    token instead.
+    A deactivated account works until its short-lived token expires.
     """
 
     def __init__(self, access_tokens: AccessTokenCodec) -> None:

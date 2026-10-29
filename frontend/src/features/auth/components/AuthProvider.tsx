@@ -9,12 +9,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [restoring, setRestoring] = useState(true)
 
   /**
-   * Rehydrate from the refresh cookie on first paint.
+   * Restore the session from the refresh cookie on first paint.
    *
-   * The access token lives only in memory, so a reload always starts signed out
-   * as far as this app is concerned. The cookie is what remembers, and this is
-   * the one call that asks it. A failure is the ordinary "not signed in"
-   * answer, not an error worth showing.
+   * A failure just means "not signed in".
    */
   useEffect(() => {
     let cancelled = false
@@ -36,11 +33,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   /**
-   * Follow the token when something outside React drops it.
-   *
-   * `authorizedFetch` clears it when a mid-session refresh fails, and it knows
-   * nothing about React. Without this the app would keep rendering a signed-in
-   * shell whose every request 401s.
+   * Sign out when `authorizedFetch` clears the token after a failed refresh.
    */
   useEffect(
     () =>

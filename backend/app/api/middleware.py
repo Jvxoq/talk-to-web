@@ -1,4 +1,4 @@
-"""Delivery-layer middleware. One concern per class, wired in `app/main.py`."""
+"""Delivery-layer middleware. One concern per class, wired in `app/factory.py`."""
 
 import re
 from typing import Any
@@ -10,24 +10,18 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.observability.context import REQUEST_ID_HEADER, reset_request_id, set_request_id
 
-# What an id from upstream is allowed to look like before we adopt it. The value
-# is echoed back in a response header and written into every log line for the
-# request, so an unvalidated one is a header-injection and log-forging primitive
-# handed to whoever calls us. Anything failing this is replaced, not rejected:
-# a malformed correlation id is not worth a failed request.
+# An incoming id must match this, since it is echoed in headers and logs.
+# A bad one is replaced, not rejected.
 _WELL_FORMED = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 _SCOPE_KEY = "request_id"
 
 
 def request_id_of(request: Request) -> str | None:
-    """The id `RequestIdMiddleware` gave this request, read off its scope.
+    """This request's id, read from its scope.
 
-    The context variable is the normal way to reach it, but not the only one it
-    needs: the catch-all exception handler runs inside Starlette's
-    `ServerErrorMiddleware`, which is built *outside* every user middleware, so
-    by the time it is called this middleware's `finally` has already unset the
-    variable. The scope is the one thing the two frames still share.
+    The catch-all error handler runs after the context variable is reset, so
+    it reads the scope instead.
     """
     state: dict[str, Any] = request.scope.get("state", {})
     value = state.get(_SCOPE_KEY)
@@ -35,12 +29,9 @@ def request_id_of(request: Request) -> str | None:
 
 
 class RequestIdMiddleware:
-    """Give every request an id, log-bind it, and send it back to the caller.
+    """Give every request an id, bind it to logs, and return it in a header.
 
-    A raw ASGI middleware rather than `BaseHTTPMiddleware` for two reasons: that
-    base class buffers through an anyio stream, which is the wrong shape for the
-    SSE endpoint, and it does not run on a WebSocket at all - and a dropped
-    transcription socket is exactly the thing worth correlating.
+    Raw ASGI, because `BaseHTTPMiddleware` buffers SSE and skips WebSockets.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -64,18 +55,16 @@ class RequestIdMiddleware:
         try:
             await self.app(scope, receive, send_with_id)
         finally:
-            # The id belongs to this request and this task. Resetting matters
-            # for the server's own context, which outlives the call.
+            # Reset, because the server's context outlives the request.
             reset_request_id(token)
 
     @staticmethod
     def _incoming(scope: Scope) -> str | None:
-        """An id from the proxy or the client, if it is one we can safely reuse.
+        """A well-formed id from the proxy or client, so one id spans every hop.
 
-        Trusting the header is the point: it is what lets one id span Caddy's
-        access log, this service and whatever the frontend reports. Nothing is
-        authorized on it - it identifies a request, never a caller.
+        It identifies a request only. Nothing is authorized on it.
         """
+
         candidate = Headers(scope=scope).get(REQUEST_ID_HEADER)
         if candidate is not None and _WELL_FORMED.match(candidate):
             return candidate

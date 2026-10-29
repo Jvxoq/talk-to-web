@@ -1,9 +1,4 @@
-"""Tavily-backed web search.
-
-Satisfies `app.application.chat.ports.WebSearcher`. Returns flattened text, never
-Tavily's JSON: the tool above it prints what comes back straight into the
-conversation, so the vendor's result shape stops here.
-"""
+"""Tavily web search. Implements `WebSearcher` and returns flat text, not Tavily JSON."""
 
 from typing import Any
 
@@ -12,8 +7,7 @@ from tavily import AsyncTavilyClient  # type: ignore[import-untyped]
 
 from app.application.chat.models import SearchResult, Source
 
-# One result's body is capped so a single verbose page cannot crowd the other
-# results (and the rest of the conversation) out of the context window.
+# Per-result cap, so one long page cannot crowd out the rest.
 MAX_RESULT_CHARS = 4_000
 
 _EMPTY_RESULT = SearchResult(text="")
@@ -32,16 +26,12 @@ class TavilyWebSearcher:
             response: dict[str, Any] = await self._client.search(
                 query,
                 max_results=max_results,
-                # Tavily's own one-paragraph synthesis. Cheap, and it gives the
-                # model something to anchor on when the individual results
-                # disagree.
+                # Tavily's short summary. Helps when results disagree.
                 include_answer=True,
             )
-        except Exception as error:
-            # Deliberately broad, matching the posture of the other read paths:
-            # search is an enhancement to an answer that is already streaming,
-            # so a dead upstream costs grounding, never the reply. The tool
-            # above turns an empty result into a sentence the model can act on.
+        except Exception as error:  # noqa: BLE001
+            # Broad on purpose: a search outage must not cost the reply.
+
             logger.warning(f"Tavily search for {query!r} failed ({error}), returning no results")
             return _EMPTY_RESULT
 

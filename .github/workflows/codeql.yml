@@ -1,9 +1,7 @@
 name: codeql
 
-# Not path-filtered like backend.yml/frontend.yml: a query pack update can turn
-# up a finding in code that has not changed at all, and the weekly schedule
-# below is what is supposed to catch that - filtering push/PR too would leave
-# that as the only trigger for months at a time.
+# Not path-filtered: a query pack update can flag unchanged code. The weekly
+# schedule catches that too.
 on:
   push:
     branches: [main]
@@ -32,9 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # One language per job root: `backend/` is the Python tree,
-        # `frontend/` the TypeScript one, and nothing at the repo root is
-        # source CodeQL would analyze either way.
+        # One job per language root.
         include:
           - language: python
             root: backend
@@ -49,10 +45,7 @@ jobs:
           languages: ${{ matrix.language }}
           source-root: ${{ matrix.root }}
 
-      # No manual build step for either language: CodeQL's autobuild traces a
-      # Python or TypeScript tree without a compile, unlike a language such as
-      # Java or C++ where autobuild would need this job to also install
-      # dependencies first.
+      # No build step: autobuild handles Python and TypeScript without compiling.
       - uses: github/codeql-action/autobuild@v4
 
       - uses: github/codeql-action/analyze@v4

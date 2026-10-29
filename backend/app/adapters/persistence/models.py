@@ -1,8 +1,4 @@
-"""SQLAlchemy table definitions.
-
-Tables only: no engine, no session factory. Importing this module must not open
-a connection, which is what lets tests and migrations import it freely.
-"""
+"""SQLAlchemy table definitions only. Importing this opens no connection."""
 
 from datetime import UTC, datetime
 
@@ -27,9 +23,7 @@ class UserModel(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    # Bounded, unlike the other text columns: this one is unique, and Postgres
-    # cannot index an unbounded value beyond its page limit. 254 is the longest
-    # address SMTP will carry, which is also what `Email.sanitize` enforces.
+    # Bounded so it can be unique-indexed. 254 is the SMTP maximum, as in `Email.sanitize`.
     email: Mapped[str] = mapped_column(String(254), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column()
     is_active: Mapped[bool] = mapped_column(default=True)
@@ -38,19 +32,13 @@ class UserModel(Base):
 
 
 class RefreshTokenModel(Base):
-    """The `refresh_tokens` row. Mapped to `app.domain.identity.entities.RefreshToken`.
-
-    Stores a fingerprint, never the secret the client holds. Anyone who can read
-    this table learns which sessions exist and nothing they could present.
-    """
+    """The `refresh_tokens` row. Stores a fingerprint, never the secret itself."""
 
     __tablename__ = "refresh_tokens"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    # Fixed width because it is a hex digest, unique because two sessions sharing
-    # a fingerprint would make rotation ambiguous, and indexed because every
-    # refresh is a lookup by exactly this column.
+    # A hex digest. Unique so rotation is unambiguous. Every refresh looks it up.
     fingerprint: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     expires_at: Mapped[datetime] = mapped_column(_TIMESTAMP)
     revoked_at: Mapped[datetime | None] = mapped_column(_TIMESTAMP)
@@ -62,17 +50,14 @@ class ConversationModel(Base):
 
     __tablename__ = "conversations"
 
-    # Every read and delete is "this conversation, if it is this owner's", so the
-    # composite index is the one the queries actually use. The plain `owner_id`
-    # index is left off deliberately - this covers it, being a prefix.
+    # Matches every query's shape. Also covers plain `owner_id` lookups.
     __table_args__ = (Index("ix_conversations_owner_id_id", "owner_id", "id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     title: Mapped[str] = mapped_column()
     model_type: Mapped[str] = mapped_column(index=True)
-    # Callable default: `datetime.now(UTC)` would be evaluated once at import and
-    # freeze every row's timestamp to the moment the process started.
+    # A callable, so the time is taken per row, not once at import.
     created_at: Mapped[datetime] = mapped_column(_TIMESTAMP, default=_utc_now)
     updated_at: Mapped[datetime] = mapped_column(_TIMESTAMP, default=_utc_now, onupdate=_utc_now)
 
@@ -113,9 +98,7 @@ class DocumentModel(Base):
 
     __tablename__ = "documents"
 
-    # Every read, list and delete is "this owner's documents", the same shape
-    # as the conversations index above. The second index serves the query the
-    # agent runs on every turn: this owner's documents in this conversation.
+    # The second index serves the per-turn query: this owner's documents in this thread.
     __table_args__ = (
         Index("ix_documents_owner_id_id", "owner_id", "id"),
         Index("ix_documents_owner_id_conversation_id", "owner_id", "conversation_id"),
@@ -123,24 +106,16 @@ class DocumentModel(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
-    # The thread this upload belongs to. Nullable because rows written before
-    # documents were scoped to a conversation have no thread to name, and a
-    # NULL matches no conversation filter - such a row is inert rather than
-    # shared with every chat. `CASCADE` because deleting a conversation must
-    # take its attachments with it; the vectors and the stored file are removed
-    # by `DeleteConversation` before the row goes.
+    # Nullable for older rows, which then match no thread. `DeleteConversation`
+    # removes vectors and files before the cascade removes the row.
     conversation_id: Mapped[int | None] = mapped_column(
         ForeignKey("conversations.id", ondelete="CASCADE"), default=None
     )
     name: Mapped[str] = mapped_column()
-    # The storage adapter's opaque reference (a filesystem path today). Only the
-    # matching `FileStorage`/`TextExtractor` pair may interpret it.
+    # Opaque storage reference. Only `FileStorage` and `TextExtractor` read it.
     reference: Mapped[str] = mapped_column()
     chunks_indexed: Mapped[int] = mapped_column(default=0)
-    # What this document is about, in a few sentences, written once when the
-    # upload was indexed. `server_default` rather than a Python-side default so
-    # the rows that existed before this column did read as "" instead of NULL,
-    # and the domain entity never has to model an absent summary separately
-    # from an empty one.
+    # Written at indexing. `server_default` makes older rows "" instead of NULL.
+
     summary: Mapped[str] = mapped_column(Text, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(_TIMESTAMP, default=_utc_now)

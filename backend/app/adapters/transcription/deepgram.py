@@ -12,27 +12,22 @@ from loguru import logger
 
 from app.domain.transcription.entities import AudioFormat, Transcript
 
-# The browser sends raw 16-bit PCM, so encoding and channel count must be
-# declared explicitly - there is no container for Deepgram to read them from.
+# Raw 16-bit PCM has no container, so Deepgram must be told the format.
 DEEPGRAM_ENCODING = "linear16"
 DEEPGRAM_CHANNELS = 1
 
 
 class _DeepgramSession:
-    """
-    One open Deepgram socket, exposed as a `TranscriptionSession`.
+    """One open Deepgram socket, as a `TranscriptionSession`.
 
-    Deepgram pushes results through callbacks, but the use case wants to pull
-    them with `async for`; the queue in the middle is what bridges those two
-    shapes without either side knowing about the other.
+    A queue turns Deepgram's callbacks into an `async for` stream.
     """
 
     def __init__(self, connection: Any, on_error: Callable[[str], Awaitable[None]]) -> None:
         self._connection = connection
         self._on_error = on_error
         self._queue: asyncio.Queue[Transcript | None] = asyncio.Queue()
-        # Set once Deepgram flushes the transcript we asked for with
-        # send_finalize(), which is how we know it is safe to close.
+        # Set when the finalized transcript arrives, so closing is safe.
         self._flushed = asyncio.Event()
 
     def register(self) -> None:
@@ -61,10 +56,7 @@ class _DeepgramSession:
                 )
             )
         finally:
-            # Signalled only once the transcript is on the queue. Setting it
-            # first meant the caller could be told "flushed" and tear the
-            # session down while the finalized transcript was still unread -
-            # the whole point of finalizing was to receive that one.
+            # Set after queueing, so the final transcript is not lost on teardown.
             if from_finalize:
                 self._flushed.set()
 
@@ -76,8 +68,7 @@ class _DeepgramSession:
         """Yield transcripts as they arrive, until the session is torn down."""
         while True:
             transcript = await self._queue.get()
-            # `None` is the sentinel the context manager pushes on teardown; a
-            # queue has no other way to say "no more items are coming".
+            # `None` marks the end of the stream.
             if transcript is None:
                 return
             yield transcript
@@ -108,19 +99,15 @@ class _DeepgramSession:
         await self._queue.put(None)
         try:
             await self._connection.send_close_stream()
-        except Exception as error:
-            # Best effort: the socket is very often already gone by the time we
-            # get here, and failing to say goodbye is not worth an exception.
+        except Exception as error:  # noqa: BLE001
+            # Best effort: the socket is often already gone.
             logger.debug(f"Ignoring Deepgram close failure: {error}")
 
 
 class DeepgramLiveTranscriber:
-    """
-    Opens Deepgram live-transcription sessions.
+    """Opens Deepgram live sessions. Implements `LiveTranscriber`.
 
-    Satisfies `app.application.transcription.ports.LiveTranscriber`. A session
-    is per-speaker and short-lived, so the client is built inside `open()`
-    rather than held on the adapter - only the credentials and settings are.
+    Sessions are short-lived, so a client is built per `open()`.
     """
 
     def __init__(self, api_key: str, model: str, utterance_end_ms: int) -> None:
@@ -159,8 +146,8 @@ class DeepgramLiveTranscriber:
             session = _DeepgramSession(connection, on_error)
             session.register()
 
-            # start_listening() is Deepgram's receive loop; it has to run
-            # concurrently with the caller's own send loop.
+            # Deepgram's receive loop runs beside the caller's send loop.
+
             listener = asyncio.create_task(connection.start_listening())
             try:
                 yield session

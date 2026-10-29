@@ -1,10 +1,6 @@
 """The upload-index-delete lifecycle against real Postgres and real Qdrant.
 
-The fast suite proves the indexing-versus-deletion serialization with fakes;
-this file proves the end state it produces: after a delete - however it
-interleaved with the indexing - the real server's filtered search returns
-nothing. That is the claim the fakes cannot make, because "deleted" against a
-real Qdrant means the points are genuinely gone, not popped off a dict.
+After a delete, however it raced indexing, a real filtered search finds nothing.
 """
 
 import asyncio
@@ -32,18 +28,11 @@ from tests.fakes import (
 DIMENSIONS = 4
 QUERY = [100.0] * DIMENSIONS
 THRESHOLD = 0.5
-# The fake embedder maps every text to `float(len(text))` per dimension, so
-# every vector it produces points the same way and cosine similarity against
-# `QUERY` is 1.0 - comfortably over the threshold, for any chunk length.
+# The fake embedder's vectors all point the same way, so similarity is always 1.0.
 
 
 class GatedEmbedder(FakeEmbedder):
-    """Stops inside its first embed call until the test lets it go.
-
-    Embedding is the long, no-writes-yet part of real indexing - the window a
-    user's remove press lands in. Gating it makes the interleaving
-    deterministic instead of a race the test could lose.
-    """
+    """Pauses in its first embed call until released, to make the race deterministic."""
 
     def __init__(self) -> None:
         super().__init__(dimensions=DIMENSIONS)
@@ -69,8 +58,7 @@ async def index(qdrant: AsyncQdrantClient, collection: str) -> AsyncIterator[Qdr
 def uow_factory(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> Callable[[], SqlAlchemyUnitOfWork]:
-    """A factory, not an instance: each use-case call takes its own unit of
-    work, exactly as `composition.py` hands them out."""
+    """A unit of work factory, as `composition.py` builds it."""
 
     def factory() -> SqlAlchemyUnitOfWork:
         return SqlAlchemyUnitOfWork(session_factory)
@@ -173,14 +161,7 @@ class TestDocumentLifecycle:
         conversation_id: int,
         document_id: int,
     ) -> None:
-        """The production race, end to end.
-
-        The delete lands while the indexer is still embedding. It removes the
-        row and reports success; the indexer must then find no row inside the
-        lock and never write its points. Against a real server, "never write"
-        is observable as an empty filtered search - the same query that finds
-        everything in the positive control above.
-        """
+        """A delete during embedding: the indexer must never write its points."""
         embedder = GatedEmbedder()
         lock = InProcessDocumentLock()
 

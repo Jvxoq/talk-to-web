@@ -6,12 +6,9 @@ from app.application.health.dto import ReadinessReport
 
 
 class ReadinessResponse(BaseModel):
-    """What an orchestrator or a deploy gate reads.
+    """What a deploy gate reads. `checks` names the failing dependency.
 
-    `status` is the field to alert on; `checks` is there so a failed rollout
-    says *which* dependency was missing without anyone having to open the logs.
-    Each value is `"ok"` or `"down"` and nothing more - the endpoint needs no
-    credentials, so it must not describe the failure it saw.
+    Values are only "ok" or "down", because the endpoint is public.
     """
 
     status: str

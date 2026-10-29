@@ -1,9 +1,5 @@
-// Runs on the audio rendering thread, off the main thread.
-//
-// The browser hands us float32 samples in [-1, 1], 128 frames at a time.
-// Deepgram wants linear16: signed 16-bit little-endian PCM. We convert, and
-// batch up to BATCH_SAMPLES before posting so we send ~64ms chunks instead of
-// a 128-sample (8ms) WebSocket frame 125 times a second.
+// Runs on the audio thread. Converts float32 samples to 16-bit PCM for
+// Deepgram, and batches them into ~64ms chunks instead of 8ms frames.
 const BATCH_SAMPLES = 1024
 
 class PCMEncoder extends AudioWorkletProcessor {

@@ -1,9 +1,6 @@
-"""What a request leaves behind: a correlation id, a log line, a Sentry event.
+"""Request ids, log lines and Sentry reports, on the real app with stubs.
 
-The app is the real one, built around the same stub container as
-`test_routes.py`; the lifespan never runs. What is under test is the middleware,
-the places the id surfaces — response header, 500 body, every log line — and
-that an unhandled error is actually reported rather than only logged.
+Covers where the id appears and that unhandled errors are reported.
 """
 
 import json
@@ -45,8 +42,7 @@ class TestRequestIdHeader:
         assert response.headers[REQUEST_ID_HEADER] == "caddy-0001"
 
     async def test_a_malformed_id_is_replaced_rather_than_echoed(self) -> None:
-        """The value lands in a response header and in every log line for the
-        request. A caller must not be able to put a newline in either."""
+        """A malformed incoming id is replaced, so it cannot inject headers or logs."""
         async with client(StubContainer()) as http:
             response = await http.get("/health", headers={REQUEST_ID_HEADER: "a b" + "!" * 200})
 
@@ -62,8 +58,7 @@ class TestRequestIdHeader:
         assert GENERATED.match(response.headers[REQUEST_ID_HEADER])
 
     async def test_the_id_does_not_outlive_the_request(self) -> None:
-        """A `ContextVar` left set would attach the last caller's id to the next
-        thing this process logs, which is worse than no id at all."""
+        """The id is reset after the request."""
         async with client(StubContainer()) as http:
             await http.get("/health")
 
@@ -72,8 +67,7 @@ class TestRequestIdHeader:
 
 class TestRequestIdInTheBody:
     async def test_a_500_body_quotes_the_same_id_as_the_header(self) -> None:
-        """The header is unreadable to anyone reporting a fault by screenshot,
-        and the detail is a fixed string on purpose, so the body carries it."""
+        """A 500 body carries the request id."""
         stub = StubUseCase(raises=RuntimeError("psycopg: password authentication failed"))
 
         async with client(StubContainer(get_conversation=stub), reraise=False) as http:
@@ -93,12 +87,10 @@ class TestRequestIdInTheBody:
 
 
 class TestRequestIdInLogs:
-    """`configure_logging` runs inside `create_app` and calls `logger.remove()`,
-    so every sink these tests add has to be added after the client is built."""
+    """Sinks are added after the client, since `create_app` resets logging."""
 
     async def test_a_line_logged_while_serving_carries_the_request_id(self) -> None:
-        """This is the whole point of the id: a line in this log and a line in
-        the proxy's can be shown to be about the same request."""
+        """Log lines carry the incoming request id."""
         stub = StubUseCase(raises=RuntimeError("psycopg: password authentication failed"))
         written: list[str] = []
 
@@ -109,14 +101,12 @@ class TestRequestIdInLogs:
             finally:
                 logger.remove(sink)
 
-        # The one line served by this request is the handler's own report of the
-        # unhandled error, which is the line most worth correlating anyway.
+        # The handler's error line.
         logged = [json.loads(line)["record"]["extra"]["request_id"] for line in written]
         assert logged == [response.headers[REQUEST_ID_HEADER]]
 
     async def test_a_line_logged_outside_a_request_says_so(self) -> None:
-        """Startup, shutdown and background work still log; the field is always
-        present so a log query never has to special-case its absence."""
+        """Outside a request, the field is still present."""
         written: list[str] = []
 
         async with client(StubContainer()):
@@ -130,9 +120,7 @@ class TestRequestIdInLogs:
 
 
 class TestErrorReporting:
-    """`report_exception` is patched where `errors.py` looks it up. The real one
-    is a no-op without a DSN, so these would pass either way — what they pin is
-    which failures the handler decides are worth an alert."""
+    """Which failures get reported. `report_exception` is patched in `errors.py`."""
 
     async def test_an_unhandled_error_is_reported_not_just_logged(
         self, monkeypatch: MonkeyPatch
@@ -150,13 +138,11 @@ class TestErrorReporting:
         ) as http:
             response = await http.get("/conversations/1")
 
-        # Tagged with the request, so the event and the log line for it can be
-        # found from each other.
+        # Tagged with the request id.
         assert reported == [(boom, response.headers[REQUEST_ID_HEADER])]
 
     async def test_a_mapped_domain_error_is_not(self, monkeypatch: MonkeyPatch) -> None:
-        """A 404 is the application working. Reporting it is how an alerting
-        channel becomes something nobody reads."""
+        """A 404 is not reported."""
         reported: list[tuple[BaseException, str | None]] = []
         monkeypatch.setattr(
             errors,

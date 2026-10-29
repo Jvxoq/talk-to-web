@@ -1,14 +1,10 @@
-# Local mirror of the fast half of CI: the parts that catch a mistake in
-# seconds and never need a database, a vector store or an API key. mypy,
-# lint-imports, pytest and the frontend's own test/build steps stay CI-only -
-# they need a full environment and are exactly what CI is for; this file is
-# for the checks worth paying on every commit.
+# Local copy of the fast CI checks: no database, vector store or API key.
+# mypy, lint-imports, pytest and frontend builds stay in CI.
 #
 #   uv run pre-commit install     # from backend/, once per clone
 #   uv run pre-commit run --all-files
 #
-# Build output and caches nobody hand-edits - matched once, at the top level,
-# rather than repeated as a per-hook `exclude`.
+# Build output and caches, excluded once here for every hook.
 exclude: '(^|/)(dist|node_modules|\.venv|\.mypy_cache|\.ruff_cache|\.pytest_cache|\.import_linter_cache|uploads)/|\.tsbuildinfo$'
 
 repos:
@@ -23,17 +19,12 @@ repos:
       - id: check-yaml
       - id: check-toml
       - id: check-json
-        # `.vscode/*.json` and `tsconfig*.json` carry `//` comments, which are
-        # valid JSONC but not valid JSON - this hook would flag every one of
-        # them as broken.
+        # These files hold `//` comments (JSONC), which this hook would flag.
         exclude: '(^|/)(\.vscode/.*\.json|tsconfig.*\.json)$'
-      # Refuses a commit that still has a real private key in it. Cheap, and
-      # exactly the class of mistake a linter never catches because the file
-      # parses fine.
+      # Blocks commits that contain a private key.
       - id: detect-private-key
 
-  # Pinned to the version `backend/pyproject.toml` and `uv.lock` already pin,
-  # so a hook failure and a CI failure never disagree about which rule fired.
+  # Same version as `backend/pyproject.toml` and `uv.lock`, so hook and CI agree.
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.1
     hooks:
@@ -43,10 +34,8 @@ repos:
         files: ^backend/
         args: ["--fix"]
 
-  # oxlint has no pre-commit mirror of its own and is fast enough (Rust, no
-  # type information) that shelling out per commit is not worth avoiding.
-  # `--prefix` rather than a `cd`, so this still works when pre-commit is
-  # invoked from any directory in the repo.
+  # oxlint has no pre-commit mirror, and is fast enough to run directly.
+  # `--prefix` works from any directory.
   - repo: local
     hooks:
       - id: oxlint

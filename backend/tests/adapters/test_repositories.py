@@ -1,11 +1,6 @@
 """The SQLAlchemy repositories and unit of work against a real database.
 
-Fakes cannot make these claims. `tests/fakes.py` filters in Python, so it would
-pass whether or not the owner predicate is in the SQL; it holds a dict, so it
-would pass whether or not `flush()` populates an id; and it has no transaction,
-so it cannot tell a rollback from a commit. Everything below is exactly the part
-a fake has to assume.
-
+Covers what fakes cannot: owner filters in SQL, flushed ids, rollback vs commit.
 See `conftest.py` for what SQLite can and cannot stand in for.
 """
 
@@ -43,13 +38,7 @@ def a_conversation(owner_id: int, title: str = "A thread") -> Conversation:
 
 
 class FailingCommitSession(AsyncSession):
-    """A real session whose `commit` fails, to exercise the recovery path.
-
-    A failed commit is not hypothetical - a serialization failure or a lost
-    connection produces one - and the interesting part is what the unit of work
-    does next. Injected through the session factory, which is the seam the unit
-    of work already takes, so nothing is patched.
-    """
+    """A real session whose `commit` fails, injected via the session factory."""
 
     async def commit(self) -> None:
         raise OperationalError("COMMIT", {}, Exception("connection lost"))
@@ -82,11 +71,8 @@ class TestSqlAlchemyConversationRepository:
     async def test_add_flushes_without_committing(
         self, session: AsyncSession, owner: UserModel
     ) -> None:
-        # The whole reason the repository flushes rather than commits: the id is
-        # populated, but the transaction is still the caller's to close. Proved
-        # by rolling back rather than by reading from a second session - the
-        # in-memory database shares one connection, so a second session would
-        # see uncommitted rows and the assertion would prove nothing.
+        # Flush sets the id but leaves the transaction open. Proved by rollback,
+        # since a second in-memory session would see uncommitted rows.
         stored = await SqlAlchemyConversationRepository(session).add(a_conversation(owner.id))
         assert stored.id is not None
 
@@ -101,8 +87,7 @@ class TestSqlAlchemyConversationRepository:
         stored = await repository.add(a_conversation(owner.id))
         assert stored.id is not None
         await repository.add_message(stored.id, Message("Ping?", "Pong."))
-        # Expire everything, so `get` has to issue real SQL instead of handing
-        # back the objects still sitting in the identity map.
+        # Force `get` to run real SQL.
         session.expunge_all()
 
         loaded = await repository.get(stored.id, owner.id)
@@ -113,9 +98,7 @@ class TestSqlAlchemyConversationRepository:
     async def test_get_refuses_another_owners_conversation(
         self, session: AsyncSession, owner: UserModel
     ) -> None:
-        # The isolation claim, and the one that matters most in this file: the
-        # owner is a predicate in the query, so there is no result to forget to
-        # check.
+        # The key isolation check: the owner filter is in the query.
         stranger = await make_user(session, "stranger@example.com")
         repository = SqlAlchemyConversationRepository(session)
         stored = await repository.add(a_conversation(owner.id))
@@ -144,9 +127,7 @@ class TestSqlAlchemyConversationRepository:
     async def test_add_message_derives_the_token_total_from_the_halves(
         self, session: AsyncSession, owner: UserModel
     ) -> None:
-        # `message_to_model` calls `token_total()` rather than copying the field,
-        # so a provider that reported only the halves still gets a usable total
-        # in the column.
+        # The total is derived when only the halves were reported.
         repository = SqlAlchemyConversationRepository(session)
         stored = await repository.add(a_conversation(owner.id))
         assert stored.id is not None
@@ -163,8 +144,7 @@ class TestSqlAlchemyConversationRepository:
         repository = SqlAlchemyConversationRepository(session)
         older = await repository.add(a_conversation(owner.id, "Older"))
         newer = await repository.add(a_conversation(owner.id, "Newer"))
-        # `updated_at` defaults from the clock, and two inserts in the same
-        # microsecond would make the ordering assertion a coin toss.
+        # Set timestamps by hand, so ordering is not a coin toss.
         await session.execute(
             update(ConversationModel)
             .where(ConversationModel.id == older.id)
@@ -182,10 +162,7 @@ class TestSqlAlchemyConversationRepository:
     async def test_list_by_owner_omits_the_messages(
         self, session: AsyncSession, owner: UserModel
     ) -> None:
-        # The relationship is deliberately not eager-loaded here. If the summary
-        # mapper ever reaches for `row.messages`, the expunge below turns that
-        # into the `MissingGreenlet` this test exists to catch - not a silently
-        # slower sidebar.
+        # Not eager-loaded, so touching `row.messages` raises `MissingGreenlet`.
         repository = SqlAlchemyConversationRepository(session)
         stored = await repository.add(a_conversation(owner.id))
         assert stored.id is not None
@@ -212,8 +189,7 @@ class TestSqlAlchemyConversationRepository:
     async def test_delete_takes_the_messages_with_it(
         self, session: AsyncSession, owner: UserModel
     ) -> None:
-        # The FK cascade, not application code, is what stops orphaned messages
-        # accumulating. Proving it needs a database that enforces the constraint.
+        # The FK cascade removes messages. Needs a real database.
         repository = SqlAlchemyConversationRepository(session)
         stored = await repository.add(a_conversation(owner.id))
         assert stored.id is not None
@@ -227,8 +203,7 @@ class TestSqlAlchemyConversationRepository:
     async def test_delete_leaves_another_owners_conversation_alone(
         self, session: AsyncSession, owner: UserModel
     ) -> None:
-        # A DELETE has already happened by the time a use case could check
-        # ownership, which is why the predicate lives in the statement.
+        # The owner filter must be in the DELETE itself.
         stranger = await make_user(session, "stranger@example.com")
         repository = SqlAlchemyConversationRepository(session)
         stored = await repository.add(a_conversation(owner.id))
@@ -241,12 +216,7 @@ class TestSqlAlchemyConversationRepository:
 
 
 class TestTheMappersPreserveAnIdTheEntityAlreadyHas:
-    """Every `*_to_model` copies an id across when the entity carries one.
-
-    Without it, saving an entity that has already been persisted would insert a
-    second row rather than address the existing one - and the caller, holding an
-    entity with an id, has no reason to expect that.
-    """
+    """Every `*_to_model` copies the id, or a saved entity would insert a duplicate."""
 
     async def test_a_conversation_and_its_messages(
         self, session: AsyncSession, owner: UserModel
@@ -301,8 +271,7 @@ class TestSqlAlchemyDocumentRepository:
 
         assert loaded is not None
         assert loaded.name == "handbook.pdf"
-        # The storage reference round-trips intact: it is the only handle the
-        # extractor and the delete path have on the actual file.
+        # The reference is the only handle on the stored file.
         assert loaded.reference == stored.reference
 
     async def test_get_refuses_another_owners_document(
@@ -327,8 +296,7 @@ class TestSqlAlchemyDocumentRepository:
         repository = SqlAlchemyDocumentRepository(session)
         older = await repository.add(a_document(owner.id, "older.pdf"))
         newer = await repository.add(a_document(owner.id, "newer.pdf"))
-        # Both rows default `created_at` from the clock, and two inserts in the
-        # same microsecond would make the ordering a coin toss.
+        # Set timestamps by hand, so ordering is not a coin toss.
         await session.execute(
             update(DocumentModel)
             .where(DocumentModel.id == older.id)
@@ -403,9 +371,7 @@ class TestSqlAlchemyDocumentRepository:
     async def test_delete_leaves_another_owners_document_alone(
         self, session: AsyncSession, owner: UserModel
     ) -> None:
-        # A document a stranger can name by id must not be a document a stranger
-        # can delete - and the DELETE has already run by the time any use case
-        # could check.
+        # A stranger cannot delete a document by id.
         stranger = await make_user(session, "stranger@example.com")
         repository = SqlAlchemyDocumentRepository(session)
         stored = await repository.add(a_document(owner.id))
@@ -419,8 +385,7 @@ class TestSqlAlchemyDocumentRepository:
     async def test_a_documents_rows_go_when_its_owner_does(
         self, session: AsyncSession, owner: UserModel
     ) -> None:
-        # The FK cascade. Without it, deleting an account would leave rows
-        # pointing at a user that no longer exists.
+        # The FK cascade from users.
         repository = SqlAlchemyDocumentRepository(session)
         await repository.add(a_document(owner.id))
 
@@ -456,9 +421,7 @@ class TestSqlAlchemyUserRepository:
     async def test_get_by_email_matches_regardless_of_the_case_typed(
         self, session: AsyncSession
     ) -> None:
-        # The column holds the sanitized address and the lookup sanitizes too,
-        # so the match is exact - which is what lets the query use the unique
-        # index instead of a function over the column.
+        # Both sides are sanitized, so the lookup is exact and uses the index.
         repository = SqlAlchemyUserRepository(session)
         await repository.add(User(email=Email.sanitize("Mixed@Example.com"), password_hash="h"))
         session.expunge_all()
@@ -524,16 +487,14 @@ class TestSqlAlchemyRefreshTokenRepository:
     async def test_get_by_fingerprint_returns_none_for_a_token_nobody_issued(
         self, session: AsyncSession
     ) -> None:
-        # Reuse detection depends on this being `None` rather than an error:
-        # a presented token that was never issued is a fact, not a failure.
+        # An unknown token is `None`, not an error.
         found = await SqlAlchemyRefreshTokenRepository(session).get_by_fingerprint("z" * 64)
         assert found is None
 
     async def test_a_revoked_session_still_exists_and_is_marked(
         self, session: AsyncSession, owner: UserModel
     ) -> None:
-        # An UPDATE, not a DELETE. A deleted row is indistinguishable from one
-        # that never existed, and that difference is the whole of reuse detection.
+        # An UPDATE, not a DELETE, since reuse detection needs the row.
         repository = SqlAlchemyRefreshTokenRepository(session)
         stored = await repository.add(a_token(owner.id, "b" * 64))
         assert stored.id is not None
@@ -548,8 +509,7 @@ class TestSqlAlchemyRefreshTokenRepository:
     async def test_revoking_twice_keeps_the_first_timestamp(
         self, session: AsyncSession, owner: UserModel
     ) -> None:
-        # `WHERE revoked_at IS NULL` in the statement. Without it the second
-        # revoke would move the timestamp and misreport when the session ended.
+        # A second revoke keeps the first timestamp.
         repository = SqlAlchemyRefreshTokenRepository(session)
         stored = await repository.add(a_token(owner.id, "c" * 64))
         assert stored.id is not None
@@ -580,8 +540,7 @@ class TestSqlAlchemyRefreshTokenRepository:
     async def test_revoke_all_for_user_leaves_other_users_signed_in(
         self, session: AsyncSession, owner: UserModel
     ) -> None:
-        # Reuse detection is a blunt instrument by design; it must still be
-        # pointed at exactly one account.
+        # Revokes every session of one user only.
         other = await make_user(session, "other@example.com")
         repository = SqlAlchemyRefreshTokenRepository(session)
         await repository.add(a_token(owner.id, "1" * 64))
@@ -613,10 +572,7 @@ class TestSqlAlchemyUnitOfWork:
     async def test_it_opens_every_repository_it_declares(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        # A repository cannot exist without the session it writes through, so
-        # they are bound on entry rather than in `__init__`. A member added to
-        # the port and forgotten here would only surface when a use case
-        # reached for it.
+        # Every port member must be bound on entry.
         async with SqlAlchemyUnitOfWork(session_factory) as uow:
             assert isinstance(uow.conversations, SqlAlchemyConversationRepository)
             assert isinstance(uow.users, SqlAlchemyUserRepository)
@@ -626,9 +582,7 @@ class TestSqlAlchemyUnitOfWork:
     async def test_one_block_can_write_across_more_than_one_repository(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        # The reason they share a unit of work at all: registration writes a
-        # person and their first session together, and a commit that landed one
-        # without the other leaves an account nobody can sign in to.
+        # Registration writes the user and session together.
         async with SqlAlchemyUnitOfWork(session_factory) as uow:
             user = await uow.users.add(
                 User(email=Email.sanitize("both@example.com"), password_hash="h")
@@ -653,9 +607,7 @@ class TestSqlAlchemyUnitOfWork:
     async def test_leaving_the_block_without_committing_rolls_back(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        # The rule the whole unit of work exists for. Nothing here raises: just
-        # forgetting to commit is enough, which is the shape the mistake
-        # actually takes.
+        # Forgetting to commit is enough to roll back.
         async with SqlAlchemyUnitOfWork(session_factory) as uow:
             await uow.users.add(User(email=Email.sanitize("r@example.com"), password_hash="h"))
 
@@ -665,8 +617,7 @@ class TestSqlAlchemyUnitOfWork:
     async def test_an_exception_halfway_through_leaves_nothing_behind(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        # Registration writes a user and their first session together. A partial
-        # commit here would leave an account nobody could sign in to.
+        # A failure halfway must not commit half of it.
         with pytest.raises(RuntimeError, match="halfway"):
             async with SqlAlchemyUnitOfWork(session_factory) as uow:
                 user = await uow.users.add(
@@ -693,9 +644,7 @@ class TestSqlAlchemyUnitOfWork:
     async def test_it_refuses_to_be_entered_twice(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        # An `AsyncSession` is not task-safe, so a shared unit of work is a
-        # concurrency bug that presents as corrupted results much later. Failing
-        # loudly at the point of misuse is the only useful moment.
+        # `AsyncSession` is not task-safe, so re-entry must fail loudly.
         uow = SqlAlchemyUnitOfWork(session_factory)
         async with uow:
             with pytest.raises(RuntimeError, match="already open"):
@@ -704,11 +653,7 @@ class TestSqlAlchemyUnitOfWork:
     async def test_a_failed_commit_rolls_back_before_the_caller_sees_it(
         self, engine: AsyncEngine
     ) -> None:
-        # Re-raised, so the caller still fails - but the session is left usable
-        # and the data consistent first. A failed commit that is simply
-        # propagated strands the transaction, and the next statement on that
-        # session fails for a reason that has nothing to do with what went
-        # wrong.
+        # Re-raised after a rollback, so the session stays usable.
         factory: async_sessionmaker[AsyncSession] = async_sessionmaker(
             engine, class_=FailingCommitSession, expire_on_commit=False
         )
@@ -726,10 +671,7 @@ class TestSqlAlchemyUnitOfWork:
     async def test_exiting_one_that_was_never_opened_does_nothing(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        # `__aexit__` can run without `__aenter__` having succeeded - a fixture
-        # that raised while building one, for instance - and rolling back a
-        # session that does not exist would replace the real error with an
-        # `AttributeError`.
+        # Exit without enter must not raise `AttributeError`.
         await SqlAlchemyUnitOfWork(session_factory).__aexit__()
 
     async def test_committing_before_it_is_open_is_an_error(
@@ -741,8 +683,7 @@ class TestSqlAlchemyUnitOfWork:
     async def test_it_can_be_used_again_after_it_closes(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        # `__aexit__` clears the session, so the second block gets fresh
-        # repositories rather than ones pointed at a closed session.
+        # Reuse gets fresh repositories, not ones on a closed session.
         uow = SqlAlchemyUnitOfWork(session_factory)
         async with uow:
             await uow.users.add(User(email=Email.sanitize("one@example.com"), password_hash="h"))
@@ -757,9 +698,7 @@ class TestSqlAlchemyUnitOfWork:
     async def test_a_second_block_does_not_inherit_the_first_ones_commit(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        # `_committed` is reset on entry as well as on exit. If it were not, a
-        # reused unit of work would skip the rollback and silently persist a
-        # block that never asked to be committed.
+        # `_committed` resets on entry, so reuse still rolls back.
         uow = SqlAlchemyUnitOfWork(session_factory)
         async with uow:
             await uow.users.add(User(email=Email.sanitize("first@example.com"), password_hash="h"))

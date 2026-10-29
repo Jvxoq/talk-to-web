@@ -10,11 +10,9 @@ import {
 import type { AuthMode, Credentials } from './types'
 
 /**
- * Posts credentials and takes the returned session.
+ * Posts credentials and returns the session.
  *
- * `credentials: 'include'` is what lets the browser *store* the refresh cookie
- * the response sets — without it the Set-Cookie is discarded on a cross-origin
- * response, and the user is signed out the moment they reload.
+ * `credentials: 'include'` lets the browser store the refresh cookie.
  */
 export async function submitCredentials(
   mode: AuthMode,
@@ -37,22 +35,14 @@ export async function submitCredentials(
 }
 
 /**
- * Ends the session on the server, then locally.
- *
- * The local half runs whether or not the request worked. A user who clicked
- * sign out must end up signed out of this browser regardless of what the
- * network did — and the refresh cookie is the server's to clear.
+ * Ends the session on the server, then locally. The local part always runs.
  */
 export async function signOut(): Promise<void> {
   try {
     await fetch(authEndpoint('logout'), { method: 'POST', credentials: 'include' })
   } finally {
     clearAccessToken()
-    // The pinned conversation belongs to the account that just left. Left in
-    // place it outlives the session in `localStorage`, so the next person to
-    // sign in on this browser starts by asking for a thread that is not
-    // theirs. They are refused, but a sign-in should not open with a failed
-    // request for a stranger's conversation in the first place.
+    // The pinned thread belongs to the account that left, so drop it.
     clearConversationId()
   }
 }
@@ -64,11 +54,7 @@ const FALLBACKS: Record<number, string> = {
 }
 
 /**
- * The message to show, preferring the server's own wording.
- *
- * The backend writes these for people — "Password rejected: it must be at least
- * 12 characters" — so echoing it beats a generic string. A 5xx is the exception:
- * its detail is a fixed placeholder, and the status is all we really know.
+ * The message to show: the server's own wording, except on a 5xx.
  */
 async function detailFrom(response: Response, mode: AuthMode): Promise<string> {
   if (response.status >= 500) {

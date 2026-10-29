@@ -24,11 +24,7 @@ class EmailAlreadyRegistered(IdentityError):
 
 
 class InvalidCredentials(IdentityError):
-    """Wrong email, wrong password, or a disabled account.
-
-    Deliberately one error for all three. Telling a caller which half was wrong
-    turns the login form into a way to discover who has an account here.
-    """
+    """Wrong email, wrong password, or disabled account. One error, so nothing leaks."""
 
     def __init__(self) -> None:
         super().__init__("Email or password is incorrect")

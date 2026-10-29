@@ -1,15 +1,7 @@
-"""The Qdrant index against real Qdrant.
+"""The Qdrant index against in-process Qdrant (`location=":memory:"`).
 
-`AsyncQdrantClient(location=":memory:")` runs the vendor's own local
-implementation in-process: real collections, real payload filters, real vector
-search. So the claim that matters here - one owner's documents never appear in
-another owner's answers - is checked against the thing that will enforce it in
-production, not against a dictionary that filters in Python.
-
-Not covered, because local mode does not implement them: payload index creation
-is a no-op here, so `ensure` is exercised for its collection handling rather
-than its indexing, and the `ApiException` translation paths need a server that
-can fail.
+Real collections and filters, so owner isolation is tested for real. Not
+covered: payload indexes and `ApiException` paths, which need a server.
 """
 
 from collections.abc import AsyncIterator
@@ -26,20 +18,16 @@ DIMENSIONS = 4
 ALICE = 1
 BOB = 2
 
-# Document ids, distinct from owner ids on purpose: a payload filter that
-# matched on the wrong field would still pass if the two ever coincided.
+# Distinct from owner ids, so a filter on the wrong field fails.
 DOC_A = 10
 DOC_B = 20
 DOC_C = 30
 
-# Conversation ids, distinct again from both of the above. Every point is
-# written into a thread and every search names one, because a document belongs
-# to the chat it was attached to rather than to the account.
+# Conversation ids, distinct from both of the above.
 THREAD = 100
 OTHER_THREAD = 200
 
-# Deliberately axis-aligned, so "nearest" is obvious by inspection rather than
-# an artefact of whatever numbers happened to be typed.
+# Axis-aligned, so "nearest" is obvious.
 NORTH = [1.0, 0.0, 0.0, 0.0]
 EAST = [0.0, 1.0, 0.0, 0.0]
 SOUTH = [-1.0, 0.0, 0.0, 0.0]
@@ -67,13 +55,7 @@ async def texts(
     limit: int = 10,
     conversation_id: int = THREAD,
 ) -> list[str]:
-    """The passages a search found, as plain text.
-
-    `search` returns `Chunk`s so a citation can name the file a passage came
-    from; most assertions here are about which passages came back, not about
-    that, so they read the text off rather than restating the source every time.
-    One test below asserts on the source itself.
-    """
+    """The text of each passage a search found."""
     found = await index.search(
         vector,
         limit=limit,
@@ -86,17 +68,13 @@ async def texts(
 
 class TestEnsure:
     async def test_it_creates_the_collection(self, index: QdrantVectorIndex) -> None:
-        # The fixture already called `ensure`; upserting proves the collection
-        # it was supposed to create is really there.
+        # Upserting proves `ensure` created the collection.
         await index.upsert([chunk("hello")], [NORTH], ALICE, DOC_A, THREAD)
 
         assert await texts(index, NORTH, ALICE) == ["hello"]
 
     async def test_calling_it_again_keeps_the_existing_documents(self) -> None:
-        # This is the regression the docstring on `ensure` describes: its
-        # predecessor dropped and recreated the collection on every upload, so
-        # with more than one account each upload destroyed everyone else's
-        # documents.
+        # `ensure` must never wipe existing points.
         client = AsyncQdrantClient(location=":memory:")
         index = QdrantVectorIndex(client, COLLECTION)
         await index.ensure(DIMENSIONS)
@@ -121,10 +99,7 @@ class TestUpsert:
     async def test_two_upserts_of_the_same_text_both_survive(
         self, index: QdrantVectorIndex
     ) -> None:
-        # Point ids are random rather than derived from the current `count()`.
-        # Counting to pick an id overwrites points whenever anything was
-        # deleted, and two concurrent uploads read the same count and clobber
-        # each other.
+        # Random ids, so identical uploads do not overwrite each other.
         await index.upsert([chunk("same")], [NORTH], ALICE, DOC_A, THREAD)
         await index.upsert([chunk("same")], [NORTH], ALICE, DOC_A, THREAD)
 
@@ -135,15 +110,12 @@ class TestUpsert:
     async def test_it_refuses_a_mismatched_number_of_vectors(
         self, index: QdrantVectorIndex
     ) -> None:
-        # Zipping these without checking would silently drop the tail, and the
-        # missing chunks would only surface as an answer that omitted them.
+        # A mismatch must raise, not silently drop chunks.
         with pytest.raises(ValueError, match="exactly one vector"):
             await index.upsert([chunk("a"), chunk("b")], [NORTH], ALICE, DOC_A, THREAD)
 
     async def test_the_source_file_survives_the_round_trip(self, index: QdrantVectorIndex) -> None:
-        # `search` returns `Chunk`s rather than bare strings so an answer can
-        # say which document a passage came from. That only works if the source
-        # is written into the payload and read back out of it.
+        # The source round-trips through the payload.
         await index.upsert(
             [chunk("a passage", source="handbook.pdf")], [NORTH], ALICE, DOC_A, THREAD
         )
@@ -204,10 +176,7 @@ class TestSearch:
     async def test_another_owners_nearer_chunks_do_not_consume_the_limit(
         self, index: QdrantVectorIndex
     ) -> None:
-        # The filter is applied by Qdrant *during* the search, not to its
-        # results. Under a post-filter, Bob's three exact matches would take
-        # every slot and Alice would get nothing back - a correctness bug on top
-        # of the isolation one.
+        # Filtered during search, so Bob's matches cannot use up Alice's slots.
         await index.upsert(
             [chunk("bob 1"), chunk("bob 2"), chunk("bob 3")], [NORTH] * 3, BOB, DOC_B, THREAD
         )
@@ -218,9 +187,7 @@ class TestSearch:
         assert found == ["alice"]
 
     async def test_a_search_against_a_collection_that_does_not_exist_answers_empty(self) -> None:
-        # A chat request before anything has been uploaded must still answer,
-        # just without retrieved context. This is the reason the `except` in
-        # `search` is deliberately broad.
+        # A missing collection returns [] so chat still answers.
         client = AsyncQdrantClient(location=":memory:")
         index = QdrantVectorIndex(client, "never-created")
 
@@ -245,8 +212,7 @@ class TestDeleteDocument:
     async def test_it_leaves_the_owners_other_documents_alone(
         self, index: QdrantVectorIndex
     ) -> None:
-        # The reason points carry a document id at all: without it, removing one
-        # upload could only ever mean removing everything the owner had.
+        # Deleting one document leaves the owner's others.
         await index.upsert([chunk("deleted doc")], [NORTH], ALICE, DOC_A, THREAD)
         await index.upsert([chunk("kept doc")], [EAST], ALICE, DOC_C, THREAD)
 
@@ -255,8 +221,7 @@ class TestDeleteDocument:
         assert await texts(index, EAST, ALICE) == ["kept doc"]
 
     async def test_it_cannot_reach_another_owners_document(self, index: QdrantVectorIndex) -> None:
-        # Both fields are in the filter. An id alone would let one account
-        # delete another's upload by naming its number.
+        # Delete also checks the owner, not just the id.
         await index.upsert([chunk("bob's")], [NORTH], BOB, DOC_B, THREAD)
 
         await index.delete_document(DOC_B, ALICE)
@@ -270,10 +235,7 @@ class TestDeleteDocument:
 
 
 class TestConversationIsolation:
-    """One thread must not answer out of a file attached to another.
-
-    The owner filter cannot catch this: it is the same person on both sides.
-    """
+    """One thread must not read a file attached to another thread of the same user."""
 
     async def test_a_search_never_reads_another_threads_document(
         self, index: QdrantVectorIndex

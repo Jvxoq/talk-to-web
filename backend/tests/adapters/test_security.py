@@ -1,9 +1,4 @@
-"""The security adapters against the real thing.
-
-Everything here talks to actual Argon2 and actual PyJWT. These are the claims a
-fake cannot make on their behalf, and they are exactly the claims that would be
-catastrophic to get wrong.
-"""
+"""The security adapters against real Argon2 and real PyJWT."""
 
 from datetime import UTC, datetime, timedelta
 
@@ -17,9 +12,7 @@ from app.adapters.security.refresh_tokens import Sha256RefreshTokenFactory
 from app.domain.identity.errors import InvalidToken, TokenExpired
 from app.domain.usage.errors import RateLimited
 
-# Real time, not a fixed date: PyJWT checks `exp` against the actual clock, so a
-# hardcoded issue time silently starts producing expired tokens the day it goes
-# past. Only the codec tests need this; nothing here asserts on the value.
+# Real time, because PyJWT checks `exp` against the real clock.
 NOW = datetime.now(UTC)
 SECRET = "a test signing secret that is comfortably over thirty-two bytes long"
 PASSWORD = "correct horse battery staple"
@@ -42,29 +35,23 @@ class TestArgon2PasswordHasher:
         assert not hasher.verify("something else entirely", hasher.hash(PASSWORD))
 
     def test_the_same_password_hashes_differently_every_time(self) -> None:
-        # Per-password salt. Without it, identical passwords are visibly
-        # identical in the table, and one cracked hash unlocks every account
-        # that shared it.
+        # Salted, so equal passwords get different hashes.
         hasher = Argon2PasswordHasher()
         assert hasher.hash(PASSWORD) != hasher.hash(PASSWORD)
 
     def test_a_long_passphrase_is_not_truncated(self) -> None:
-        # bcrypt would stop at 72 bytes, making these two passwords equivalent.
-        # This is the reason the adapter is Argon2.
+        # bcrypt would treat these as equal after 72 bytes.
         hasher = Argon2PasswordHasher()
         base = "x" * 72
         assert not hasher.verify(base + "different", hasher.hash(base + "original"))
 
     @pytest.mark.parametrize("stored", ["", "not-a-hash", "$argon2id$garbage"])
     def test_a_corrupt_stored_hash_fails_the_check_rather_than_raising(self, stored: str) -> None:
-        # A 500 here would be distinguishable from a wrong password, and the
-        # caller could not fix it either way.
+        # A corrupt hash looks like a wrong password, not a 500.
         assert not Argon2PasswordHasher().verify(PASSWORD, stored)
 
     def test_the_dummy_hash_is_a_real_one(self) -> None:
-        # It exists to make a login for an unknown address cost the same as one
-        # for a known address, which only works if verifying against it does the
-        # same work.
+        # The dummy must cost a real verify, so timing reveals nothing.
         hasher = Argon2PasswordHasher()
         dummy = hasher.dummy_hash()
 
@@ -105,11 +92,7 @@ class TestJwtAccessTokenCodec:
             self.codec().decode(issued.token)
 
     def test_an_unsigned_token_is_refused(self) -> None:
-        """The classic JWT hole: `alg: none`.
-
-        A decoder that trusted the token's own header would accept this, and
-        anyone could mint a token for any account by writing one out by hand.
-        """
+        """`alg: none` must be rejected."""
         forged = jwt.encode(
             {"sub": "1", "email": "attacker@example.com", "exp": 9_999_999_999},
             key="",
@@ -120,8 +103,7 @@ class TestJwtAccessTokenCodec:
             self.codec().decode(forged)
 
     def test_a_token_missing_its_expiry_is_refused(self) -> None:
-        # A token with no `exp` never expires. It must not be accepted just
-        # because the signature checks out.
+        # A token without `exp` must be rejected.
         forged = jwt.encode({"sub": "1", "email": "a@b.co"}, SECRET, algorithm="HS256")
 
         with pytest.raises(InvalidToken):
@@ -181,9 +163,7 @@ class TestSlidingWindowRateLimiter:
         await limiter.hit("key")
 
     async def test_a_blocked_key_does_not_push_its_own_unblock_further_away(self) -> None:
-        # Attempts are only recorded on the allowed path. Counting refused ones
-        # would let a client hammering the endpoint extend its own lockout
-        # indefinitely.
+        # Refused attempts do not count, so hammering does not extend the lockout.
         limiter = SlidingWindowRateLimiter(max_attempts=1, window_seconds=60)
         await limiter.hit("key")
 
@@ -196,8 +176,7 @@ class TestSlidingWindowRateLimiter:
         assert caught.value.retry_after_seconds <= (first or 0)
 
     async def test_expired_keys_are_swept(self) -> None:
-        # The map grows one entry per address ever tried, and an attacker picks
-        # the addresses. Without the sweep that is a memory leak they control.
+        # Expired keys are swept, so attackers cannot grow the map forever.
         limiter = SlidingWindowRateLimiter(max_attempts=1_000, window_seconds=0)
         for i in range(600):
             await limiter.hit(f"key-{i}")

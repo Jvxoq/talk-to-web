@@ -17,12 +17,7 @@ class ConversationNotFound(ChatError):
 
 
 class ConversationLimitReached(ChatError):
-    """The account already holds as many conversations as it may.
-
-    A cap rather than an eviction: deleting someone's oldest thread to make
-    room for a new one destroys data they never asked to lose. Refusing tells
-    them what to do about it.
-    """
+    """The account is at its conversation limit. Refused, never evicted."""
 
     def __init__(self, limit: int) -> None:
         self.limit = limit
@@ -38,13 +33,10 @@ class UnsupportedModel(ChatError):
 
 
 class UnsafeUserMessage(ChatError):
-    """A message a guardrail refused to send to the model.
+    """A message a guardrail refused.
 
-    The message this carries is deliberately generic, and the reason lives in
-    `reason` for the log and the trace rather than in the text the caller reads.
-    Telling a caller which pattern fired is a free oracle: it turns "refused"
-    into a signal you can iterate against until you find the phrasing that gets
-    through, which is exactly the loop a guardrail exists to deny.
+    The text is generic. `reason` is for logs only, so attackers cannot probe
+    which pattern fired.
     """
 
     def __init__(self, reason: str) -> None:
@@ -53,13 +45,7 @@ class UnsafeUserMessage(ChatError):
 
 
 class UnsafeUrl(ChatError):
-    """A URL the server must not open a connection to.
-
-    Anyone can put a link in a chat message, and the server fetches it with the
-    network position of the server - inside the VPC, next to the database, and
-    one hop from the cloud metadata endpoint. A refused URL is named here so the
-    reason survives into the log.
-    """
+    """A URL the server must not fetch, because it points inside the network."""
 
     def __init__(self, url: str, reason: str) -> None:
         self.url = url

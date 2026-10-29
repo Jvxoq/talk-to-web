@@ -7,13 +7,9 @@ from app.domain.chat.errors import ConversationNotFound
 
 
 class RecordExchange:
-    """
-    Store what the model answered against the thread that asked.
+    """Store an exchange on its thread.
 
-    The conversation is loaded first - scoped to its owner - so an exchange can
-    never be written against an id that no longer exists, or against one that
-    was never the caller's. That load is what establishes ownership for the
-    insert that follows, which is why `add_message` does not repeat the check.
+    Loading the thread by owner first is the ownership check for the insert.
     """
 
     def __init__(self, uow_factory: UnitOfWorkFactory) -> None:

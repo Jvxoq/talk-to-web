@@ -5,10 +5,7 @@ WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
 
-# `--no-dev` in both layers: without it the production image ships pytest, mypy,
-# ruff and import-linter. They are build-time tools, and every one of them is
-# extra bytes to pull, extra packages to audit, and an interpreter that can run
-# a test suite against production credentials.
+# `--no-dev`, so test and lint tools stay out of the production image.
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
@@ -22,11 +19,8 @@ RUN useradd --create-home --shell /bin/bash appuser
 WORKDIR /app
 COPY --from=builder --chown=appuser:appuser /app /app
 
-# Create the mount point while still root, then hand it to appuser. Docker
-# initialises an empty named volume from whatever the image has at that path,
-# ownership included - so without this the volume arrives owned by root, the
-# container runs as appuser, and every upload fails with EACCES. `uploads/` is
-# gitignored and empty, so it is not in the build context to be copied.
+# Create the uploads dir owned by appuser, or a mounted volume is root-owned
+# and every upload fails with EACCES.
 RUN mkdir -p /app/uploads && chown appuser:appuser /app/uploads
 
 ENV PATH="/app/.venv/bin:$PATH"
@@ -35,14 +29,8 @@ USER appuser
 
 EXPOSE 8000
 
-# Liveness only, matching the endpoint's own contract: /health is static and
-# touches no dependency, so a database blip cannot cascade into the container
-# being killed. urllib rather than curl because the slim base has no curl and
-# adding one for a healthcheck is a whole package of attack surface.
-# PORT rather than a literal 8000: compose leaves it unset and the default
-# applies, while a platform that assigns the port sets it and the check follows
-# the server instead of probing a closed one. Shell form on purpose, because the
-# exec form does no variable expansion.
+# Liveness only, so a database blip does not kill the container. urllib, since
+# the slim image has no curl. Reads PORT, which needs the shell form.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('PORT', '8000') + '/health', timeout=4)"
 

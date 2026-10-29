@@ -1,11 +1,6 @@
 """Error reporting. Initialized once, from the composition root.
 
-Sentry is opt-in: with no DSN configured, `configure_sentry` does nothing and
-`report_exception` is a no-op, so a local run and the test suite send nothing
-anywhere and need no key. That is also why the rest of the codebase reports
-through `report_exception` rather than importing `sentry_sdk` directly - one
-import to remove if this is ever swapped for something else, and no vendor name
-in the delivery layer.
+Without a DSN, everything here is a no-op. Nothing else imports `sentry_sdk`.
 """
 
 import sentry_sdk
@@ -16,11 +11,9 @@ from app.observability.context import get_request_id
 
 
 def _tag_request(event: Event, _hint: Hint) -> Event:
-    """Attach the correlation id, so an event and its log lines meet again.
+    """Tag the event with the request id.
 
-    A `before_send` hook rather than a tag set per capture: it runs in the
-    context of whatever raised, which covers the errors our own handler never
-    sees - a failure inside a streaming response, or on a WebSocket.
+    A `before_send` hook, so it also covers errors in streams and WebSockets.
     """
     request_id = get_request_id()
     if request_id is not None:
@@ -35,10 +28,9 @@ def configure_sentry(
     release: str | None,
     traces_sample_rate: float,
 ) -> bool:
-    """Start reporting, if a DSN says where to. Returns whether it was enabled.
+    """Start reporting if a DSN is set. Returns whether it was enabled.
 
-    Call before the `FastAPI` app is constructed: the SDK's integrations work by
-    patching Starlette's classes at init time.
+    Call before building the `FastAPI` app, since the SDK patches Starlette at init.
     """
     if not dsn:
         return False
@@ -46,22 +38,13 @@ def configure_sentry(
     sentry_sdk.init(
         dsn=dsn,
         environment=environment,
-        # Unset locally; in a deployment it is the image tag or commit SHA, which
-        # is what makes "this started at 14:02" answerable as "this started with
-        # that deploy".
+        # The image tag or commit SHA, so errors map to deploys.
         release=release,
         traces_sample_rate=traces_sample_rate,
-        # Off, deliberately. On, the SDK attaches cookies, the client IP and the
-        # request body to every event - which for this app means the refresh
-        # cookie, the bearer token and whatever the user typed into a chat.
-        # Errors here are diagnosable without any of that.
+        # Off: it would send cookies, tokens and chat text.
         send_default_pii=False,
         integrations=[
-            # Breadcrumbs from log lines, but no events from them. Without this,
-            # `event_level=ERROR` turns every `logger.error` into its own issue -
-            # including the one `app/api/errors.py` writes immediately before it
-            # captures the exception properly, so each 500 would arrive twice,
-            # once with a stack trace and once without.
+            # Log lines become breadcrumbs, not events, so each 500 is reported once.
             LoguruIntegration(event_level=None),
         ],
         before_send=_tag_request,
@@ -70,13 +53,12 @@ def configure_sentry(
 
 
 def report_exception(exc: BaseException, *, request_id: str | None = None) -> None:
-    """Send an exception to Sentry, if Sentry is on. A no-op if it is not.
+    """Send an exception to Sentry, if enabled.
 
-    `request_id` is for the callers that know it and cannot rely on the hook
-    above finding it - `app/api/errors.py` runs after the middleware has already
-    unset the context variable. A fresh scope so the tag belongs to this event
-    and not to everything else the request goes on to report.
+    Pass `request_id` when the context variable is already reset, as in
+    `app/api/errors.py`. A fresh scope keeps the tag on this event only.
     """
+
     if request_id is None:
         sentry_sdk.capture_exception(exc)
         return

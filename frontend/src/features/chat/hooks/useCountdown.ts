@@ -11,8 +11,7 @@ export function useCountdown(until: number | null): number {
     const id = setInterval(() => {
       const left = remaining(until)
       setSecondsLeft(left)
-      // Stops itself rather than ticking against zero forever: the deadline is
-      // absolute, so once it has passed there is nothing left to recompute.
+      // Stop once the deadline has passed.
       if (left === 0) clearInterval(id)
     }, 1000)
 
@@ -23,10 +22,8 @@ export function useCountdown(until: number | null): number {
 }
 
 /**
- * Derived from an absolute deadline, never counted down from a stored number.
- * A background tab throttles its timers to once a minute or stops them
- * entirely, so a decrementing counter would come back showing a wait that
- * expired minutes ago. Recomputing from the clock is always right on return.
+ * Seconds left, from an absolute deadline. Background tabs throttle timers,
+ * so a decrementing counter would drift.
  */
 function remaining(until: number | null): number {
   if (until === null) return 0

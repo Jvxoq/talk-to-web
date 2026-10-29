@@ -1,11 +1,7 @@
-"""The node that keeps a long thread from growing without bound.
+"""The node that keeps a long thread within its token budget.
 
-Runs on both entry paths - at the start of a reply and after every tool lap -
-because that is where the growth actually happens: history carried in from the
-checkpointer, and a tool result landing mid-reply. When the thread passes a
-token budget it summarises the older part into one message and keeps the recent
-part verbatim, so the model still answers about something said earlier without
-re-sending the whole conversation on every lap.
+Runs at the start of a reply and after every tool lap. Over budget, it
+summarizes the older messages into one and keeps the recent ones verbatim.
 """
 
 from typing import Any
@@ -19,8 +15,7 @@ from app.application.chat.agent.state import RESET, AgentState
 from app.application.chat.models import ChatMessage
 from app.application.chat.ports import TokenCounter, Tracer
 
-# The prefix on the summary message, so the model can tell a summary of the past
-# from the live thread it is answering.
+# Marks the summary so the model can tell it from the live thread.
 _SUMMARY_PREFIX = "Summary of the earlier conversation:\n\n"
 
 
@@ -34,26 +29,18 @@ def make_summarize_node(
 ) -> Node:
     """Build the node that shortens the thread when it outgrows its budget."""
 
-    # The tighter of the two: the history budget is tuned for conversation
-    # quality, the request ceiling for what the provider will accept. Either
-    # one crossing is a reason to summarize.
+    # Whichever is tighter: the quality budget or the provider's limit.
     trigger_budget = min(history_token_budget, max_request_tokens)
 
     async def summarize(state: AgentState) -> dict[str, Any]:
         tokens_before = counter.count(state.messages)
         async with tracer.span("summarize", kind="span") as span:
             if tokens_before <= trigger_budget:
-                # Under budget: no state change, no model call. This is the hot
-                # path for most replies, so it must cost nothing - not even a
-                # generation span, which is why the condenser is never reached
-                # here.
+                # Under budget: the common case, so no model call at all.
                 span.set(tokens_before=tokens_before, tokens_after=tokens_before, summarized=False)
                 return {}
 
-            # Announced before the condenser runs, not after, for the same
-            # reason a tool call is: this is the point where the user's stream
-            # goes quiet for a whole model call, and the notice is only useful
-            # while the wait is still happening.
+            # Announced first, because the stream goes quiet during the condenser call.
             emit_summarizing(status="start", tokens_before=tokens_before)
 
             system = (
@@ -62,13 +49,8 @@ def make_summarize_node(
             rest = state.messages[1:] if system is not None else state.messages
             head, tail = _split(rest, counter, recent_token_budget)
 
-            # `_split` refuses to cut between a tool-call turn and its replies,
-            # so a lap with several concurrent tool calls can hand back a tail
-            # that alone busts the request ceiling - the one budget that is not
-            # optional. Shrink that tail through the same condenser tool
-            # results already go through, oldest tool result first, so the
-            # most recent one - what the model actually needs to answer this
-            # turn - survives intact whenever a partial shrink is enough.
+            # The tail alone can exceed the request limit after several tool
+            # calls. Shrink older tool results first, keeping the newest intact.
             tail = await _shrink_tail(tail, counter, condenser, max_request_tokens)
 
             summary_text = await condenser.summarize(head)
@@ -84,16 +66,11 @@ def make_summarize_node(
 
             tokens_after = counter.count(new_messages[1:])
             span.set(tokens_before=tokens_before, tokens_after=tokens_after, summarized=True)
-            # Reported on both outcomes below. A condenser that failed still
-            # shortened the thread, and the wait the user sat through was real
-            # either way - leaving the notice hanging on "start" would be the
-            # one visible sign of a failure they do not need to know about.
+            # Sent even if the condenser failed, so the notice never hangs on "start".
             emit_summarizing(status="done", tokens_before=tokens_before, tokens_after=tokens_after)
 
             if summary_text is None:
-                # The condenser failed. Dropping the head outright still bounds
-                # the thread and keeps the reply alive - losing grounding is
-                # acceptable, losing the reply is not.
+                # Condenser failed. Drop the head: losing context beats losing the reply.
                 logger.warning("History summarization failed; dropping the older messages")
                 return {"messages": new_messages, "summary": state.summary}
 
@@ -107,13 +84,10 @@ def _split(
     counter: TokenCounter,
     recent_token_budget: int,
 ) -> tuple[list[ChatMessage], list[ChatMessage]]:
-    """Cut `messages` into a summarisable head and a verbatim tail.
+    """Split into a head to summarize and a tail of about `recent_token_budget` tokens.
 
-    The tail keeps roughly `recent_token_budget` tokens, but the cut is never
-    allowed to orphan a tool message: an assistant turn that asked for tools
-    must stay with the tool replies that answer it, or the provider rejects the
-    whole request. So the cut is walked forward until the first tail message is
-    a user turn or an assistant turn with no pending tool calls.
+    The cut moves forward until it does not separate a tool call from its
+    replies, which providers reject.
     """
     count = 0
     cut = len(messages)
@@ -140,15 +114,11 @@ async def _shrink_tail(
     condenser: Condenser,
     max_request_tokens: int,
 ) -> list[ChatMessage]:
-    """Condense tool replies in `tail` until it fits the request ceiling.
+    """Condense tool replies in `tail` until it fits `max_request_tokens`.
 
-    `_split` guarantees the tail never orphans a tool reply, not that it fits
-    any budget - an assistant turn that fired several tool calls can still hand
-    back a tail alone bigger than `max_request_tokens`. Oldest tool reply
-    first, because the newest is what the model needs to answer the turn it is
-    in; a summary of last week's search is a worse trade than one of this
-    turn's third concurrent lookup.
+    Oldest first. The newest reply is never condensed.
     """
+
     if counter.count(tail) <= max_request_tokens:
         return tail
 

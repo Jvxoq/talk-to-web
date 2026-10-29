@@ -1,5 +1,4 @@
-// `defineConfig` re-exported by vitest rather than vite: same function, but the
-// type carries the `test` block below.
+// From vitest, so the type includes the `test` block.
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
@@ -11,32 +10,22 @@ export default defineConfig({
   server: {
     host: true,
     proxy: {
-      // Sign in, sign up, refresh and sign out. Proxied rather than called
-      // cross-origin so the refresh cookie is first-party in development —
-      // a `SameSite=None; Secure` cookie is never stored over plain http.
+      // Proxied, so the refresh cookie is first-party over plain http.
       '/auth': backendUrl,
       '/generate': backendUrl,
       '/upload': backendUrl,
-      // Removing an attachment. Same list as vercel.json.
+      // Removing an attachment. Keep in step with `middleware.ts`.
       '/documents': backendUrl,
       '/conversations': backendUrl,
-      // Without this the model list request is served by Vite itself, which
-      // answers 200 with index.html - so the fetch succeeds, the JSON parse
-      // fails, and the composer quietly falls back to its hardcoded models
-      // instead of showing anything went wrong.
+      // Without this, Vite answers with index.html and the model list breaks quietly.
       '/models': backendUrl,
-      // The liveness probe `BackendGate` polls while the deployed backend is
-      // starting. Proxied for the same reason /models is: without it Vite
-      // answers 200 with index.html and the gate would call a sleeping
-      // backend awake.
+      // `BackendGate`'s probe. Without it, Vite answers with index.html.
       '/health': backendUrl,
-      // ws: true makes Vite forward the Upgrade handshake instead of
-      // treating it as a plain HTTP request.
+      // Forward the WebSocket upgrade.
       '/ws': { target: backendUrl, ws: true },
     },
   },
-  // Both units under test are plain modules — no DOM, so no jsdom dependency.
-  // A component test added later needs `environment: 'jsdom'` and the package.
+  // No DOM. A component test needs jsdom installed and `environment: 'jsdom'`.
   test: {
     environment: 'node',
     include: ['src/**/*.test.ts'],

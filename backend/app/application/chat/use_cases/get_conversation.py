@@ -6,15 +6,9 @@ from app.domain.chat.errors import ConversationNotFound
 
 
 class GetConversation:
-    """
-    Fetch a thread by id.
+    """Fetch a thread by id. Raises `ConversationNotFound` if missing.
 
-    Absence is a business outcome, not an empty result: the caller is told with
-    a domain error so every route reports a missing thread the same way.
-
-    Someone else's thread is reported as missing too, rather than as forbidden.
-    A 403 would confirm that the id exists and belongs to somebody, which is one
-    request per integer away from a map of who has how many conversations.
+    Someone else's thread is "not found" too, so ids reveal nothing.
     """
 
     def __init__(self, uow_factory: UnitOfWorkFactory) -> None:

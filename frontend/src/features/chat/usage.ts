@@ -1,11 +1,7 @@
 import type { Usage } from './types'
 
 /**
- * Narrows one untrusted `usage` SSE frame payload to the typed shape, at the
- * boundary — same pattern as the other frame-parsing helpers in `api.ts`. A
- * malformed payload (a future backend shape this build doesn't know yet)
- * returns `undefined` and the caller drops the frame, the same way an
- * unparsable SSE frame is dropped elsewhere in this file.
+ * Narrows a `usage` SSE payload, or returns `undefined` to drop it.
  */
 export function parseUsage(raw: unknown): Usage | undefined {
   if (typeof raw !== 'object' || raw === null) return undefined
@@ -35,9 +31,7 @@ export function formatTokens(usage: Usage): string {
 }
 
 /**
- * Wall-clock time for the reply, in the coarsest unit that still reads
- * precisely: milliseconds below one second (where the digits matter), one
- * decimal place of seconds above it (where they stop being useful).
+ * The reply time: milliseconds under one second, else seconds with one decimal.
  */
 export function formatDuration(usage: Usage): string {
   if (usage.elapsedMs < 1000) return `${Math.round(usage.elapsedMs)}ms`

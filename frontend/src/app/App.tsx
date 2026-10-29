@@ -21,9 +21,7 @@ import '../features/auth/auth.css'
 import '../features/chat/chat.css'
 
 /**
- * The chat itself. Rendered only once there is a signed-in user and an active
- * conversation to talk into, which is what lets `useChat` assume every
- * request it makes will be authorised and scoped to a real thread.
+ * The chat. Rendered only with a signed-in user and an active conversation.
  */
 function Chat({
   model,
@@ -83,8 +81,7 @@ function Shell() {
   const { theme, toggle } = useTheme()
   const { user, status } = useAuth()
 
-  // Idle until signed in - `useConversations` would otherwise fire its first
-  // `GET /conversations/` before there is a token to send with it.
+  // Idle until signed in, so no request goes out without a token.
   const conversations = useConversations(model, status === 'signed-in')
 
   return (
@@ -130,9 +127,7 @@ function Shell() {
               preloaded={conversations.preloaded}
             />
           ) : (
-            // The conversation list is still loading (or opening a first
-            // conversation for a brand new account) - an empty region beats a
-            // composer with nowhere to send a message.
+            // Still loading the conversation, so show nothing yet.
             <main className="main" />
           )}
         </AuthGate>
@@ -143,9 +138,7 @@ function Shell() {
 
 export default function App() {
   return (
-    // Outside `AuthProvider`, so a throw from the provider itself - a malformed
-    // `/auth/refresh` body on mount, say - still lands on the crash screen
-    // rather than on a blank document.
+    // Outside `AuthProvider`, so its errors also reach the crash screen.
     <ErrorBoundary>
       {/* Above `AuthProvider`, because that provider's mount effect is the
           first backend call the app makes. The free instance sleeps, and a

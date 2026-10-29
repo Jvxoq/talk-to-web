@@ -13,9 +13,7 @@ import type { Message, Model, ToolActivity } from '../types'
 const GENERIC_FAILURE = 'Something went wrong. Please try again.'
 
 /**
- * A stored turn is one prompt/response row; the transcript renders it as the
- * two bubbles the user originally saw. Ids are derived from the row so they
- * stay stable across re-renders, the way `crypto.randomUUID` ones do live.
+ * Turn each stored prompt/response row into two bubbles, with stable ids.
  */
 function toMessages(turns: MessageOut[]): Message[] {
   return turns.flatMap((turn): Message[] => [
@@ -30,58 +28,37 @@ function toMessages(turns: MessageOut[]): Message[] {
 }
 
 /**
-  * Owns the transcript and the in-flight stream for one, externally-chosen
-  * conversation.
+  * Owns the transcript and the in-flight stream for one conversation.
   *
-  * `conversationId` is a prop: `useConversations` owns which id is active,
-  * and switching it is a normal prop change. The effect below reloads the
-  * transcript and cuts off any stream still running against the old thread.
-  *
-  * The assistant's turn is appended empty and filled in place as deltas land,
-  * so no second piece of state has to stay in sync with `messages`.
-  *
-  * Turns are mirrored to the server as they complete, best-effort: what is on
-  * screen stays authoritative for this page-life.
-  *
-  * `preloaded` is a transcript `useConversations` already fetched, which saves
-  * a whole round trip on first load. Consumed once: switching away and back
-  * refetches, because by then it is a stale snapshot.
+  * Changing `conversationId` reloads the transcript and aborts the old stream.
+  * The assistant turn is appended empty and filled as deltas arrive. Finished
+  * turns are saved to the server, best-effort. `preloaded` is used once, on
+  * first load.
   */
 export function useChat(model: Model, conversationId: number, preloaded?: ConversationOut | null) {
   const [messages, setMessages] = useState<Message[]>([])
   const [isStreaming, setIsStreaming] = useState(false)
-  // An absolute deadline, not a duration: see `useCountdown`. Null when there
-  // is no wait, which is the ordinary state. Not reset on a conversation
-  // switch - the budget it tracks is per account, not per thread.
+  // An absolute deadline (see `useCountdown`), or null. Per account, so a
+  // conversation switch does not reset it.
   const [cooldownUntil, setCooldownUntil] = useState<number | null>(null)
-  // What the user typed when a send was refused, handed back to the composer so
-  // a limit they did not know about does not cost them their sentence.
+  // The refused message, returned to the composer so it is not lost.
   const [restoreText, setRestoreText] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const cooldownRef = useRef<number | null>(null)
-  // Kept in a ref so the effect below can read the current preload without
-  // taking it as a dependency: a new object identity from the parent must not
-  // re-run a transcript load that has already happened.
+  // A ref, so a new object from the parent does not re-run the load.
   const preloadedRef = useRef(preloaded)
   preloadedRef.current = preloaded
   // Which conversation ids have already had their preload spent.
   const consumedRef = useRef<Set<number>>(new Set())
-  // The id this effect last started loading. StrictMode reruns it once after
-  // mount, and without this guard the rerun would find `consumedRef` marked
-  // and fall through to a duplicate `getConversation`. Storing the id, not a
-  // boolean, keeps a genuine switch back free to refetch.
+  // The id last loaded, so StrictMode's rerun does not fetch twice.
   const loadStartedForRef = useRef<number | null>(null)
 
   useEffect(() => {
-    // Checked first, before any state reset: StrictMode's immediate
-    // mount-cleanup-remount would otherwise clear `messages` here and then
-    // bail out below without ever repopulating it.
+    // Checked before any reset, or StrictMode's remount would clear `messages`.
     if (loadStartedForRef.current === conversationId) return
     loadStartedForRef.current = conversationId
 
-    // A reply mid-flight belongs to the thread the user is leaving, not the
-    // one they are about to see - cut it off rather than let it keep filling
-    // a bubble that is no longer on screen.
+    // Abort a reply still streaming into the thread being left.
     abortRef.current?.abort()
     abortRef.current = null
     setIsStreaming(false)
@@ -100,8 +77,7 @@ export function useChat(model: Model, conversationId: number, preloaded?: Conver
         if (!cancelled) setMessages(toMessages(conversation.messages))
       })
       .catch(() => {
-        // Swallowed: a history that failed to load still leaves a usable,
-        // empty composer, which beats blocking the switch entirely.
+        // Swallowed: an empty composer is still usable.
       })
 
     return () => {
@@ -114,8 +90,7 @@ export function useChat(model: Model, conversationId: number, preloaded?: Conver
       try {
         await appendMessage(conversationId, message)
       } catch {
-        // Deliberately swallowed: a failed write is invisible to the user, and
-        // surfacing it would break up a conversation that otherwise worked.
+        // Swallowed: a failed save should not interrupt the chat.
       }
     },
     [conversationId],
@@ -131,11 +106,8 @@ export function useChat(model: Model, conversationId: number, preloaded?: Conver
   }, [])
 
   /**
-   * Chips are keyed by tool name, one running slot each: a `start` for a name
-   * already present resets that slot rather than piling on a second chip, so
-   * a tool called twice in one turn just re-runs its own chip in place. An
-   * `ok`/`failed` updates the matching slot's status and, when the finished
-   * frame carried any, its sources.
+   * One chip per tool name. A repeat `start` resets that chip. `ok` or
+   * `failed` updates its status and sources.
    */
   const updateToolActivity = useCallback((activity: ToolActivity) => {
     setMessages((prev) => {
@@ -161,9 +133,7 @@ export function useChat(model: Model, conversationId: number, preloaded?: Conver
     async (text: string) => {
       if (!text || abortRef.current) return
 
-      // Checked here as well as on the disabled button: the request is certain
-      // to be refused while the wait is live, and firing it anyway would show
-      // the user a second failure for a limit they are already waiting out.
+      // Also checked here, not just on the button, to avoid a second refusal.
       if (cooldownRef.current !== null && cooldownRef.current > Date.now()) {
         setRestoreText(text)
         return
@@ -179,8 +149,7 @@ export function useChat(model: Model, conversationId: number, preloaded?: Conver
       ])
       setIsStreaming(true)
 
-      // Assembled alongside the state updates so the completed turn can be
-      // persisted without reading it back out of a stale closure.
+      // Built alongside state, to save the turn without a stale closure.
       let assembled = ''
 
       try {
@@ -205,9 +174,7 @@ export function useChat(model: Model, conversationId: number, preloaded?: Conver
             continue
           }
           if (event.type === 'summarizing') {
-            // One slot per turn, overwritten: a reply can condense more than
-            // once (once on entry, once after a tool lap), and the user needs
-            // to see what is happening now, not a growing list of what did.
+            // One slot per turn, overwritten, since a reply can condense twice.
             setMessages((prev) => {
               const next = [...prev]
               const last = next[next.length - 1]
@@ -243,10 +210,7 @@ export function useChat(model: Model, conversationId: number, preloaded?: Conver
         // An abort is the user leaving, not a failure - nothing to record.
         if (isAbort(error)) return
 
-        // A rate limit is the one failure that is temporary, expected, and has
-        // an answer, so it says so in the user's own words rather than through
-        // GENERIC_FAILURE. "Something went wrong, please try again" would be
-        // both wrong - nothing went wrong - and the worst possible advice.
+        // A rate limit gets its own message, since "try again" is the wrong advice.
         const limited = error instanceof ApiError && error.status === 429
         const detail = limited ? (error as ApiError).message : GENERIC_FAILURE
 

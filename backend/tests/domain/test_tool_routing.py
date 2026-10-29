@@ -36,8 +36,7 @@ class TestEverythingElse:
             "What is 12 times 12?",
             "Read https://example.com and tell me what it says.",
             "Who is the CEO of Aurora Robotics?",
-            # "report" without a qualifier is as likely to be a public one, and
-            # a false positive here would redirect a search that was right.
+            # A bare "report" may be public.
             "What did the IPCC report say about sea levels?",
             "Which file format does Kubernetes use for manifests?",
         ],
@@ -58,13 +57,7 @@ class TestTheScanIsBounded:
 
 
 class TestAQuestionNamingAnOwnedDocument:
-    """The gap the phrase patterns cannot close.
-
-    Someone who uploads `budget-q3.pdf` and asks about it by name has used no
-    possessive and no document noun, so nothing above fires. The list of files
-    the account actually owns is what settles it - and it comes from the
-    database, so it is not something the model can argue with.
-    """
+    """Naming an owned file counts, even with no possessive or document noun."""
 
     @pytest.mark.parametrize(
         "text",
@@ -95,22 +88,17 @@ class TestAQuestionNamingAnOwnedDocument:
 
 class TestNameMatchingIsConservative:
     def test_a_name_must_be_a_whole_word(self) -> None:
-        # "budget" appearing inside a longer token is not a reference to the
-        # file - matching it would make half of every finance question private.
+        # Part of a longer word is not a match.
         assert not is_document_scoped("rebudgeting the quarter", document_names=["budget.pdf"])
         assert not is_document_scoped("budgetary policy", document_names=["budget.pdf"])
 
     @pytest.mark.parametrize("name", ["a.md", "no.txt", "q3.pdf", ".pdf"])
     def test_a_very_short_name_is_never_matched(self, name: str) -> None:
-        # A two- or three-character stem collides with ordinary words, and a
-        # file called `no.txt` would make every sentence containing "no"
-        # document-scoped.
+        # Short stems like `no.txt` would match ordinary words.
         assert not is_document_scoped("no, tell me about a q3 rebound", document_names=[name])
 
     def test_a_regex_special_filename_is_matched_literally(self) -> None:
-        # An unescaped name here would be both a wrong match and a way to get a
-        # pathological pattern onto the reply path, since the filename is user
-        # input. It must be treated as text, and only as text.
+        # A filename is user input, so it must be escaped, not run as a regex.
         names = ["(a+)+b.pdf"]
 
         assert is_document_scoped("open (a+)+b.pdf", document_names=names)

@@ -10,14 +10,10 @@ from app.domain.identity.errors import InvalidToken, TokenExpired
 
 
 class JwtAccessTokenCodec:
-    """
-    Issues and verifies access tokens, satisfying
-    `app.application.identity.ports.AccessTokenCodec`.
+    """Issues and verifies access tokens. Implements `AccessTokenCodec`.
 
-    A JWT because verification must not touch the database - this runs on every
-    authenticated request. The price is that an issued token cannot be withdrawn
-    before it expires, which is why the lifetime is minutes and why revocation
-    lives on the refresh token instead.
+    JWT, so verification needs no database. Tokens cannot be revoked, so they
+    live minutes. Revocation lives on the refresh token.
     """
 
     def __init__(self, secret: str, algorithm: str, ttl_seconds: int) -> None:
@@ -46,19 +42,14 @@ class JwtAccessTokenCodec:
             payload = jwt.decode(
                 token,
                 self._secret,
-                # A list of exactly the algorithm we issue with. Passing the
-                # token's own `alg` header back here is the classic JWT hole:
-                # "none" verifies anything, and HMAC-vs-RSA confusion lets a
-                # public key be used as a signing secret.
+                # Only our algorithm. Trusting the token's `alg` allows "none" attacks.
                 algorithms=[self._algorithm],
                 options={"require": ["exp", "sub"]},
             )
         except jwt.ExpiredSignatureError:
             raise TokenExpired() from None
         except jwt.PyJWTError as error:
-            # Includes a bad signature, a wrong algorithm and a missing claim.
-            # The reason is logged, never returned - it would tell a caller which
-            # part of their forgery to fix next.
+            # The reason is logged, never returned, so forgers learn nothing.
             logger.debug(f"Rejected an access token: {error}")
             raise InvalidToken() from None
 
@@ -66,8 +57,8 @@ class JwtAccessTokenCodec:
             user_id = int(payload["sub"])
             email = str(payload["email"])
         except (KeyError, TypeError, ValueError):
-            # A correctly signed token that is not one of ours - a stale format
-            # after a claim change, most likely.
+            # Signed, but an old claim format.
+
             raise InvalidToken("unrecognised claims") from None
 
         return TokenClaims(user_id=user_id, email=email)

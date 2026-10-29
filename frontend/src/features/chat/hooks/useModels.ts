@@ -3,19 +3,13 @@ import { fetchModels } from '../api'
 import type { Model } from '../types'
 
 /**
- * Used to seed state before the real list has arrived, and again if the
- * request fails outright — the composer's model select must never be empty.
+ * Used before the list loads or if it fails, so the select is never empty.
  */
 export const FALLBACK_MODELS: Model[] = ['qwen/qwen3.6-27b']
 export const FALLBACK_DEFAULT_MODEL: Model = FALLBACK_MODELS[0]
 
 /**
- * Fetches the available models once on mount.
- *
- * The backend is the source of truth for which models exist and can do tool
- * calling — this deliberately holds no hardcoded list beyond the fallback
- * above, so a model going away (as `groq/compound` did) doesn't require a
- * frontend change.
+ * Fetches the available models once on mount. The backend owns the list.
  */
 export function useModels() {
   const [models, setModels] = useState<Model[]>(FALLBACK_MODELS)

@@ -1,11 +1,4 @@
-"""`/ready` against the dependencies it exists to report on.
-
-The unit tests in `tests/application/test_readiness.py` prove what
-`CheckReadiness` does with a probe's answer. What they cannot prove is that the
-probes ask a real Postgres and a real Qdrant a question those servers
-understand - and a readiness endpoint that is wrong about that is worse than
-none, because it reports healthy while nothing works.
-"""
+"""The readiness probes against real Postgres and real Qdrant."""
 
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -14,8 +7,7 @@ from app.adapters.persistence.readiness import PostgresProbe
 from app.adapters.vector.readiness import QdrantProbe
 from app.application.health.use_cases.check_readiness import CheckReadiness
 
-# Reserved by IANA as "port 0 is not a port": nothing can be listening, on any
-# machine, so this is a refused connection rather than a flaky one.
+# Nothing listens on port 1, so the connection is refused, not flaky.
 UNREACHABLE_POSTGRES = "postgresql+psycopg://nobody:nobody@127.0.0.1:1/nowhere"
 UNREACHABLE_QDRANT = "http://127.0.0.1:1"
 
@@ -25,11 +17,7 @@ class TestPostgresProbe:
         await PostgresProbe(engine).check()
 
     async def test_a_refused_connection_is_not_ready(self) -> None:
-        """Asserted through the use case rather than on the driver's exception type.
-
-        Which exception psycopg raises for a refused socket is its business and
-        changes between versions; that the verdict is "not ready" is ours.
-        """
+        """Checked via the use case's verdict, not psycopg's exception type."""
         engine = create_async_engine(UNREACHABLE_POSTGRES)
         try:
             report = await CheckReadiness([PostgresProbe(engine)], timeout_seconds=5.0)()
@@ -43,12 +31,7 @@ class TestQdrantProbe:
     async def test_it_passes_against_a_live_server_with_no_collections(
         self, qdrant: AsyncQdrantClient
     ) -> None:
-        """A brand-new deployment has uploaded nothing yet, and is still ready.
-
-        The collection is created on first upload. A probe that waited for it
-        would fail the very first rollout of a new environment, which is the one
-        rollout nobody can debug by comparing against a working instance.
-        """
+        """A new deployment with no collection yet is still ready."""
         await QdrantProbe(qdrant).check()
 
     async def test_a_refused_connection_is_not_ready(self) -> None:

@@ -1,7 +1,6 @@
-"""Conversation use cases against fakes — no database, no network.
+"""Conversation use cases against fakes. No database, no network.
 
-Reply generation is no longer tested here: it is now a LangGraph agent, and its
-tests live beside it in `tests/application/test_agent_graph.py`.
+Reply generation is tested in `tests/application/test_agent_graph.py`.
 """
 
 import pytest
@@ -86,9 +85,7 @@ class TestConversationUseCases:
         await DeleteConversation(factory, remove_document=FakeDocumentRemover())(3, OWNER)
 
         assert factory.repository.rows == {}
-        # The last unit of work, not the first: the read that finds the thread
-        # and its attachments is separate from the write that removes it,
-        # because removing a document opens a unit of work of its own.
+        # The last unit of work does the delete. The first one only reads.
         assert factory.issued[-1].committed
 
     async def test_delete_missing_is_reported_not_swallowed(self) -> None:
@@ -135,8 +132,7 @@ class TestConversationLimit:
 
 
 class TestDeletingAThreadTakesItsAttachments:
-    """The database cascade removes the rows. It cannot reach the vector store
-    or the disk, so the documents are removed one at a time first."""
+    """Documents are removed first, since the cascade cannot reach vectors or files."""
 
     async def test_it_removes_every_attached_document(self) -> None:
         factory = UnitOfWorkSpy()
@@ -153,8 +149,7 @@ class TestDeletingAThreadTakesItsAttachments:
         assert remover.removed == [(attached.id, OWNER)]
 
     async def test_a_document_that_will_not_delete_still_lets_the_thread_go(self) -> None:
-        # A vector store that will not answer must not leave someone unable to
-        # delete their own conversation.
+        # A vector store outage must not block deletion.
         factory = UnitOfWorkSpy()
         factory.repository.rows[3] = Conversation(title="T", model_type="m", owner_id=OWNER, id=3)
         await factory.documents.add(
@@ -185,13 +180,7 @@ class TestDeletingAThreadTakesItsAttachments:
 
 
 class TestOwnershipIsolation:
-    """Someone else's conversation must be indistinguishable from a missing one.
-
-    These are the tests the whole ownership change exists for. Each one asserts
-    both halves: the stranger is refused, *and* the refusal looks exactly like a
-    404 rather than a 403 - a distinguishable "forbidden" would confirm the id
-    exists and belongs to somebody.
-    """
+    """A stranger's conversation must look exactly like a missing one (404, not 403)."""
 
     def _existing(self) -> UnitOfWorkSpy:
         factory = UnitOfWorkSpy()

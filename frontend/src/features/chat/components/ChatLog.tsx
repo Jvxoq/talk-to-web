@@ -25,9 +25,7 @@ export function ChatLog({ messages, isStreaming }: ChatLogProps) {
   }, [messages])
 
   return (
-    // role="log" carries an implicit polite live region, which is the right
-    // semantic for a transcript. No explicit aria-live: token-level updates
-    // would otherwise re-announce the assistant turn on every frame.
+    // role="log" is already a polite live region. No aria-live, or every token is announced.
     <div className="chat" ref={scrollRef} role="log">
       {messages.length === 0 && <EmptyState />}
 

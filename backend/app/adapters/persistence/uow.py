@@ -17,18 +17,12 @@ from app.application.ingestion.ports import DocumentRepository
 
 
 class SqlAlchemyUnitOfWork:
-    """
-    Owns an `AsyncSession` for the duration of one `async with` block.
+    """Owns one `AsyncSession` per `async with` block. Implements `UnitOfWork`.
 
-    Structurally satisfies `app.application.common.uow.UnitOfWork`. Leaving the
-    block without calling `commit()` rolls back, so a use case that raises
-    halfway through never leaves a half-written conversation behind.
+    Leaving without `commit()` rolls back.
     """
 
-    # Only bound once the unit of work is entered - a repository cannot exist
-    # without the session it writes through. Annotated as the port rather than
-    # the concrete class: a protocol's attributes are invariant, so narrowing it
-    # here would stop this class satisfying `UnitOfWork` at all.
+    # Bound on enter. Typed as the ports, or this would not satisfy `UnitOfWork`.
     conversations: ConversationRepository
     users: UserRepository
     refresh_tokens: RefreshTokenRepository
@@ -40,8 +34,7 @@ class SqlAlchemyUnitOfWork:
         self._committed = False
 
     async def __aenter__(self) -> Self:
-        # An AsyncSession is not task-safe, so a unit of work must never be
-        # re-entered or shared: fail loudly instead of interleaving statements.
+        # AsyncSession is not task-safe, so re-entry fails loudly.
         if self._session is not None:
             raise RuntimeError("This unit of work is already open")
 
@@ -72,8 +65,8 @@ class SqlAlchemyUnitOfWork:
         try:
             await session.commit()
         except Exception:
-            # Leave the session usable and the data consistent before the caller
-            # sees the failure; a failed commit otherwise strands the transaction.
+            # Roll back so the transaction is not left stranded.
+
             await session.rollback()
             logger.exception("Commit failed, rolled back")
             raise

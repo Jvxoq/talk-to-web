@@ -11,8 +11,7 @@ function getInitialTheme(): Theme {
 }
 
 /**
- * Dark mode swaps the ink and paper roles on the token block in globals.css —
- * it isn't a second palette, just #000 and #FFF trading places.
+ * Dark mode swaps ink and paper in globals.css. Not a second palette.
  */
 export function useTheme() {
   const [theme, setTheme] = useState<Theme>(getInitialTheme)

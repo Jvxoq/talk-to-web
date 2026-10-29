@@ -23,13 +23,7 @@ class User:
 
 @dataclass(slots=True)
 class RefreshToken:
-    """One long-lived session, stored as a fingerprint rather than a secret.
-
-    The secret itself is never persisted: a database backup, a log line or a
-    stray `SELECT *` would otherwise hand over every live session. What is kept
-    is a one-way fingerprint, which is enough to recognise a token the client
-    presents and useless to anyone who reads it.
-    """
+    """One long-lived session, stored as a one-way fingerprint, never the secret."""
 
     user_id: int
     fingerprint: str
@@ -46,11 +40,7 @@ class RefreshToken:
         return self.revoked_at is not None
 
     def revoke(self, now: datetime) -> None:
-        """End this session. Revoking an already-revoked token changes nothing.
+        """End this session. Idempotent, so the first revoke time is kept."""
 
-        Idempotent on purpose: logging out twice, or two tabs logging out at
-        once, is not an error, and moving the timestamp would misreport when the
-        session actually ended.
-        """
         if self.revoked_at is None:
             self.revoked_at = now

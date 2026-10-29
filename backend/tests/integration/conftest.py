@@ -8,16 +8,8 @@ Everything here is deselected by default (`-m "not integration"` in
     INTEGRATION_QDRANT_URL=http://localhost:6333 \
     uv run pytest -m integration
 
-Two deliberate choices about that URL:
-
-*Its own variables, not `DATABASE_URL`.* These tests create databases, drop
-them, and run `alembic downgrade base`. Reading the same variable the
-application reads is how a stray `.env` gets a developer's real database
-dropped, and the whole point of an integration suite is that it is destructive.
-
-*It names a maintenance database, not the one under test.* Each run creates a
-scratch database of its own and drops it at the end, so two runs on one server
-- a laptop and a container, or two CI jobs - never share a schema.
+Its own variables, not `DATABASE_URL`, because these tests drop databases.
+The URL names a maintenance database. Each test gets its own scratch database.
 """
 
 import os
@@ -48,14 +40,10 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 _DATABASE_URL_VAR = "INTEGRATION_DATABASE_URL"
 _QDRANT_URL_VAR = "INTEGRATION_QDRANT_URL"
 
-# Same rewrite as `app.composition._plain_dsn`, and duplicated rather than
-# imported on purpose: importing the composition root would make this fixture
-# module depend on every adapter and client the application builds.
+# Same as `app.composition._plain_dsn`. Copied to avoid importing every adapter.
 _SQLALCHEMY_DRIVER = re.compile(r"^(postgresql|postgres)\+[a-z0-9_]+://")
 
-# The settings a subprocess needs before `Settings` will construct at all. None
-# of them are used by a migration; they are here so `migrations/env.py` can read
-# the URL out of the same settings object the application uses.
+# Required settings that a migration never uses, so `Settings` can load.
 DUMMY_SECRETS = {
     "ENVIRONMENT": "test",
     "LLM_API_KEY": "test",
@@ -67,15 +55,9 @@ DUMMY_SECRETS = {
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Mark everything in this package, so no test here can be forgotten.
+    """Mark every test in this package as integration.
 
-    A per-file marker is one new file away from a test that runs in the default
-    suite, fails on a missing Postgres, and gets blamed on the change that
-    happened to land beside it.
-
-    The path check is not optional: pytest hands this hook every collected item
-    in the run, not just the ones under the conftest that defines it, so without
-    it a single `-m integration` would mark the entire suite.
+    The path check matters: this hook sees every collected test in the run.
     """
     here = Path(__file__).parent
     for item in items:
@@ -113,43 +95,28 @@ def _with_database(url: str, name: str) -> str:
 
 @pytest.fixture
 def scratch_database(admin_url: str) -> Iterator[str]:
-    """A brand-new, empty database, dropped when the test ends.
-
-    Function-scoped and cheap: `CREATE DATABASE` on a local Postgres costs
-    milliseconds, and a migration test that starts from an empty database is
-    the only kind whose result means anything.
-    """
+    """A fresh empty database per test, dropped at the end."""
     name = f"tttw_it_{uuid.uuid4().hex[:12]}"
     with psycopg.connect(plain_dsn(admin_url), autocommit=True) as connection:
-        # Not parameterised because an identifier cannot be: psycopg's
-        # `sql.Identifier` is what quotes it safely, and `name` is generated
-        # here from a uuid rather than taken from anywhere a caller controls.
+        # Identifiers cannot be parameters. `sql.Identifier` quotes the uuid name.
         connection.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
     try:
         yield _with_database(admin_url, name)
     finally:
         with psycopg.connect(plain_dsn(admin_url), autocommit=True) as connection:
-            # A connection this suite forgot to close would otherwise make the
-            # DROP hang until the test run's own pool is garbage collected.
+            # Kill leftover connections, or the DROP hangs.
             connection.execute(
                 sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(name))
             )
 
 
 def alembic(*args: str, database_url: str) -> subprocess.CompletedProcess[str]:
-    """Run the real `alembic` CLI against `database_url`.
-
-    A subprocess rather than `alembic.command`, because the thing worth testing
-    is the command compose and CI actually run - `alembic.ini`, `env.py`, the
-    settings lookup and all - not a Python API that bypasses most of it.
-    """
+    """Run the real `alembic` CLI, as compose and CI do."""
     environment = {
         **os.environ,
         **DUMMY_SECRETS,
         "DATABASE_URL": database_url,
-        # Set explicitly rather than left to fall back, so a developer's own
-        # `DATABASE_MIGRATION_URL` in the environment cannot redirect the
-        # migration at their real database.
+        # Set explicitly, so a developer's own value cannot redirect it.
         "DATABASE_MIGRATION_URL": database_url,
     }
     return subprocess.run(  # noqa: S603
@@ -194,13 +161,7 @@ async def session(
 
 @pytest.fixture
 async def owner(session: AsyncSession) -> UserModel:
-    """A committed user to hang conversations off.
-
-    Committed rather than flushed, because the tests below open a *second*
-    session to prove isolation, and a second session in real Postgres cannot see
-    an uncommitted row - which is exactly the difference from the SQLite suite,
-    where every session shares one connection.
-    """
+    """A committed user, so a second Postgres session can see it."""
     row = UserModel(email=Email.sanitize("owner@example.com").value, password_hash="$argon2id$stub")
     session.add(row)
     await session.commit()

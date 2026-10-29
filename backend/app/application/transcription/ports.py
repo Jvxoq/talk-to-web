@@ -1,9 +1,7 @@
-"""What the transcription use case needs from both sides of the bridge.
+"""Ports for both sides of the transcription bridge.
 
-Two directions meet here. `ClientTransport` is the browser side, implemented by
-the API layer (the WebSocket *is* the delivery mechanism). `LiveTranscriber` is
-the provider side, implemented by an adapter. The use case in between never
-names WebSockets or Deepgram.
+`ClientTransport` is the browser side (the API layer). `LiveTranscriber` is the
+provider side (an adapter). The use case names neither WebSockets nor Deepgram.
 """
 
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -38,12 +36,7 @@ class ClientTransport(Protocol):
 
 
 class RateLimiter(Protocol):
-    """Counts requests against a key and refuses the ones over budget.
-
-    Declared here rather than imported from chat or ingestion, even though the
-    shape is identical: a port belongs to the layer that consumes it. One
-    adapter satisfies all three, structurally, without knowing the others exist.
-    """
+    """Counts requests per key and refuses those over budget. Same shape as the others."""
 
     async def hit(self, key: str) -> None:
         """Record one request, raising `RateLimited` if the budget is spent."""
@@ -66,12 +59,8 @@ class TranscriptionSession(Protocol):
         ...
 
     async def end_stream(self) -> None:
-        """Close `transcripts()` once everything already received has been read.
+        """End `transcripts()` after the already-received items are read."""
 
-        This is what lets a caller stop relaying without discarding transcripts
-        the provider has already delivered: the iterator finishes rather than
-        being cancelled mid-flight.
-        """
         ...
 
     def transcripts(self) -> AsyncIterator[Transcript]: ...

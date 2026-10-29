@@ -1,10 +1,8 @@
 /**
- * Waiting for a sleeping backend to come back.
+ * Waits for the sleeping free Render backend to wake up.
  *
- * The free Render instance stops after fifteen minutes without traffic, and the
- * next request pays the container start plus `alembic upgrade head`. Nothing
- * else in the app can tell that apart from being signed out, so the wait
- * happens here, before anything that needs the backend is mounted.
+ * Runs before anything that needs the backend, so a cold start does not look
+ * like being signed out.
  */
 
 const HEALTH_URL = '/health'
@@ -34,10 +32,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * One probe. True only for a real answer from the real backend.
- *
- * The body is checked, not just the status: a `/health` missing from the proxy
- * list falls through to the SPA catch-all and answers 200 with `index.html`.
+ * One probe. Checks the body too, since a missing proxy route returns `index.html` with 200.
  */
 async function probe(signal: AbortSignal): Promise<boolean> {
   try {
@@ -51,17 +46,13 @@ async function probe(signal: AbortSignal): Promise<boolean> {
       (body as Record<string, unknown>).status === 'ok'
     )
   } catch {
-    // A network error, a timeout, or an HTML body that will not parse. During a
-    // cold start all three are the expected answer.
+    // Network error, timeout or HTML: all expected during a cold start.
     return false
   }
 }
 
 /**
- * Polls `/health` until the backend answers or the deadline passes.
- *
- * Never rejects: the caller renders a screen from the result, and a cold start
- * is not an error. An aborted signal ends the loop as `'unreachable'`.
+ * Polls `/health` until the backend answers or time runs out. Never rejects.
  */
 export async function waitForBackend(
   options: { signal?: AbortSignal; onAttempt?: () => void } = {},
@@ -72,8 +63,7 @@ export async function waitForBackend(
   while (!signal?.aborted) {
     onAttempt?.()
 
-    // Two reasons to stop a probe: the caller unmounted, or the attempt hung.
-    // `AbortSignal.any` folds them into the one signal `fetch` accepts.
+    // Stop on unmount or on a hung attempt.
     const timeout = AbortSignal.timeout(ATTEMPT_TIMEOUT_MS)
     const attemptSignal = signal ? AbortSignal.any([signal, timeout]) : timeout
 

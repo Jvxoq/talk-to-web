@@ -1,21 +1,13 @@
-"""What a readiness check reports.
-
-Deliberately says nothing about status codes or JSON: the use case decides
-whether this process can serve traffic, and `app/api/v1/routers/health.py`
-decides what that looks like on the wire.
-"""
+"""What a readiness check reports. The router decides the wire format."""
 
 from dataclasses import dataclass
 
 
 @dataclass(frozen=True, slots=True)
 class ComponentReadiness:
-    """One dependency's verdict.
+    """One dependency's verdict: a name and a boolean.
 
-    No exception, message or traceback: a probe failure carries connection
-    strings and credentials, and `/ready` is the one endpoint that is reachable
-    without a token. The detail goes to the log; the caller gets a name and a
-    boolean, which is all a rollout gate can act on anyway.
+    No error text, because `/ready` is public and errors can hold secrets.
     """
 
     name: str
@@ -28,10 +20,6 @@ class ReadinessReport:
 
     @property
     def ready(self) -> bool:
-        """Every dependency answered. A single failure fails the whole check.
+        """True only if every dependency answered."""
 
-        There is no partial readiness here on purpose: a request that needs
-        Qdrant fails just as hard as one that needs Postgres, so a process
-        missing either should not be sent traffic.
-        """
         return all(component.ready for component in self.components)

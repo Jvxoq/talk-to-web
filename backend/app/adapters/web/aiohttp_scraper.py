@@ -11,29 +11,20 @@ from yarl import URL
 from app.domain.chat.errors import UnsafeUrl
 from app.domain.chat.value_objects import FetchableUrl, is_blocked_address
 
-# One page's worth of text is capped so a single enormous document cannot eat
-# the whole model context window (or the whole prompt budget for the other URLs).
+# Per-page text cap, so one huge page cannot fill the context window.
 MAX_PAGE_CHARS = 20_000
 
-# `response.text()` reads until the server stops sending. A link to a disk image
-# is enough to exhaust memory, so the body is read in slices and abandoned once
-# it is clearly larger than any article. This is generous next to MAX_PAGE_CHARS
-# on purpose: markup is mostly not text.
+# Byte cap on the body, so a link to a huge file cannot exhaust memory.
+# Larger than MAX_PAGE_CHARS because markup is mostly not text.
 MAX_PAGE_BYTES = 2 * 1024 * 1024
 
-# Redirects are followed by hand rather than by aiohttp, because a guard that
-# only inspects the first URL is no guard at all - a public host is free to
-# answer with "Location: http://169.254.169.254/". Each hop is re-checked, and
-# the chain is short because no honest article needs more.
+# Redirects are followed by hand so every hop is checked for private addresses.
 MAX_REDIRECTS = 3
 
 _READABLE_CONTENT_TYPES = ("text/", "application/xhtml+xml", "application/xml")
 
-# aiohttp's default User-Agent ("Python/3.x aiohttp/3.x") is rejected outright by
-# a great many sites - Wikimedia answers it with a flat 403 under its user-agent
-# policy, which silently cost us the content of every wikipedia.org link. The
-# policy asks for a descriptive agent that identifies the client and gives a way
-# to make contact, so that is what we send.
+# Many sites (Wikimedia included) reject aiohttp's default User-Agent with a 403.
+# They ask for a descriptive agent with contact details.
 REQUEST_HEADERS = {
     "User-Agent": (
         "TalkToWeb/1.0 (+https://github.com/Jvxoq/talk-to-web; "
@@ -45,13 +36,9 @@ REQUEST_HEADERS = {
 
 
 class AiohttpWebContentFetcher:
-    """
-    Reads the visible text of the pages a user linked to.
+    """Reads the visible text of the pages a user linked to.
 
-    Satisfies `app.application.chat.ports.WebContentFetcher`. The session is
-    injected and lives for the process, not the request: creating a
-    `ClientSession` per call throws away connection pooling and DNS caching, and
-    is the single most common aiohttp performance mistake.
+    The session lives for the whole process, to keep connection pooling.
     """
 
     def __init__(
@@ -61,13 +48,7 @@ class AiohttpWebContentFetcher:
         self._max_page_chars = max_page_chars
 
     async def fetch_all(self, urls: Sequence[str]) -> str:
-        """Fetch every URL concurrently and join whatever came back.
-
-        Each page is truncated to `MAX_PAGE_CHARS` here, at the point where the
-        result is about to be folded into one shared blob for a chat turn - not
-        inside `_fetch`, which also backs `fetch()` below and has to hand back
-        the full page for something that is about to be indexed.
-        """
+        """Fetch every URL concurrently and join the results, each page truncated."""
         if not urls:
             return ""
 
@@ -78,8 +59,7 @@ class AiohttpWebContentFetcher:
 
         texts: list[str] = []
         for url, result in zip(urls, results, strict=True):
-            # One unreachable link must not lose the content of the others, so
-            # failures are logged with their URL and dropped rather than raised.
+            # Log and skip a failed link, so the others still count.
             if isinstance(result, BaseException):
                 logger.warning(f"Could not fetch {url}: {result}")
                 continue
@@ -89,14 +69,10 @@ class AiohttpWebContentFetcher:
         return " ".join(texts)
 
     async def _fetch(self, url: str) -> str:
-        """
-        Read one page, refusing any address that is not on the public internet.
+        """Read one page, refusing any non-public address.
 
-        Residual risk worth naming: this resolves the hostname, and then aiohttp
-        resolves it again when it connects. A DNS entry that changes between the
-        two answers - rebinding - slips through the gap. Closing it means a
-        custom connector that dials the address already checked, which is more
-        machinery than this earns; the window is small and the record is here.
+        Known gap: aiohttp resolves the host again on connect, so DNS rebinding
+        between the two lookups is not caught.
         """
         current = FetchableUrl.parse(url)
 
@@ -110,8 +86,7 @@ class AiohttpWebContentFetcher:
             ) as response:
                 location = response.headers.get("Location")
                 if response.status in (301, 302, 303, 307, 308) and location:
-                    # A relative Location is resolved against the hop it came
-                    # from, then re-checked from scratch like any other URL.
+                    # Resolve a relative Location, then check it like any URL.
                     current = FetchableUrl.parse(str(response.url.join(URL(location))))
                     continue
 
@@ -125,11 +100,7 @@ class AiohttpWebContentFetcher:
 
     @staticmethod
     async def _refuse_private_targets(url: FetchableUrl) -> None:
-        """Resolve the host and refuse if *any* answer points inside the network.
-
-        Any, not the first: a hostname is free to publish one public address and
-        one private one, and aiohttp may pick either when it connects.
-        """
+        """Refuse if any resolved address is private, since aiohttp may pick any of them."""
         loop = asyncio.get_running_loop()
         try:
             infos = await loop.getaddrinfo(url.host, url.port)
@@ -143,11 +114,7 @@ class AiohttpWebContentFetcher:
 
     @staticmethod
     def _refuse_unreadable_type(response: aiohttp.ClientResponse, url: str) -> None:
-        """Only parse things that could plausibly be a page.
-
-        The parser wants markup. Pointing it at a video or a tarball spends the
-        whole byte budget to produce nothing.
-        """
+        """Refuse content types that are not pages."""
         content_type = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         if not content_type.startswith(_READABLE_CONTENT_TYPES):
             raise UnsafeUrl(url, f"content type {content_type or 'unknown'!r} is not a page")
@@ -164,33 +131,24 @@ class AiohttpWebContentFetcher:
                 logger.debug(f"Stopped reading {url} at {size} bytes")
                 break
 
-        # `get_encoding()` is not available here: it sniffs the body, and it
-        # raises unless aiohttp buffered the whole thing itself - which is
-        # exactly what this method exists to avoid. The declared charset is
-        # what is left, and utf-8 is the right guess when there is none.
+        # `get_encoding()` needs the full body, so use the declared charset or utf-8.
         encoding = response.charset or "utf-8"
         try:
             return b"".join(chunks).decode(encoding, errors="replace")
         except LookupError:
-            # A server is free to name an encoding Python has never heard of.
+            # Unknown encoding name from the server.
             return b"".join(chunks).decode("utf-8", errors="replace")
 
     @staticmethod
     def _parse(html: str, url: str) -> str:
-        """
-        Pull the readable body text out of a page, in full.
+        """Pull the readable body text out of a page, untruncated.
 
-        The legacy parser only ever looked for Wikipedia's `div#bodyContent`, so
-        every other site on the internet silently produced an empty string. The
-        fallbacks below mean a normal article page still yields its text.
-
-        Truncation is not this method's job: `fetch()` wants the whole page for
-        indexing, and only `fetch_all` needs a size cap, so that cap is applied
-        by its caller instead of here.
+        Tries Wikipedia's body, then `main`, then `article`, then the whole page.
         """
         soup = BeautifulSoup(html, "lxml")
 
-        # `select_one` rather than `find` so the result is always a Tag or None.
+        # `select_one` always returns a Tag or None.
+
         element = (
             soup.select_one("div#bodyContent")
             or soup.select_one("main")

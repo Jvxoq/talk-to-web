@@ -7,18 +7,11 @@ from pypdf import PdfReader
 
 
 class PypdfTextExtractor:
-    """
-    Reads the text layer out of a PDF.
-
-    Satisfies `app.application.ingestion.ports.TextExtractor`. Unlike the legacy
-    extractor it writes no sibling `.txt` file - nothing ever read that file, and
-    writing it doubled the disk footprint of every upload.
-    """
+    """Reads the text layer of a PDF. Implements `TextExtractor`."""
 
     async def extract(self, reference: str) -> str:
         """Extract the text of a stored PDF."""
-        # pypdf is entirely blocking, so it runs off the event loop; a 200-page
-        # scan would otherwise stall every other request in the process.
+        # pypdf blocks, so it runs in a thread.
         return await asyncio.to_thread(self._read, reference)
 
     @staticmethod
@@ -27,8 +20,8 @@ class PypdfTextExtractor:
         pages = [text for page in reader.pages if (text := page.extract_text())]
 
         if not pages:
-            # A scanned PDF with no text layer is a normal outcome, not a crash.
-            # Whether an empty document is an error is the use case's decision.
+            # A scanned PDF has no text. The use case decides if that is an error.
+
             logger.warning(f"No extractable text in {filepath}")
             return ""
 

@@ -9,11 +9,9 @@ from app.domain.ingestion.value_objects import Chunk, DocumentName
 
 
 class FileStorage(Protocol):
-    """Somewhere to put an upload. The reference it returns is opaque.
+    """Stores uploads and returns an opaque reference.
 
-    `owner_id` is not metadata: it is part of where the file goes. Two people
-    uploading `report.pdf` into one namespace overwrite each other, and the
-    second one silently gets the first one's document back.
+    `owner_id` is part of the path, so two users' `report.pdf` never collide.
     """
 
     async def save(
@@ -40,15 +38,10 @@ class Embedder(Protocol):
 
 
 class VectorIndex(Protocol):
-    """A collection of embedded passages, partitioned by who uploaded them and
-    tagged with the document each passage came from.
+    """Embedded passages, split by owner and tagged by document.
 
-    Every method that reads or writes passages names an owner. The alternative -
-    one shared space, filtered afterwards - is what indexing used to do: a
-    single upload wiped the store for everyone, and every search read
-    everyone's documents. `document_id` narrows that same discipline one level
-    further, to the document: without it, deleting one upload could only ever
-    mean deleting every upload an owner had made.
+    Every read and write names an owner. `document_id` lets one upload be
+    deleted without touching the owner's others.
     """
 
     async def ensure(self, dimensions: int) -> None:
@@ -79,12 +72,7 @@ class VectorIndex(Protocol):
 
 
 class DocumentRepository(Protocol):
-    """The persisted record of every document an owner has uploaded.
-
-    `owner_id` shapes every method here the same way it shapes
-    `ConversationRepository`: a document is only ever read, listed or deleted
-    through its owner, never by id alone.
-    """
+    """Stored document records, always accessed through their owner."""
 
     async def get(self, document_id: int, owner_id: int) -> UploadedDocument | None: ...
 
@@ -108,70 +96,38 @@ class DocumentRepository(Protocol):
 class DocumentLock(Protocol):
     """Serializes indexing against deletion for one document.
 
-    `IndexDocument` writes a document's vectors at the end of a long run -
-    extraction and embedding take tens of seconds - and `DeleteDocument` can
-    arrive at any moment, including from the user pressing remove while the
-    indexing is still running. Without an ordering between them a delete that
-    lands mid-indexing removes what exists so far and reports success, and the
-    indexer then upserts every point anyway: orphaned vectors, retrievable on
-    every turn, with no row left for any later delete to find them by.
-
-    Both use cases hold this lock around their writes. The delete waits for an
-    indexing that is already writing, then cleans everything up; an indexing
-    that has not reached its writes yet finds the row gone when it re-checks
-    inside the lock and stops before upserting. Re-checking inside the lock is
-    the point of the port: only there is "the row still exists" true all the
-    way through to the upsert.
+    Without it, a delete during indexing succeeds and the indexer then upserts
+    orphaned vectors that no later delete can find. Both use cases hold the
+    lock around their writes. The indexer re-checks the row inside the lock
+    and stops if it is gone.
     """
 
     def hold(self, document_id: int) -> AbstractAsyncContextManager[None]:
-        """Hold the lock for one document for the duration of the context.
-
-        Synchronous and returning a context manager, not itself async: the
-        lock is taken when the caller enters the `async with`, which is what
-        keeps both use cases' hold sites readable as plain blocks.
-        """
+        """Hold the lock for one document while the `async with` block runs."""
         ...
 
 
 class DocumentRemover(Protocol):
-    """Removes one document completely: its vectors, its file and its row.
+    """Removes one document completely: vectors, file and row.
 
-    A port over a use case rather than over an adapter, which is unusual here
-    and deliberate. Two callers need "get rid of this document, entirely", and
-    the three steps that make it entire already live together in
-    `DeleteDocument`. Re-deriving them at each call site is how one of them
-    ends up deleting the row and leaving the vectors behind.
+    A port over the `DeleteDocument` use case, so no caller forgets a step.
     """
 
     async def __call__(self, document_id: int, owner_id: int) -> None: ...
 
 
 class DocumentSummarizer(Protocol):
-    """Writes the few sentences that say what a document is about.
+    """Writes a few sentences about what a document covers.
 
-    Declared here rather than imported from the chat context, for the same
-    reason `RateLimiter` is declared twice: a port belongs to the layer that
-    consumes it, and ingestion needing a summary is not ingestion depending on
-    the agent. `Condenser` happens to satisfy this structurally, without
-    knowing that ingestion exists.
-
-    Returning `None` rather than raising is part of the contract. A digest is an
-    enhancement - a document that could not be summarized is still fully
-    indexed and fully searchable - so a summarizer having a bad day must cost
-    the upload nothing.
+    `Condenser` matches it by shape. Returns `None` on failure instead of
+    raising, because the document is still searchable without a summary.
     """
 
     async def summarize_document(self, name: str, text: str) -> str | None: ...
 
 
 class RateLimiter(Protocol):
-    """Counts uploads against a key and refuses the ones over budget.
-
-    Declared here for the same reason as the chat one: the consumer owns its
-    port. A single adapter satisfies every copy, because `Protocol` matches on
-    methods rather than on ancestry.
-    """
+    """Counts uploads per key and refuses those over budget. Same shape as the chat port."""
 
     async def hit(self, key: str) -> None:
         """Record one upload, raising `RateLimited` if the budget is spent."""

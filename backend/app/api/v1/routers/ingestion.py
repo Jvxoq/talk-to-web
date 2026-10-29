@@ -30,8 +30,7 @@ async def _chunks(file: UploadFile, size: int) -> AsyncIterator[bytes]:
 @router.post("/upload/file/")
 async def upload_file(
     file: Annotated[UploadFile, File()],
-    # Part of the multipart body rather than the path, because the file and the
-    # thread it is attached to arrive together and neither is meaningful alone.
+    # In the multipart body, alongside the file it belongs to.
     conversation_id: Annotated[int, Form()],
     upload_document: UploadDocumentDep,
     index_document: IndexDocumentDep,
@@ -48,9 +47,8 @@ async def upload_file(
         )
     )
 
-    # Fire-and-forget: BackgroundTasks dies with the process, has no retry and no
-    # visibility. That is acceptable while a failed index only costs the user a
-    # re-upload; the day indexing has to be guaranteed it belongs on a real queue.
+    # Fire-and-forget: no retry, lost on restart. Fine while a failure only costs
+    # a re-upload. Needs a real queue once indexing must be guaranteed.
     background.add_task(
         index_document,
         result.reference,
@@ -76,8 +74,9 @@ async def list_documents(
     return [DocumentOut.from_domain(document) for document in documents]
 
 
-# POST rather than DELETE, for the same reason as `/conversations/{id}/delete`:
-# CORS on this app allows only GET, POST and OPTIONS across origins.
+# POST, not DELETE, because CORS allows only GET, POST and OPTIONS.
+
+
 @router.post("/documents/{document_id}/delete", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_document(
     document_id: int,

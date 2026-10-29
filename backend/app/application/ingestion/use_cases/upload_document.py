@@ -11,24 +11,13 @@ from app.domain.ingestion.entities import UploadedDocument
 from app.domain.ingestion.errors import UnknownConversation, UnsupportedDocumentType
 from app.domain.ingestion.value_objects import DocumentName
 
-# What each accepted media type must actually look like: the extension the name
-# has to carry, and the bytes the file has to start with. Every PDF begins
-# "%PDF-", and that is the one claim about the file a client cannot simply
-# assert. Widening the accepted set means adding a row here, which is deliberate
-# - a type with no signature to check would be accepted on the sender's word.
-#
-# Plain text and markdown have no reliable magic-byte signature - any byte
-# sequence is valid UTF-8 text, so there is nothing to sniff. Those two rows
-# carry `None` and are trusted on content-type and extension alone; every
-# other row keeps a real signature, and `_signed` only skips the byte-check
-# for the `None` case rather than weakening it globally.
+# Accepted media types: required extension and required first bytes.
+# Text and markdown have no signature (`None`), so only type and extension are checked.
 _ACCEPTED: dict[str, tuple[str, bytes | None]] = {
     "application/pdf": (".pdf", b"%PDF-"),
     "text/plain": (".txt", None),
     "text/markdown": (".md", None),
-    # A .docx is a zip archive, so this is a weak signature - it collides with
-    # any zip-based format - but it is still a real claim a plain rename
-    # cannot fake, unlike the txt/md rows above.
+    # Weak: any zip matches. Still more than a rename can fake.
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (
         ".docx",
         b"PK\x03\x04",
@@ -37,16 +26,10 @@ _ACCEPTED: dict[str, tuple[str, bytes | None]] = {
 
 
 class UploadDocument:
-    """
-    Take an upload from an untrusted client to a safe stored reference.
+    """Store an untrusted upload safely.
 
-    Type and size are checked before anything is written: the size limit is
-    handed to the storage port rather than measured here so an oversized file
-    is refused while streaming, not after it has landed on disk.
-
-    The declared content type is checked too, but it is not evidence - it is a
-    header the client wrote, and a renamed executable arrives with whatever type
-    the sender chose. The first bytes of the file are what decide.
+    Storage enforces the size limit while streaming. The content type is a
+    client header, so the file's first bytes decide its type.
     """
 
     def __init__(
@@ -68,31 +51,18 @@ class UploadDocument:
         self._allowed_content_types = allowed_content_types
 
     async def __call__(self, data: UploadDocumentInput) -> UploadDocumentResult:
-        # One counter shared with every chat reply, URL ingestion and
-        # transcription session in the deployment - see
-        # `Settings.global_daily_call_budget`. Checked before the per-user limit
-        # for the same reason as there: the per-user one alone caps a single
-        # account, not the total spend across as many accounts as someone cares
-        # to create.
+        # Global budget first, since one person can make many accounts.
         await self._daily_budget.hit("global")
 
-        # Counted first, before the type check and before a byte is read. An
-        # upload is the expensive half of this app - every accepted file is
-        # extracted, chunked and embedded at the provider's per-token price - and
-        # a limit that only counted the uploads that turned out to be valid would
-        # leave a loop of rejected ones free to run forever. Keyed on the account
-        # because that is who the bill follows.
+        # Counted before validation, so a loop of rejected uploads still hits the limit.
         await self._limiter.hit(f"upload:{data.owner_id}")
 
-        # Checked before a byte is read, for the same reason the type is: an
-        # upload aimed at a thread this account does not own is refused, not
-        # stored and then hidden.
+        # Refuse a foreign thread before reading any bytes.
         async with self._uow_factory() as uow:
             if await uow.conversations.get(data.conversation_id, data.owner_id) is None:
                 raise UnknownConversation(data.conversation_id)
 
-        # Browsers may append parameters ("application/pdf; charset=..."), so
-        # only the media type itself is compared.
+        # Drop parameters like "; charset=...".
         media_type = (data.content_type or "").split(";")[0].strip().lower()
         if media_type not in self._allowed_content_types or media_type not in _ACCEPTED:
             raise UnsupportedDocumentType(data.content_type)
@@ -103,26 +73,16 @@ class UploadDocument:
         if not name.value.lower().endswith(suffix):
             raise UnsupportedDocumentType(data.filename)
 
-        # The check is wrapped around the stream rather than done up front so it
-        # happens as the bytes flow: nothing is written before the signature has
-        # been seen, and the storage adapter's own cleanup removes the partial
-        # file if it fails later.
+        # Checked as bytes flow, so nothing is written before the signature is seen.
         stream = _signed(data.stream, signature, data.content_type)
         reference = await self._storage.save(name, stream, self._max_bytes, data.owner_id)
         logger.debug("Stored upload {} as {}", name.value, reference)
 
-        # A conversation holds one attachment at a time, so whatever was
-        # attached before is removed now - vectors, file and row. Attaching a
-        # second file used to leave the first one indexed and retrievable, so
-        # a question about the new document could be answered out of the old
-        # one, with a citation naming a file the user thought they had
-        # replaced. Done after the new file is safely stored, never before: a
-        # failed upload must not cost the user the document they still had.
+        # One attachment per conversation, so remove the old one. Done after the
+        # new file is stored, so a failed upload keeps the old document.
         await self._replace_attachments(data.owner_id, data.conversation_id)
 
-        # Recorded here, not by the indexer: the file exists and is this
-        # owner's the moment it lands on disk, whether or not indexing behind
-        # it ever succeeds, and a document manager needs to list it either way.
+        # Recorded here, so the file is listed even if indexing fails.
         record = UploadedDocument(
             name=name.value,
             reference=reference,
@@ -138,12 +98,9 @@ class UploadDocument:
         )
 
     async def _replace_attachments(self, owner_id: int, conversation_id: int) -> None:
-        """Remove every document already attached to this conversation.
+        """Remove the documents already attached to this conversation.
 
-        A failure here is logged and swallowed. The user's new file is already
-        stored, and refusing the upload because an old one would not delete
-        would trade a working attachment for a stale one. What is left behind
-        is a document the user can still remove by hand.
+        Failures are logged, not raised, so the new upload still succeeds.
         """
         async with self._uow_factory() as uow:
             previous = await uow.documents.list_by_conversation(owner_id, conversation_id)
@@ -153,12 +110,12 @@ class UploadDocument:
                 continue
             try:
                 await self._remove_document(document.id, owner_id)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning(f"Could not replace document {document.id}: {exc}")
 
 
 def _require_id(document: UploadedDocument) -> int:
-    """The id a just-inserted row always has - narrowed once, for mypy's sake."""
+    """Narrow a new row's id for mypy."""
     if document.id is None:
         raise RuntimeError("A newly persisted document must have an id")
     return document.id
@@ -169,15 +126,10 @@ async def _signed(
     signature: bytes | None,
     content_type: str | None,
 ) -> AsyncIterator[bytes]:
-    """Pass a stream through, but only once its first bytes prove what it is.
+    """Pass a stream through once its first bytes match `signature`.
 
-    Chunk boundaries are not guaranteed, so the opening bytes are buffered until
-    there are enough of them to judge, then handed on unchanged - the file that
-    reaches storage is byte-for-byte the file that arrived.
-
-    A `None` signature (plain text, markdown - nothing to sniff) skips the
-    byte-check entirely and passes the stream through unchanged, trusting the
-    content-type and extension checks already done by the caller.
+    Buffers the opening bytes across chunks, then passes them on unchanged.
+    A `None` signature skips the check.
     """
     if signature is None:
         async for chunk in stream:
@@ -196,6 +148,7 @@ async def _signed(
             continue
         yield chunk
 
-    # A file shorter than the signature - or empty - never proved anything.
+    # Too short or empty to match.
+
     if len(head) < len(signature):
         raise UnsupportedDocumentType(content_type)

@@ -1,8 +1,4 @@
-"""Translation between ORM rows and domain entities.
-
-The domain never sees a `Mapped` attribute and the ORM never sees a dataclass;
-this module is the only place that knows both shapes.
-"""
+"""Translation between ORM rows and domain entities. The only place that knows both."""
 
 from app.adapters.persistence.models import (
     ConversationModel,
@@ -51,13 +47,9 @@ def message_to_model(entity: Message) -> MessageModel:
 
 
 def conversation_to_domain(row: ConversationModel) -> Conversation:
-    """
-    Read one `conversations` row, and its messages, into a domain `Conversation`.
+    """Read a `conversations` row and its messages into a `Conversation`.
 
-    `row.messages` is only safe to touch because the repository eager-loads it
-    with `selectinload`. Mappers must never trigger a lazy load: under asyncio
-    that raises `MissingGreenlet` rather than quietly issuing a query, so the
-    responsibility for loading relationships stays with the repository.
+    The repository must eager-load `row.messages`. A lazy load raises under asyncio.
     """
     return Conversation(
         title=row.title,
@@ -71,15 +63,7 @@ def conversation_to_domain(row: ConversationModel) -> Conversation:
 
 
 def conversation_summary_to_domain(row: ConversationModel) -> Conversation:
-    """
-    Read one `conversations` row into a domain `Conversation` with no messages.
-
-    For a list view, which has no use for the transcript. Unlike
-    `conversation_to_domain`, this never touches `row.messages` - the
-    repository behind a list query does not eager-load that relationship, and
-    touching it here would trigger the lazy load `selectinload` exists to
-    avoid.
-    """
+    """Read a `conversations` row into a `Conversation`, without touching messages."""
     return Conversation(
         title=row.title,
         model_type=row.model_type,
@@ -106,10 +90,7 @@ def conversation_to_model(entity: Conversation) -> ConversationModel:
 def user_to_domain(row: UserModel) -> User:
     """Read one `users` row into a domain `User`."""
     return User(
-        # Constructed directly rather than through `sanitize`: the column only
-        # ever holds an address that was sanitized on the way in, and re-running
-        # validation on read would turn a tightened rule into a login outage for
-        # everyone who registered under the old one.
+        # Not re-sanitized, so a stricter rule never locks out existing users.
         email=Email(row.email),
         password_hash=row.password_hash,
         id=row.id,
