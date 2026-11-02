@@ -68,12 +68,25 @@ class ReplySummarizing(BaseModel):
     tokens_after: int | None = None
 
 
+ReplyFailureCode = Literal["timeout", "overloaded", "unavailable", "internal"]
+"""Why a reply failed, as a stable name a client can switch on.
+
+`overloaded` and `timeout` are worth retrying soon. `unavailable` is ours to
+fix. `internal` is everything we did not recognise.
+"""
+
+
 class ReplyFailed(BaseModel):
-    """Generation broke after the stream had already opened."""
+    """Generation broke after the stream had already opened.
+
+    A code, never text. The raw error goes to the log and the trace span, and
+    what a person reads is chosen from the code. Text here is how a provider's
+    401 body, naming the key, once reached a reader.
+    """
 
     model_config = ConfigDict(frozen=True)
 
-    detail: str
+    code: ReplyFailureCode
 
 
 class ReplyUsage(BaseModel):

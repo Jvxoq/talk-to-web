@@ -10,7 +10,7 @@ No Postgres: the checkpointer is `InMemorySaver` or absent entirely.
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -42,6 +42,7 @@ from app.application.chat.tools.base import AgentTool, ToolRegistry, ToolRouting
 from app.application.chat.use_cases.generate_reply import GenerateReply
 from app.domain.ingestion.entities import DocumentStatus, UploadedDocument
 from app.domain.usage.errors import RateLimited
+from tests.conftest import logged
 from tests.fakes import (
     FakeAgentTool,
     FakeChatModel,
@@ -50,6 +51,9 @@ from tests.fakes import (
     RecordingTracer,
     UnitOfWorkSpy,
 )
+
+if TYPE_CHECKING:
+    from loguru import Record
 
 SYSTEM_PROMPT = "SYSTEM PROMPT"
 
@@ -99,6 +103,7 @@ def build_use_case(
     tracer: RecordingTracer | None = None,
     routing: ToolRoutingPolicy | None = None,
     uow_factory: UnitOfWorkSpy | None = None,
+    reply_timeout_seconds: float = 30.0,
 ) -> GenerateReply:
     graph = build_agent_graph(
         model=model,
@@ -126,6 +131,7 @@ def build_use_case(
         tool_output_guard=make_guard(),
         max_digest_documents=6,
         max_digest_summary_chars=200,
+        reply_timeout_seconds=reply_timeout_seconds,
     )
 
 
@@ -249,8 +255,7 @@ class TestPlainAnswer:
         # The response body was already open, so the failure is reported as an
         # event rather than raised through a half-written stream.
         failures = [event for event in events if isinstance(event, ReplyFailed)]
-        assert len(failures) == 1
-        assert "boom" in failures[0].detail
+        assert failures == [ReplyFailed(code="internal")]
 
 
 class TestOneToolCall:
@@ -864,9 +869,7 @@ class TestFriendlyRateLimit:
         events = await collect(build_use_case(model))
 
         failures = [event for event in events if isinstance(event, ReplyFailed)]
-        assert len(failures) == 1
-        assert "busy" in failures[0].detail
-        assert "413" not in failures[0].detail
+        assert failures == [ReplyFailed(code="overloaded")]
 
 
 class TestFriendlyAuthFailure:
@@ -885,12 +888,71 @@ class TestFriendlyAuthFailure:
         events = await collect(build_use_case(model))
 
         failures = [event for event in events if isinstance(event, ReplyFailed)]
-        assert len(failures) == 1
-        assert (
-            failures[0].detail == "The assistant is unavailable right now - please try again later."
+        assert failures == [ReplyFailed(code="unavailable")]
+
+
+class TestReplyDeadline:
+    """A reply holds one of the worker's five concurrency slots until it ends.
+
+    Five stalled providers would otherwise hold all five, and the app stops
+    answering anyone. Each deadline here is under 0.1 s against a fake that
+    never finishes, so a pass cannot be luck.
+    """
+
+    async def test_silent_model_ends_in_failure(self) -> None:
+        model = FakeChatModel(turns=[[ModelChunk(text="Partly")]], stall="hang")
+
+        events = await collect(build_use_case(model, reply_timeout_seconds=0.05))
+
+        assert events == [ReplyDelta(text="Partly"), ReplyFailed(code="timeout")]
+
+    async def test_trickling_model_ends_in_failure(self) -> None:
+        """The deadline covers the whole reply, not each wait for a token.
+
+        A per-wait timeout never fires on a stream that sends a token every
+        10 ms, and that stream would hold its slot forever.
+        """
+        model = FakeChatModel(turns=[[ModelChunk(text="Partly")]], stall="trickle")
+
+        events = await collect(build_use_case(model, reply_timeout_seconds=0.05))
+
+        assert events[-1] == ReplyFailed(code="timeout")
+
+    async def test_deadline_cancels_model_call(self) -> None:
+        """The slot is only free if the provider call stops, not just the response."""
+        model = FakeChatModel(turns=[[ModelChunk(text="Partly")]], stall="hang")
+
+        await collect(build_use_case(model, reply_timeout_seconds=0.05))
+
+        assert model.cancelled is True
+
+    async def test_deadline_logs_one_warning(self, log_records: list["Record"]) -> None:
+        model = FakeChatModel(turns=[[ModelChunk(text="Partly")]], stall="hang")
+
+        await collect(build_use_case(model, reply_timeout_seconds=0.05))
+
+        assert logged(log_records) == [
+            ("WARNING", "Reply for model test-model passed its 0.05s deadline", False)
+        ]
+
+    async def test_deadline_records_error_on_span(self) -> None:
+        tracer = RecordingTracer()
+        model = FakeChatModel(turns=[[ModelChunk(text="Partly")]], stall="hang")
+
+        await collect(build_use_case(model, tracer=tracer, reply_timeout_seconds=0.05))
+
+        assert [type(error) for error in tracer.named("chat.reply")[0].errors] == [TimeoutError]
+
+    async def test_provider_timeout_never_reaches_user(self) -> None:
+        """The adapter's own per-call timeout reads the same as the deadline."""
+        model = FakeChatModel(
+            turns=[[ModelChunk(text="x")]],
+            fail_with=RuntimeError("Completion provider failed: Request timed out."),
         )
-        assert "api-keys" not in failures[0].detail
-        assert "401" not in failures[0].detail
+
+        events = await collect(build_use_case(model))
+
+        assert events[-1] == ReplyFailed(code="timeout")
 
 
 class TestUsageStream:

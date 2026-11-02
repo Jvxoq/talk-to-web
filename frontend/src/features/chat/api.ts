@@ -1,9 +1,11 @@
 import { ApiError } from '../../lib/http'
 import { authorizedFetch } from '../../lib/session'
+import { parseFailure } from './failure'
 import { parseSummarizing } from './summarizing'
 import { parseUsage } from './usage'
 import type {
   DocumentStatus,
+  FailureCode,
   Model,
   Summarizing,
   ToolActivity,
@@ -23,7 +25,7 @@ export type StreamEvent =
   | { type: 'tool'; activity: ToolActivity }
   | { type: 'summarizing'; summarizing: Summarizing }
   | { type: 'usage'; usage: Usage }
-  | { type: 'error'; message: string }
+  | { type: 'error'; code: FailureCode }
 
 interface StreamRequest {
   model: Model
@@ -42,7 +44,8 @@ interface StreamFrame {
   /** Raw and unnarrowed here — `parseUsage` does the boundary check below. */
   usage?: unknown
   done?: boolean
-  error?: string
+  /** Raw and unnarrowed here — `parseFailure` does the boundary check below. */
+  error?: unknown
 }
 
 /**
@@ -78,7 +81,7 @@ async function failureOf(
  *
  * Frames carry a JSON object rather than bare text, because a token can contain
  * the newlines that markdown structure is made of and a raw newline would end
- * the frame early. Failures are reported in-band as `{ error }` — so an error
+ * the frame early. Failures are reported in-band as `{ error: { code, message } }` — so an error
  * can arrive after a 200, and the happy path alone isn't enough to know it
  * worked.
  */
@@ -138,7 +141,7 @@ export async function* streamChat({
         // delta so a frame carrying both `tool` and no `delta` doesn't fall
         // through silently. Unknown frames keep falling through harmlessly.
         if (parsed.error !== undefined) {
-          yield { type: 'error', message: parsed.error }
+          yield { type: 'error', code: parseFailure(parsed.error) }
           return
         }
         if (parsed.done) return

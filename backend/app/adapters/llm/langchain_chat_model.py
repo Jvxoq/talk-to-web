@@ -81,6 +81,7 @@ class LangChainChatModel:
         models: Sequence[str],
         api_key: str,
         max_tokens: int,
+        request_timeout_seconds: float,
         retry_attempts: int = 3,
         retry_wait: wait_base = _DEFAULT_RETRY_WAIT,
     ) -> None:
@@ -93,6 +94,13 @@ class LangChainChatModel:
                 f"{provider}:{name}",
                 api_key=api_key,
                 max_tokens=max_tokens,
+                # Required, not defaulted: left out, the OpenAI client waits
+                # 600 s, which is how a stalled provider held a slot for ten
+                # minutes.
+                timeout=request_timeout_seconds,
+                # `stream` below owns retries. The client's own two would run
+                # inside each of ours, so one call could wait nine timeouts.
+                max_retries=0,
             )
             if not isinstance(built, BaseChatModel):
                 # `init_chat_model` returns a late-bound configurable wrapper when

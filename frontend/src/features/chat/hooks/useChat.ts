@@ -8,6 +8,7 @@ import {
 } from '../../../lib/conversation'
 import { ApiError, isAbort } from '../../../lib/http'
 import { streamChat } from '../api'
+import { failureMessage } from '../failure'
 import type { Message, Model, ToolActivity } from '../types'
 
 const GENERIC_FAILURE = 'Something went wrong. Please try again.'
@@ -217,7 +218,7 @@ export function useChat(model: Model, conversationId: number, preloaded?: Conver
           signal: controller.signal,
         })) {
           if (event.type === 'error') {
-            const detail = event.message || GENERIC_FAILURE
+            const detail = failureMessage(event.code)
             failLastMessage(detail)
             void persist({
               prompt_content: text,

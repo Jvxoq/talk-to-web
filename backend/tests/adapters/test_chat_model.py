@@ -519,29 +519,76 @@ class TestConstruction:
             models=[MODEL, "llama-3.1-8b-instant"],
             api_key="not-a-real-key",
             max_tokens=1024,
+            request_timeout_seconds=30,
         )
 
         assert sorted(model._models) == ["llama-3.1-8b-instant", MODEL]
+
+    def test_client_holds_configured_timeout(self) -> None:
+        """Unset, the OpenAI client waits 600 s on a stalled provider.
+
+        The SDK client is the last object before the network, so the timeout it
+        holds is the effect. Nothing short of a real socket can show it firing.
+        """
+        model = LangChainChatModel(
+            provider="together",
+            models=[MODEL],
+            api_key="k",
+            max_tokens=1024,
+            request_timeout_seconds=7.5,
+        )
+
+        client = model._models[MODEL].root_async_client  # type: ignore[attr-defined]
+
+        assert client.timeout == 7.5
+
+    def test_client_retries_are_off(self) -> None:
+        """`stream` owns retries. Stacked SDK retries would multiply the timeout."""
+        model = LangChainChatModel(
+            provider="together",
+            models=[MODEL],
+            api_key="k",
+            max_tokens=1024,
+            request_timeout_seconds=7.5,
+        )
+
+        client = model._models[MODEL].root_async_client  # type: ignore[attr-defined]
+
+        assert client.max_retries == 0
 
     def test_a_configuration_with_no_models_is_refused(self) -> None:
         # Otherwise every request would fail with "unknown model" and the real
         # fault - an empty setting - would never be named.
         with pytest.raises(ValueError, match="At least one model"):
-            LangChainChatModel(provider="together", models=[], api_key="k", max_tokens=1024)
+            LangChainChatModel(
+                provider="together",
+                models=[],
+                api_key="k",
+                max_tokens=1024,
+                request_timeout_seconds=30,
+            )
 
     def test_an_unresolvable_provider_fails_at_startup(self) -> None:
         # At startup rather than per request: a misconfigured provider should
         # stop a deploy, not surface as a 500 for whoever chats first.
         with pytest.raises(Exception, match=r"(?i)provider|model"):
             LangChainChatModel(
-                provider="not-a-real-provider", models=[MODEL], api_key="k", max_tokens=1024
+                provider="not-a-real-provider",
+                models=[MODEL],
+                api_key="k",
+                max_tokens=1024,
+                request_timeout_seconds=30,
             )
 
     async def test_closing_it_is_safe(self) -> None:
         # `init_chat_model` clients own no long-lived socket, but the lifespan
         # calls this in its `finally` regardless.
         model = LangChainChatModel(
-            provider="together", models=[MODEL], api_key="k", max_tokens=1024
+            provider="together",
+            models=[MODEL],
+            api_key="k",
+            max_tokens=1024,
+            request_timeout_seconds=30,
         )
 
         await model.aclose()

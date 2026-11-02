@@ -19,6 +19,7 @@ from app.application.chat.dto import (
     ReplyDelta,
     ReplyEvent,
     ReplyFailed,
+    ReplyFailureCode,
     ReplySummarizing,
     ReplyToolFinished,
     ReplyToolStarted,
@@ -61,8 +62,13 @@ class GenerateReply:
         tool_output_guard: ToolOutputGuard,
         max_digest_documents: int,
         max_digest_summary_chars: int,
+        reply_timeout_seconds: float,
     ) -> None:
         self._graph = graph
+        # One deadline for the whole reply. A stream holds one of the worker's
+        # few concurrency slots until it ends, so a reply that never ends takes
+        # a slot from everyone.
+        self._reply_timeout_seconds = reply_timeout_seconds
         self._system_prompt = system_prompt
         self._limiter = limiter
         self._daily_budget = daily_budget
@@ -211,6 +217,7 @@ class GenerateReply:
         tools_used: list[str] = []
         started = time.perf_counter()
         outcome = "completed"
+        deadline = asyncio.get_running_loop().time() + self._reply_timeout_seconds
 
         try:
             async with self._tracer.span(
@@ -223,20 +230,24 @@ class GenerateReply:
                 guardrail_categories=list(verdict.categories()),
             ) as span:
                 try:
-                    state = AgentState(
-                        messages=await self._new_messages(
+                    async with asyncio.timeout_at(deadline):
+                        messages = await self._new_messages(
                             data,
                             verdict.text,
                             config,
                             self._digest_documents(documents),
                             known_empty=not has_documents,
-                        ),
+                        )
+                    state = AgentState(
+                        messages=messages,
                         # Reset per request. The count is a ceiling on this reply's tool
                         # laps; carried over from the checkpoint it would only ever climb.
                         iterations=0,
                     )
 
-                    async for payload in self._graph.astream(state, config, stream_mode="custom"):
+                    async for payload in _before(
+                        deadline, self._graph.astream(state, config, stream_mode="custom")
+                    ):
                         # Bookkeeping, not an event. Usage is intercepted here
                         # rather than translated by `_to_event` because it is an
                         # internal protocol between the nodes and this use case -
@@ -256,13 +267,24 @@ class GenerateReply:
                     # graph running for a response nobody is reading.
                     outcome = "cancelled"
                     raise
+                except TimeoutError as exc:
+                    # The deadline, not the client: the graph is cancelled where
+                    # it waits, and the slot goes back to the worker.
+                    outcome = "timed_out"
+                    span.record_error(exc)
+                    logger.warning(
+                        f"Reply for model {data.model} passed its "
+                        f"{self._reply_timeout_seconds}s deadline"
+                    )
+                    yield ReplyFailed(code="timeout")
+                    return
                 except Exception as exc:  # noqa: BLE001
                     # The HTTP response is already open, so raising here would only
                     # truncate the body. The client is told in-band instead.
                     outcome = "failed"
                     span.record_error(exc)
                     logger.warning(f"Agent run failed for model {data.model}: {exc}")
-                    yield ReplyFailed(detail=_friendly_error(str(exc)))
+                    yield ReplyFailed(code=_failure_code(str(exc)))
                     return
 
                 prompt_tokens, completion_tokens = self._total_tokens(spend)
@@ -487,6 +509,23 @@ def _record_usage(payload: object, spend: dict[str, list[int]]) -> bool:
     return True
 
 
+async def _before(deadline: float, events: AsyncIterator[Any]) -> AsyncIterator[Any]:
+    """Pass `events` through, raising `TimeoutError` once the loop clock reaches `deadline`.
+
+    The timeout wraps each wait for the next event and never a `yield`. A
+    timeout held open across a yield fires into whatever the consumer is doing
+    at that moment, which here is writing the response.
+    """
+    iterator = aiter(events)
+    while True:
+        async with asyncio.timeout_at(deadline):
+            try:
+                event = await anext(iterator)
+            except StopAsyncIteration:
+                return
+        yield event
+
+
 def _to_event(payload: object) -> ReplyEvent | None:
     """Translate one custom-stream payload from the nodes into a reply event."""
     if not isinstance(payload, dict):
@@ -541,17 +580,20 @@ def _to_event(payload: object) -> ReplyEvent | None:
     return None
 
 
-def _friendly_error(detail: str) -> str:
-    """Turn a provider failure into a sentence a person can read.
+def _failure_code(detail: str) -> ReplyFailureCode:
+    """Classify a failure. The text itself never leaves the process.
 
-    The raw detail is the provider's JSON, which is noise in front of a user. A
-    rate limit is transient, so it becomes "try again in a moment". A rejected
-    key names the key and links to the vendor's dashboard, and the reader cannot
-    fix it either way. Anything else passes through unchanged.
+    A rate limit is transient. A rejected key names the key and links to the
+    vendor's dashboard, and the reader cannot fix it either way. A timed-out
+    call reads the same as the reply deadline. Anything unrecognised is
+    `internal`, never passed through: a pass-through default is how a
+    provider's 401 body reached a reader.
     """
     lowered = detail.lower()
     if "rate_limit_exceeded" in lowered or "413" in detail or "429" in detail:
-        return "The assistant is busy right now - please try again in a moment."
+        return "overloaded"
     if is_auth_failure(detail):
-        return "The assistant is unavailable right now - please try again later."
-    return detail
+        return "unavailable"
+    if "timed out" in lowered or "timeout" in lowered:
+        return "timeout"
+    return "internal"

@@ -160,13 +160,12 @@ and needs real Postgres/Qdrant — see Commands above.
 - **A failed reply is reported in-band, not as a status code.** By the time a
   provider fails the SSE response is already open, so raising would truncate a
   half-written body. `GenerateReply` yields `ReplyFailed` instead and `sse.py`
-  frames it under `error`. `_friendly_error` decides what that says: a rate
-  limit becomes "busy right now", a rejected API key becomes "unavailable right
-  now", and anything else passes through as the provider wrote it. The two
-  named cases are rewritten because the provider's own text is either noise or
-  a leak — a 401 body names the key and links to the vendor's dashboard, which
-  no reader can act on. The real error still goes to the log and the trace
-  span.
+  frames it under `error` as `{"code", "message"}`. `_failure_code` picks the
+  code: a rate limit is `overloaded`, a rejected API key is `unavailable`, a
+  timeout is `timeout`, and anything else is `internal`. The message is our own
+  fixed sentence per code, and the frontend shows its own copy. The provider's
+  text never leaves the process — a 401 body names the key and links to the
+  vendor's dashboard. The real error still goes to the log and the trace span.
 - **A rejected API key fails fast.** `is_auth_failure` in
   `app/application/chat/provider_errors.py` is a string check both the adapter
   and the use case read, so they cannot disagree about what an auth failure
