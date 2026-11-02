@@ -18,6 +18,8 @@ import json
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from typing import Any
 
+import httpx
+import openai
 import pytest
 from langchain_core.callbacks import AsyncCallbackManagerForLLMRun, CallbackManagerForLLMRun
 from langchain_core.language_models import LanguageModelInput
@@ -43,6 +45,7 @@ from app.adapters.llm.langchain_chat_model import (
     _to_langchain_tool,
 )
 from app.application.chat.models import ChatMessage, ModelChunk, ToolCall
+from app.application.chat.provider_errors import ProviderTimeoutError
 from app.application.chat.tools.base import ToolSpec
 
 MODEL = "llama-3.3-70b-versatile"
@@ -412,7 +415,7 @@ class TestFailures:
     async def test_a_provider_failure_becomes_a_runtime_error(self) -> None:
         # The vendor's exception type stops here. Everything above this file
         # handles one failure mode rather than one per provider.
-        model = scripted(text("ok"), fails=TimeoutError("upstream went away"))
+        model = scripted(text("ok"), fails=ConnectionError("upstream went away"))
 
         with pytest.raises(RuntimeError, match="Completion provider failed"):
             await collect(model.stream(model=MODEL, temperature=0.5, messages=[], tools=[]))
@@ -420,7 +423,7 @@ class TestFailures:
     async def test_the_original_failure_is_kept_as_the_cause(self) -> None:
         # Translating the exception must not throw away what actually happened;
         # the traceback is the only thing that says which upstream broke.
-        original = TimeoutError("upstream went away")
+        original = ConnectionError("upstream went away")
         model = scripted(fails=original)
 
         with pytest.raises(RuntimeError) as caught:
@@ -429,12 +432,36 @@ class TestFailures:
         assert caught.value.__cause__ is original
 
 
+def sdk_timeout() -> openai.APITimeoutError:
+    """The error the OpenAI SDK raises on a timeout, with the httpx cause it keeps."""
+    request = httpx.Request("POST", "https://api.together.xyz/v1/chat/completions")
+    error = openai.APITimeoutError(request=request)
+    error.__cause__ = httpx.ReadTimeout("read timed out", request=request)
+    return error
+
+
+class TestTimeouts:
+    async def test_sdk_timeout_becomes_provider_timeout(self) -> None:
+        """A type the use case can trust, so it never guesses from text."""
+        model = scripted(fails=sdk_timeout())
+
+        with pytest.raises(ProviderTimeoutError, match=f"Model {MODEL} did not answer in time"):
+            await collect(model.stream(model=MODEL, temperature=0.5, messages=[], tools=[]))
+
+    async def test_timeout_word_is_not_timeout(self) -> None:
+        """A 400 that quotes a `timeout` parameter stays an ordinary failure."""
+        model = scripted(fails=ValueError("Error code: 400 - unknown parameter 'timeout'"))
+
+        with pytest.raises(RuntimeError, match="Completion provider failed"):
+            await collect(model.stream(model=MODEL, temperature=0.5, messages=[], tools=[]))
+
+
 class TestRetries:
     async def test_a_failure_before_any_text_is_retried_and_recovers(self) -> None:
         model = scripted(
             text("Once "),
             text("upon a time."),
-            fails=TimeoutError("upstream went away"),
+            fails=ConnectionError("upstream went away"),
             fail_calls=1,
             retry_attempts=3,
         )
@@ -447,7 +474,7 @@ class TestRetries:
         assert provider.calls == 2
 
     async def test_exhausting_every_attempt_still_becomes_a_runtime_error(self) -> None:
-        model = scripted(fails=TimeoutError("upstream went away"), retry_attempts=3)
+        model = scripted(fails=ConnectionError("upstream went away"), retry_attempts=3)
         provider = model._models[MODEL]
         assert isinstance(provider, ScriptedChatModel)
 
@@ -479,7 +506,7 @@ class TestRetries:
         # already rendered - not safe once any token has reached the caller.
         model = scripted(
             text("Once "),
-            fails=TimeoutError("upstream went away"),
+            fails=ConnectionError("upstream went away"),
             fail_calls=10**9,
             retry_attempts=3,
         )
@@ -496,7 +523,7 @@ class TestRetries:
         ) -> AsyncIterator[ChatGenerationChunk]:
             provider.calls += 1
             yield ChatGenerationChunk(message=text("Once "))
-            raise TimeoutError("upstream went away")
+            raise ConnectionError("upstream went away")
 
         provider._astream = _astream_then_fail  # type: ignore[method-assign]
 

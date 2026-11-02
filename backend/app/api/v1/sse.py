@@ -13,20 +13,11 @@ from app.application.chat.dto import (
     ReplyDelta,
     ReplyEvent,
     ReplyFailed,
-    ReplyFailureCode,
     ReplySummarizing,
     ReplyToolFinished,
     ReplyToolStarted,
     ReplyUsage,
 )
-
-_FAILURE_MESSAGES: dict[ReplyFailureCode, str] = {
-    "timeout": "The assistant took too long to answer. Please try again.",
-    "overloaded": "The assistant is busy right now. Please try again in a moment.",
-    "unavailable": "The assistant is unavailable right now. Please try again later.",
-    "internal": "Something went wrong. Please try again.",
-}
-"""Our own sentence per code, for a client that shows no copy of its own."""
 
 
 def format_frame(**payload: object) -> str:
@@ -89,8 +80,8 @@ async def to_sse(events: AsyncIterator[ReplyEvent]) -> AsyncIterator[str]:
                     }
                 )
             case ReplyFailed(code=code):
-                # The shape OpenAI and Stripe use: a code to switch on and a
-                # fixed message to fall back to. Neither carries error text.
-                yield format_frame(error={"code": code, "message": _FAILURE_MESSAGES[code]})
+                # A code only. The client owns the words, so no server text
+                # can reach a reader.
+                yield format_frame(error={"code": code})
             case ReplyCompleted():
                 yield format_frame(done=True)

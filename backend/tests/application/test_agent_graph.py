@@ -38,6 +38,7 @@ from app.application.chat.dto import (
 from app.application.chat.guardrails.policy import InputGuardPolicy
 from app.application.chat.guardrails.tool_output import ToolOutputGuard
 from app.application.chat.models import ChatMessage, ModelChunk, TokenUsage, ToolCall
+from app.application.chat.provider_errors import ProviderTimeoutError
 from app.application.chat.tools.base import AgentTool, ToolRegistry, ToolRoutingPolicy
 from app.application.chat.use_cases.generate_reply import GenerateReply
 from app.domain.ingestion.entities import DocumentStatus, UploadedDocument
@@ -943,16 +944,32 @@ class TestReplyDeadline:
 
         assert [type(error) for error in tracer.named("chat.reply")[0].errors] == [TimeoutError]
 
-    async def test_provider_timeout_never_reaches_user(self) -> None:
+    async def test_provider_timeout_reads_as_timeout(self) -> None:
         """The adapter's own per-call timeout reads the same as the deadline."""
         model = FakeChatModel(
             turns=[[ModelChunk(text="x")]],
-            fail_with=RuntimeError("Completion provider failed: Request timed out."),
+            fail_with=ProviderTimeoutError("Model test-model did not answer in time"),
         )
 
         events = await collect(build_use_case(model))
 
         assert events[-1] == ReplyFailed(code="timeout")
+
+    async def test_timeout_word_alone_is_internal(self) -> None:
+        """A provider's 400 that quotes a `timeout` parameter is not a timeout.
+
+        Telling the user to retry would send the same broken request again.
+        """
+        model = FakeChatModel(
+            turns=[[ModelChunk(text="x")]],
+            fail_with=RuntimeError(
+                "Completion provider failed: Error code: 400 - unknown parameter 'timeout'"
+            ),
+        )
+
+        events = await collect(build_use_case(model))
+
+        assert events[-1] == ReplyFailed(code="internal")
 
 
 class TestUsageStream:

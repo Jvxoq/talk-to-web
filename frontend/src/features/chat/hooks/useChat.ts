@@ -11,7 +11,7 @@ import { streamChat } from '../api'
 import { failureMessage } from '../failure'
 import type { Message, Model, ToolActivity } from '../types'
 
-const GENERIC_FAILURE = 'Something went wrong. Please try again.'
+const GENERIC_FAILURE = failureMessage('internal')
 
 /**
  * A stored turn is one prompt/response row; the transcript renders it as the

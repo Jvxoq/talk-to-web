@@ -29,7 +29,7 @@ from app.application.chat.guardrails.policy import GuardVerdict, InputGuardPolic
 from app.application.chat.guardrails.tool_output import ToolOutputGuard
 from app.application.chat.models import ChatMessage, Source
 from app.application.chat.ports import RateLimiter, Tracer
-from app.application.chat.provider_errors import is_auth_failure
+from app.application.chat.provider_errors import ProviderTimeoutError, is_auth_failure
 from app.application.common.uow import UnitOfWorkFactory
 from app.domain.chat.errors import UnsafeUserMessage
 from app.domain.chat.tool_routing import is_document_scoped
@@ -245,7 +245,7 @@ class GenerateReply:
                         iterations=0,
                     )
 
-                    async for payload in _before(
+                    async for payload in _until_deadline(
                         deadline, self._graph.astream(state, config, stream_mode="custom")
                     ):
                         # Bookkeeping, not an event. Usage is intercepted here
@@ -284,7 +284,7 @@ class GenerateReply:
                     outcome = "failed"
                     span.record_error(exc)
                     logger.warning(f"Agent run failed for model {data.model}: {exc}")
-                    yield ReplyFailed(code=_failure_code(str(exc)))
+                    yield ReplyFailed(code=_failure_code(exc))
                     return
 
                 prompt_tokens, completion_tokens = self._total_tokens(spend)
@@ -509,7 +509,7 @@ def _record_usage(payload: object, spend: dict[str, list[int]]) -> bool:
     return True
 
 
-async def _before(deadline: float, events: AsyncIterator[Any]) -> AsyncIterator[Any]:
+async def _until_deadline(deadline: float, events: AsyncIterator[Any]) -> AsyncIterator[Any]:
     """Pass `events` through, raising `TimeoutError` once the loop clock reaches `deadline`.
 
     The timeout wraps each wait for the next event and never a `yield`. A
@@ -580,20 +580,21 @@ def _to_event(payload: object) -> ReplyEvent | None:
     return None
 
 
-def _failure_code(detail: str) -> ReplyFailureCode:
-    """Classify a failure. The text itself never leaves the process.
+def _failure_code(error: Exception) -> ReplyFailureCode:
+    """Classify a failure. Its text never leaves the process.
 
+    A timed-out call reads the same as the reply deadline, and is known by type.
     A rate limit is transient. A rejected key names the key and links to the
-    vendor's dashboard, and the reader cannot fix it either way. A timed-out
-    call reads the same as the reply deadline. Anything unrecognised is
-    `internal`, never passed through: a pass-through default is how a
-    provider's 401 body reached a reader.
+    vendor's dashboard, and the reader cannot fix it either way. Anything
+    unrecognised is `internal`, never passed through: a pass-through default is
+    how a provider's 401 body reached a reader.
     """
+    if isinstance(error, ProviderTimeoutError):
+        return "timeout"
+    detail = str(error)
     lowered = detail.lower()
     if "rate_limit_exceeded" in lowered or "413" in detail or "429" in detail:
         return "overloaded"
     if is_auth_failure(detail):
         return "unavailable"
-    if "timed out" in lowered or "timeout" in lowered:
-        return "timeout"
     return "internal"

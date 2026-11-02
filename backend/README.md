@@ -160,10 +160,10 @@ and needs real Postgres/Qdrant — see Commands above.
 - **A failed reply is reported in-band, not as a status code.** By the time a
   provider fails the SSE response is already open, so raising would truncate a
   half-written body. `GenerateReply` yields `ReplyFailed` instead and `sse.py`
-  frames it under `error` as `{"code", "message"}`. `_failure_code` picks the
-  code: a rate limit is `overloaded`, a rejected API key is `unavailable`, a
-  timeout is `timeout`, and anything else is `internal`. The message is our own
-  fixed sentence per code, and the frontend shows its own copy. The provider's
+  frames it under `error` as `{"code"}`. `_failure_code` picks the code: a
+  `ProviderTimeoutError` from the adapter is `timeout`, a rate limit is
+  `overloaded`, a rejected API key is `unavailable`, and anything else is
+  `internal`. The frontend shows its own copy per code. The provider's
   text never leaves the process — a 401 body names the key and links to the
   vendor's dashboard. The real error still goes to the log and the trace span.
 - **A rejected API key fails fast.** `is_auth_failure` in

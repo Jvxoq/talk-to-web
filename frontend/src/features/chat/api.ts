@@ -81,7 +81,7 @@ async function failureOf(
  *
  * Frames carry a JSON object rather than bare text, because a token can contain
  * the newlines that markdown structure is made of and a raw newline would end
- * the frame early. Failures are reported in-band as `{ error: { code, message } }` — so an error
+ * the frame early. Failures are reported in-band as `{ error: { code } }` — so an error
  * can arrive after a 200, and the happy path alone isn't enough to know it
  * worked.
  */

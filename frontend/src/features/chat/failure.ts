@@ -13,7 +13,7 @@ function isFailureCode(value: unknown): value is FailureCode {
 
 /**
  * Narrows one untrusted `error` SSE frame payload to a failure code, at the
- * boundary. The backend sends `{ code, message }` and never the error's own
+ * boundary. The backend sends `{ code }` and never the error's own
  * text. Anything else (an older backend's bare string, a code this build does
  * not know yet) reads as `internal`, so no server text is ever shown.
  */

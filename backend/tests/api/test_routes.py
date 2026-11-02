@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, get_args
+from typing import Any
 
 import httpx
 import pytest
@@ -26,7 +26,6 @@ from app.application.chat.dto import (
     ReplyDelta,
     ReplyEvent,
     ReplyFailed,
-    ReplyFailureCode,
     ReplySummarizing,
     ReplyToolFinished,
     ReplyToolStarted,
@@ -390,25 +389,7 @@ class TestGenerateText:
             )
 
         assert response.status_code == 200
-        assert frames(response.text)[-1] == {
-            "error": {
-                "code": "overloaded",
-                "message": "The assistant is busy right now. Please try again in a moment.",
-            }
-        }
-
-    @pytest.mark.parametrize("code", get_args(ReplyFailureCode))
-    async def test_every_failure_code_has_message(self, code: ReplyFailureCode) -> None:
-        """A code with no message would raise inside an open stream and cut it off."""
-        stub = StubGenerateReply([ReplyFailed(code=code)])
-
-        async with client(StubContainer(generate_reply=stub)) as http:
-            response = await http.post(
-                "/generate/text/", json={"model": MODELS[1], "user_input": "hi"}
-            )
-
-        error = frames(response.text)[-1]["error"]
-        assert (error["code"], bool(error["message"])) == (code, True)
+        assert frames(response.text)[-1] == {"error": {"code": "overloaded"}}
 
     async def test_a_spent_chat_budget_is_a_429_before_the_stream_opens(self) -> None:
         # The whole reason the use case is awaited rather than iterated: a limit
