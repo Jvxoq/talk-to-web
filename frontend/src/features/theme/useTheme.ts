@@ -1,18 +1,22 @@
 import { useCallback, useEffect, useState } from 'react'
 
-export type Theme = 'light' | 'dark'
+export type Theme = 'ivory' | 'mono'
 
 const THEME_KEY = 'theme'
 
 function getInitialTheme(): Theme {
   const stored = localStorage.getItem(THEME_KEY)
-  if (stored === 'light' || stored === 'dark') return stored
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  // Old saved names from the previous design map onto the new themes: the
+  // black-and-white dark mode is Mono, the warm paper is Ivory.
+  if (stored === 'mono' || stored === 'dark') return 'mono'
+  if (stored === 'ivory' || stored === 'light') return 'ivory'
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'mono' : 'ivory'
 }
 
 /**
- * Dark mode swaps the ink and paper roles on the token block in globals.css —
- * it isn't a second palette, just #000 and #FFF trading places.
+ * Mono is the black-and-white dark theme of the same design system; Ivory is
+ * the warm paper one. The swap is a whole token block in globals.css, so
+ * components never branch on theme — they only ever read tokens.
  */
 export function useTheme() {
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
@@ -23,7 +27,7 @@ export function useTheme() {
   }, [theme])
 
   const toggle = useCallback(
-    () => setTheme((current) => (current === 'dark' ? 'light' : 'dark')),
+    () => setTheme((current) => (current === 'mono' ? 'ivory' : 'mono')),
     [],
   )
 

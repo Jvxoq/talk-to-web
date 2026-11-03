@@ -114,26 +114,27 @@ export function useChat(model: Model, conversationId: number, preloaded?: Conver
       return
     }
 
-    let cancelled = false
     getConversation(conversationId)
       .then((conversation) => {
-        if (!cancelled) setMessages(toMessages(conversation.messages))
+        // Guarded by the ref, not a closure flag: StrictMode's remount
+        // re-enters with the same id and bails on the guard above, so a
+        // cancelled closure here would strand the only fetch this run made.
+        // A real switch has already moved the ref on, which is the staleness
+        // this check exists to catch.
+        if (loadStartedForRef.current === conversationId) {
+          setMessages(toMessages(conversation.messages))
+        }
       })
       .catch(() => {
         // Swallowed: a history that failed to load still leaves a usable,
         // empty composer, which beats blocking the switch entirely.
       })
       .finally(() => {
-        // Deliberately not guarded by `cancelled`, unlike the write above: the
-        // skeleton has to clear even when StrictMode's remount has already
-        // stranded this fetch, or the log would sit on it forever. The id check
-        // keeps a late arrival from clearing a newer load's flag.
+        // The skeleton has to clear even when StrictMode's remount has already
+        // stranded this fetch, or the log would sit on it forever. The id
+        // check keeps a late arrival from clearing a newer load's flag.
         setLoadingId((current) => (current === conversationId ? null : current))
       })
-
-    return () => {
-      cancelled = true
-    }
   }, [conversationId])
 
   const persist = useCallback(

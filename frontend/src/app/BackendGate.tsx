@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { motion } from 'motion/react'
 import { buttonClass, PulseBlocks } from '../components/ui'
-import { easeStandard, springs, timing } from '../lib/motion'
+import { easings, timing } from '../lib/motion'
 import { waitForBackend } from '../lib/wake'
 
 /**
@@ -66,7 +66,7 @@ export function BackendGate({ children }: { children: ReactNode }) {
       className="backend-gate"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      transition={{ duration: timing.standard, ease: easeStandard }}
+      transition={{ duration: timing.base, ease: easings.outQuart }}
       // `role="alert"` is already assertive, and a stated `aria-live` would
       // demote the failure to polite.
       role={failed ? 'alert' : undefined}
@@ -87,16 +87,9 @@ export function BackendGate({ children }: { children: ReactNode }) {
       </p>
 
       {failed ? (
-        <motion.button
-          type="button"
-          className={buttonClass('primary')}
-          onClick={retry}
-          whileHover={{ x: -2, y: -2 }}
-          whileTap={{ x: 0, y: 0 }}
-          transition={springs.press}
-        >
+        <button type="button" className={buttonClass('primary')} onClick={retry}>
           Try again
-        </motion.button>
+        </button>
       ) : (
         // A counter, not a bar: the wait has no progress to report.
         <p className="backend-gate__elapsed">{elapsed}s</p>

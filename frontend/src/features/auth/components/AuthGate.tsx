@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { PulseBlocks } from '../../../components/ui'
-import { easeStandard, timing } from '../../../lib/motion'
+import { easings, timing } from '../../../lib/motion'
 import { useAuth } from '../hooks/useAuth'
 import { AuthForm } from './AuthForm'
 
@@ -23,7 +23,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
         initial={{ opacity: 0 }}
         // Held back deliberately: the refresh usually answers in well under
         // this, and an indicator that appears and vanishes reads as a glitch.
-        animate={{ opacity: 1, transition: { delay: 0.4, duration: timing.standard } }}
+        animate={{ opacity: 1, transition: { delay: 0.4, duration: timing.base } }}
         aria-live="polite"
         aria-busy
       >
@@ -44,7 +44,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
         // A crossfade rather than a slide: signing in replaces the whole screen,
         // and there is no spatial relationship between the two to preserve.
         // The exit is the faster half, so nothing waits on what is leaving.
-        transition={{ duration: timing.fast, ease: easeStandard }}
+        transition={{ duration: timing.fast, ease: easings.outQuart }}
       >
         {status === 'signed-in' ? children : <AuthForm />}
       </motion.div>

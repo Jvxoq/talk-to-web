@@ -78,14 +78,11 @@ export const MessageBubble = memo(function MessageBubble({
   const hasChips = summarizing !== undefined || (message.tools?.length ?? 0) > 0
 
   return (
+    // Fade up out of nothing — the soft-arrival entrance, y only.
     <motion.div
       className={`message ${message.role}`}
-      initial={{
-        opacity: 0,
-        y: reduce ? 0 : 12,
-        x: reduce ? 0 : isUser ? 12 : -12,
-      }}
-      animate={{ opacity: 1, y: 0, x: 0 }}
+      initial={{ opacity: 0, y: reduce ? 0 : 12 }}
+      animate={{ opacity: 1, y: 0 }}
       transition={springs.card}
     >
       <span className="message-role">{isUser ? 'You' : 'Assistant'}</span>
@@ -158,7 +155,7 @@ export const MessageBubble = memo(function MessageBubble({
                   title={source.label}
                 >
                   <span className="source-chip-label">{source.label}</span>
-                  <ExternalLink strokeWidth={2} aria-hidden="true" />
+                  <ExternalLink strokeWidth={1.5} aria-hidden="true" />
                 </a>
               ) : (
                 <span className="source-chip" title={source.label}>

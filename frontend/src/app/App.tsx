@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { motion } from 'motion/react'
+import { motion, useReducedMotion } from 'motion/react'
 import { LogOut } from 'lucide-react'
 import { buttonClass, ErrorBoundary, Mark } from '../components/ui'
 import { AuthGate, AuthProvider, useAuth } from '../features/auth'
@@ -72,13 +72,10 @@ function SignOutButton() {
       type="button"
       className={buttonClass('secondary', { icon: true })}
       onClick={() => void signOut()}
-      whileHover={{ x: -2, y: -2 }}
-      whileTap={{ x: 0, y: 0 }}
-      transition={springs.press}
       aria-label="Sign out"
       title="Sign out"
     >
-      <LogOut size={16} />
+      <LogOut size={16} strokeWidth={1.5} aria-hidden="true" />
     </motion.button>
   )
 }
@@ -87,6 +84,7 @@ function Shell() {
   const [model, setModel] = useState<Model>(FALLBACK_DEFAULT_MODEL)
   const { theme, toggle } = useTheme()
   const { user, status } = useAuth()
+  const reduce = useReducedMotion()
 
   // Idle until signed in - `useConversations` would otherwise fire its first
   // `GET /conversations/` before there is a token to send with it.
@@ -113,12 +111,12 @@ function Shell() {
         <header className="header">
           <Mark
             className="mark"
-            initial={{ rotate: -120, scale: 0.5, opacity: 0 }}
-            animate={{ rotate: 0, scale: 1, opacity: 1 }}
+            initial={{ opacity: 0, scale: reduce ? 1 : 0.85 }}
+            animate={{ opacity: 1, scale: 1 }}
             transition={{ ...springs.standard, delay: 0.05 }}
           />
           <h1>Talk to web</h1>
-          <span className="eyebrow">Beta</span>
+          <span className="eyebrow--beta">Beta</span>
           {user && <span className="header__email">{user.email}</span>}
           <ThemeToggle theme={theme} onToggle={toggle} />
           {user && <SignOutButton />}
