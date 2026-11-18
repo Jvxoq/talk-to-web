@@ -3,7 +3,7 @@ import { Fragment, type CSSProperties } from 'react'
 type Props = {
   text: string
   as?: 'h1' | 'h2'
-  /** Milliseconds between words. The system's reveal stagger is 60ms. */
+  /** Milliseconds between words. The system's reveal stagger is 40ms. */
   stagger?: number
   className?: string
 }
@@ -18,8 +18,9 @@ type Props = {
  * trailing space inside an `inline-block` collapses, and the words would jam
  * together exactly while the reveal animation is on.
  */
-export function WordReveal({ text, as: Tag = 'h1', stagger = 60, className }: Props) {
+export function WordReveal({ text, as: Tag = 'h1', stagger = 40, className }: Props) {
   const words = text.split(' ')
+  // Capping the index keeps a long line inside the 600ms entrance budget.
   return (
     <Tag className={className} aria-label={text}>
       {words.map((word, i) => (
@@ -27,7 +28,7 @@ export function WordReveal({ text, as: Tag = 'h1', stagger = 60, className }: Pr
           <span
             aria-hidden="true"
             className="word"
-            style={{ '--delay': `${i * stagger}ms` } as CSSProperties}
+            style={{ '--delay': `${Math.min(i, 6) * stagger}ms` } as CSSProperties}
           >
             {word}
           </span>

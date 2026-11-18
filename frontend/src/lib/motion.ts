@@ -35,8 +35,8 @@ export const timing = {
   base: 0.2,
   slide: 0.25,
   height: 0.4,
-  reveal: 0.8,
-  staggerStep: 0.06, // ~60ms between words/rows in a staggered reveal
+  reveal: 0.6,
+  staggerStep: 0.04, // 40ms between words/rows in a staggered reveal
 } as const
 
 export const springs = {

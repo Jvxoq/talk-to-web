@@ -74,6 +74,21 @@
   text-align: center;
 }
 
+/* The signed-in address, under the list. A long one truncates rather than
+   widening the sidebar. */
+.sidebar-account {
+  margin: 0;
+  padding: var(--sp-12) var(--sp-16);
+  flex-shrink: 0;
+  border-top: var(--bw-sm) solid var(--hairline);
+  font-size: var(--fs-caption);
+  line-height: 1.4;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Why the last "new chat" did nothing. Same error treatment as the composer's
    inline status, so both failures read the same way. */
 .sidebar-error {
@@ -114,20 +129,17 @@
   background: var(--surface-strong);
 }
 
-/* The subject of this list is the open conversation — the one clay highlight.
-   accent-tint is the system's selected-row fill; on-accent-tint keeps it AA. */
+/* The open conversation takes the same dark on-dark fill as the user's own
+   bubble. accent-tint inverts to pure white in Mono and glares off the dark
+   sidebar. */
 .sidebar-item.is-selected .sidebar-item-select {
-  background: var(--accent-tint);
-  color: var(--on-accent-tint);
+  background: var(--night-raised);
+  color: var(--night-ink);
   font-weight: 600;
 }
 
-.sidebar-item-select:hover:not(:disabled) {
-  background: var(--surface-strong);
-}
-
 .sidebar-item.is-selected .sidebar-item-select:hover:not(:disabled) {
-  background: var(--accent-tint);
+  background: var(--night-hover);
 }
 
 .sidebar-item-title {
@@ -141,10 +153,6 @@
   width: 32px;
   height: 32px;
   align-self: center;
-}
-
-.sidebar-item.is-selected .sidebar-item-delete {
-  color: var(--on-accent-tint);
 }
 
 .sidebar-item.is-selected .sidebar-item-delete:hover:not(:disabled) {
@@ -174,6 +182,13 @@
 
   .sidebar-header {
     height: 48px;
+    /* Room for the corner buttons that float over this strip. */
+    padding-right: calc(var(--sp-16) + var(--corner-w));
+  }
+
+  /* The strip is one row of chats; the address moves to sign out's label. */
+  .sidebar-account {
+    display: none;
   }
 
   .sidebar-list {
@@ -220,17 +235,6 @@
   letter-spacing: normal;
 }
 
-/* Above every sentence-case label there may be one eyebrow; "Beta" is it. */
-.eyebrow--beta {
-  font-family: var(--font-sans);
-  font-size: var(--fs-sub-label);
-  font-weight: 500;
-  line-height: 1;
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-eyebrow);
-  color: var(--faint);
-}
-
 /* --- Chat log -------------------------------------------------------------- */
 
 /* min-height:0 lets the log shrink inside the flex column instead of pushing
@@ -250,6 +254,16 @@
   display: flex;
   flex-direction: column;
   gap: var(--sp-24);
+}
+
+/* The corner buttons float over this column only in the middle band: wide
+   enough for the sidebar beside it (above 720px), too narrow to leave
+   --corner-w (88px) free right of the centred 760px column (264 + 760 + 2 * 88).
+   On a phone they sit over the sidebar strip instead. */
+@media (min-width: 721px) and (max-width: 1199px) {
+  .chat {
+    padding-top: var(--sp-64);
+  }
 }
 
 /* Overlay scrollbar: the track always reserves its width so the transcript
@@ -444,11 +458,12 @@ a.source-chip:hover {
   font-size: var(--fs-body);
 }
 
-/* Prose reads in ink on paper both ways: the user turn holds ink, the reply
-   holds surface. No shadows — fills carry the difference. */
+/* The user turn is a dark on-dark fill in both themes, the reply holds
+   surface. A plain ink fill turns near-white in Mono and glares off the black
+   page. No shadows — fills carry the difference. */
 .message.user .bubble {
-  background: var(--ink);
-  color: var(--canvas);
+  background: var(--night-raised);
+  color: var(--night-ink);
 }
 
 .message.assistant .bubble {
@@ -456,7 +471,7 @@ a.source-chip:hover {
   color: var(--ink);
 }
 
-.bubble.error {
+.message.assistant .bubble.error {
   background: var(--surface);
   color: var(--error);
   border: var(--bw-sm) solid var(--error);
@@ -478,9 +493,9 @@ a.source-chip:hover {
   background: var(--ink);
 }
 
-/* In an ink-filled user turn the dots invert with the bubble. */
+/* In the dark user turn the dots take the bubble's text colour. */
 .message.user .typing span {
-  background: var(--canvas);
+  background: var(--night-ink);
 }
 
 /* --- Transcript skeleton ----------------------------------------------------
@@ -548,9 +563,9 @@ a.source-chip:hover {
   animation: skeleton-breathe 1.4s ease-in-out infinite;
 }
 
-/* Bars inside an ink-filled user turn read as pale lines on ink. */
+/* Bars inside the dark user turn read as pale lines on it. */
 .message.user .skeleton-bubble .skeleton-line {
-  background: var(--canvas);
+  background: var(--night-ink);
   opacity: 0.4;
 }
 
@@ -718,12 +733,12 @@ a.source-chip:hover {
   margin: 0.5em 0;
 }
 
-/* Code inside an inverted user bubble swaps roles with the fill. */
+/* Code inside the dark user bubble sits in a darker well. */
 .message.user .bubble .markdown code,
 .message.user .bubble .markdown pre {
-  background: var(--canvas);
-  border-color: var(--canvas);
-  color: var(--ink);
+  background: var(--night);
+  border-color: var(--night);
+  color: var(--night-ink);
 }
 
 /* --- Composer -------------------------------------------------------------- */

@@ -40,17 +40,6 @@
   letter-spacing: -0.015em;
 }
 
-.eyebrow {
-  margin: 0;
-  font-family: var(--font-sans);
-  font-size: var(--fs-caption);
-  font-weight: 500;
-  line-height: 1;
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-eyebrow);
-  color: var(--muted);
-}
-
 .auth__form {
   display: flex;
   flex-direction: column;
@@ -148,14 +137,3 @@
 }
 
 /* --- Signed-in header controls --------------------------------------------- */
-
-.header__email {
-  color: var(--muted);
-  font-size: var(--fs-caption);
-  line-height: 1.4;
-  /* A long address must not push the theme toggle off a narrow screen. */
-  max-width: 16ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}

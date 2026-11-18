@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { createPortal } from 'react-dom'
 import { motion, useReducedMotion } from 'motion/react'
 import { LogOut } from 'lucide-react'
 import { buttonClass, ErrorBoundary, Mark } from '../components/ui'
@@ -65,24 +66,26 @@ function Chat({
 }
 
 function SignOutButton() {
-  const { signOut } = useAuth()
+  const { signOut, user } = useAuth()
+  // The address rides on the label too: on a phone the sidebar strip has no
+  // room for it, and this is the one control tied to the account.
+  const label = user ? `Sign out of ${user.email}` : 'Sign out'
 
   return (
     <motion.button
       type="button"
       className={buttonClass('secondary', { icon: true })}
       onClick={() => void signOut()}
-      aria-label="Sign out"
-      title="Sign out"
+      aria-label={label}
+      title={label}
     >
       <LogOut size={16} strokeWidth={1.5} aria-hidden="true" />
     </motion.button>
   )
 }
 
-function Shell() {
+function Shell({ cornerSlot }: { cornerSlot: HTMLElement | null }) {
   const [model, setModel] = useState<Model>(FALLBACK_DEFAULT_MODEL)
-  const { theme, toggle } = useTheme()
   const { user, status } = useAuth()
   const reduce = useReducedMotion()
 
@@ -103,24 +106,32 @@ function Shell() {
           onSelect={conversations.select}
           onNew={() => void conversations.startNew()}
           error={conversations.error}
+          account={user?.email}
           onDelete={(id) => void conversations.remove(id)}
         />
       )}
 
       <div className="app">
-        <header className="header">
-          <Mark
-            className="mark"
-            initial={{ opacity: 0, scale: reduce ? 1 : 0.85 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ ...springs.standard, delay: 0.05 }}
-          />
-          <h1>Talk to web</h1>
-          <span className="eyebrow--beta">Beta</span>
-          {user && <span className="header__email">{user.email}</span>}
-          <ThemeToggle theme={theme} onToggle={toggle} />
-          {user && <SignOutButton />}
-        </header>
+        {/* The brand bar shows only while signed out. The chat page gives the
+            whole column to the conversation, and keeps the h1 for screen
+            readers. */}
+        {status === 'signed-in' ? (
+          <h1 className="sr-only">Talk to web</h1>
+        ) : (
+          <header className="header">
+            <Mark
+              className="mark"
+              initial={{ opacity: 0, scale: reduce ? 1 : 0.85 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ ...springs.standard, delay: 0.05 }}
+            />
+            <h1>Talk to web</h1>
+          </header>
+        )}
+
+        {/* Sign out joins the theme toggle in the top-right corner. The corner
+            lives above the backend gate, so it reaches it through a portal. */}
+        {user && cornerSlot && createPortal(<SignOutButton />, cornerSlot)}
 
         {/* The gate wraps only the main region: the header stays put across
             sign-in, so the app does not appear to reload around the user. */}
@@ -150,6 +161,9 @@ function Shell() {
 }
 
 export default function App() {
+  const { theme, toggle } = useTheme()
+  const [cornerSlot, setCornerSlot] = useState<HTMLElement | null>(null)
+
   return (
     // Outside `AuthProvider`, so a throw from the provider itself - a malformed
     // `/auth/refresh` body on mount, say - still lands on the crash screen
@@ -161,9 +175,18 @@ export default function App() {
           wait happens here, before anything asks. */}
       <BackendGate>
         <AuthProvider>
-          <Shell />
+          <Shell cornerSlot={cornerSlot} />
         </AuthProvider>
       </BackendGate>
+
+      {/* Top-right on every screen, the backend wait included: it sits outside
+          the gate so the theme can change while the server wakes. Last in the
+          DOM so keyboard users reach the page's own content first; it is fixed,
+          so the order does not move it on screen. */}
+      <div className="corner">
+        <ThemeToggle theme={theme} onToggle={toggle} />
+        <span ref={setCornerSlot} className="corner__slot" />
+      </div>
     </ErrorBoundary>
   )
 }

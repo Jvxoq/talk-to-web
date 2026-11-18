@@ -80,6 +80,9 @@
   --measure: 640px;
   --container: 1400px;
   --header-h: 64px;
+  /* Width the fixed top-right corner covers: two 32px icon buttons, the 8px
+     gap between them, and its 16px inset from the edge. */
+  --corner-w: calc(2 * 32px + var(--sp-8) + var(--sp-16));
 
   /* Elevation. Flat system: depth comes from fills and 1px rules. */
   --level-1: 0 0 0 1px var(--hairline);
@@ -96,8 +99,8 @@
   --dur-base: 200ms;
   --dur-slide: 250ms;
   --dur-height: 400ms;
-  --dur-reveal: 800ms;
-  --dur-theme: 1100ms;
+  --dur-reveal: 600ms;
+  --dur-theme: 320ms;
 
   font: 400 var(--fs-ui) / 1.55 var(--font-sans);
   color: var(--ink);
@@ -187,6 +190,18 @@ h4 {
   margin: 0;
 }
 
+/* The one uppercase label style. Shared by the sign-in form and the wait screen. */
+.eyebrow {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-eyebrow);
+  color: var(--muted);
+}
+
 /* Visually hidden but read by assistive tech — for labels the layout can't show. */
 .sr-only {
   position: absolute;
@@ -224,20 +239,27 @@ h4 {
   .word {
     display: inline-block;
     animation:
-      fade-in 500ms var(--ease-out-quart) var(--delay, 0ms) backwards,
-      word-rise 800ms var(--ease-out-quart) var(--delay, 0ms) backwards,
-      unblur 800ms var(--ease-out-quart) var(--delay, 0ms) backwards;
+      fade-in 300ms var(--ease-out-quart) var(--delay, 0ms) backwards,
+      word-rise var(--dur-reveal) var(--ease-out-quart) var(--delay, 0ms) backwards,
+      unblur var(--dur-reveal) var(--ease-out-quart) var(--delay, 0ms) backwards;
   }
 }
 
-/* Theme crossfade when the user flips the toggle. */
+/* Theme crossfade when the user flips the toggle: useTheme wraps the swap in a
+   view transition, so the whole page fades as one snapshot. */
 @media (prefers-reduced-motion: no-preference) {
-  html,
-  body {
-    transition:
-      background-color var(--dur-theme),
-      color var(--dur-theme);
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation-duration: var(--dur-theme);
+    animation-timing-function: var(--ease-in-out-quart);
   }
+}
+
+.theme-switching,
+.theme-switching *,
+.theme-switching *::before,
+.theme-switching *::after {
+  transition: none !important;
 }
 
 /* Belt-and-braces after the per-pattern gates: under reduce, one-off and

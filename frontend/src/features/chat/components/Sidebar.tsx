@@ -13,6 +13,8 @@ interface SidebarProps {
   onDelete: (id: number) => void
   /** Why the last "new chat" did nothing, most often the per-account cap. */
   error: string | null
+  /** The signed-in address, so a user with two accounts can tell which is open. */
+  account?: string
 }
 
 /**
@@ -30,6 +32,7 @@ export function Sidebar({
   onNew,
   onDelete,
   error,
+  account,
 }: SidebarProps) {
   const reduce = useReducedMotion() ?? false
 
@@ -92,6 +95,12 @@ export function Sidebar({
           })}
         </AnimatePresence>
       </ul>
+
+      {account && (
+        <p className="sidebar-account" title={account}>
+          {account}
+        </p>
+      )}
     </nav>
   )
 }
