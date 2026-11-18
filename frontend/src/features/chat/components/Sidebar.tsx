@@ -61,12 +61,17 @@ export function Sidebar({
           <li className="sidebar-empty">{isLoading ? 'Loading…' : 'No conversations yet'}</li>
         )}
 
-        <AnimatePresence initial={false}>
+        {/* `popLayout` lifts a deleted row out of the flow the moment it starts
+            to fade, and `layout` lets the rows below glide up into its place.
+            Without them the faded row kept its slot, then vanished, and the
+            list snapped. */}
+        <AnimatePresence initial={false} mode="popLayout">
           {conversations.map((conversation) => {
             const selected = conversation.id === activeId
             return (
               <motion.li
                 key={conversation.id}
+                layout={!reduce}
                 className={`sidebar-item${selected ? ' is-selected' : ''}`}
                 initial={{ opacity: 0, y: reduce ? 0 : -8 }}
                 animate={{ opacity: 1, y: 0 }}

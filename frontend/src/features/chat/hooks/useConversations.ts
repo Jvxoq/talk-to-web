@@ -182,19 +182,26 @@ export function useConversations(model: Model, enabled: boolean) {
       // Deleting one makes room, so whatever the cap last said is stale.
       setError(null)
       const remaining = conversationsRef.current.filter((c) => c.id !== id)
-      setConversations(remaining)
 
-      if (id !== activeId) return
-
-      if (remaining.length > 0) {
-        select(remaining[0].id)
+      if (id !== activeId || remaining.length > 0) {
+        setConversations(remaining)
+        if (id === activeId) select(remaining[0].id)
         return
       }
 
       // The last conversation is gone - open a fresh one rather than leaving
       // the composer with nothing to send into. `deleteConversation` already
       // cleared the pin; `storeConversationId` below sets the new one.
-      const created = await createConversation(modelRef.current)
+      // The replacement is created before the list changes, so the old row
+      // and the new one swap in a single render. Emptying the list first
+      // flashed the "No conversations yet" row for the length of the request.
+      let created: ConversationOut
+      try {
+        created = await createConversation(modelRef.current)
+      } catch (err) {
+        setConversations(remaining)
+        throw err
+      }
       setConversations([created])
       setPreloaded(created)
       storeConversationId(created.id)
