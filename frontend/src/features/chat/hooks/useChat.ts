@@ -86,6 +86,10 @@ export function useChat(model: Model, conversationId: number, preloaded?: Conver
   // and fall through to a duplicate `getConversation`. Storing the id, not a
   // boolean, keeps a genuine switch back free to refetch.
   const loadStartedForRef = useRef<number | null>(null)
+  // Bumped once per real load. The id alone cannot tell two loads of the same
+  // thread apart: after A -> B -> A, the first A fetch can land last and would
+  // overwrite the newer one, wiping a message sent since.
+  const loadSeqRef = useRef(0)
 
   useEffect(() => {
     // Checked first, before any state reset: StrictMode's immediate
@@ -93,6 +97,7 @@ export function useChat(model: Model, conversationId: number, preloaded?: Conver
     // bail out below without ever repopulating it.
     if (loadStartedForRef.current === conversationId) return
     loadStartedForRef.current = conversationId
+    const seq = ++loadSeqRef.current
 
     // A reply mid-flight belongs to the thread the user is leaving, not the
     // one they are about to see - cut it off rather than let it keep filling
@@ -116,12 +121,11 @@ export function useChat(model: Model, conversationId: number, preloaded?: Conver
 
     getConversation(conversationId)
       .then((conversation) => {
-        // Guarded by the ref, not a closure flag: StrictMode's remount
-        // re-enters with the same id and bails on the guard above, so a
+        // Guarded by the load counter, not a closure flag: StrictMode's
+        // remount bails on the guard above without starting a load, so a
         // cancelled closure here would strand the only fetch this run made.
-        // A real switch has already moved the ref on, which is the staleness
-        // this check exists to catch.
-        if (loadStartedForRef.current === conversationId) {
+        // Any later load, even of this same thread, has moved the counter on.
+        if (loadSeqRef.current === seq) {
           setMessages(toMessages(conversation.messages))
         }
       })
@@ -131,9 +135,9 @@ export function useChat(model: Model, conversationId: number, preloaded?: Conver
       })
       .finally(() => {
         // The skeleton has to clear even when StrictMode's remount has already
-        // stranded this fetch, or the log would sit on it forever. The id
-        // check keeps a late arrival from clearing a newer load's flag.
-        setLoadingId((current) => (current === conversationId ? null : current))
+        // stranded this fetch, or the log would sit on it forever. The
+        // counter keeps a late arrival from clearing a newer load's flag.
+        if (loadSeqRef.current === seq) setLoadingId(null)
       })
   }, [conversationId])
 
