@@ -207,11 +207,10 @@ and needs real Postgres/Qdrant — see Commands above.
   fixing before there's production data to migrate.
 - No metrics/OpenTelemetry yet — deliberately deferred, since they need
   somewhere to send data (infrastructure decision, not a code change).
-- **The default chat model routes tools poorly.**
-  `deepseek-ai/DeepSeek-V4-Flash-0731` measured 0.36 exact-match on
-  `--suite tools` (n=11), mostly by reaching for `search_web` on
-  document-scoped questions. Kept as the default by explicit choice; the
-  routing policy is what makes that survivable. Re-run `evals --suite tools`
+- **The default chat model's tool routing is not yet measured.**
+  `zai-org/GLM-5.3-Flash` replaced `deepseek-ai/DeepSeek-V4-Flash-0731`,
+  which Together retired. The old model measured 0.36 exact-match on
+  `--suite tools` (n=11). Run `evals --suite tools` on the new default, and
   before adding any model to `llm_models`.
 - **`agent_max_request_tokens` has not been confirmed against a real 400.**
   The previous value was Groq's measured 8,000-token limit. The current one is
