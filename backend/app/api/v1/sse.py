@@ -79,7 +79,9 @@ async def to_sse(events: AsyncIterator[ReplyEvent]) -> AsyncIterator[str]:
                         "model": model,
                     }
                 )
-            case ReplyFailed(detail=detail):
-                yield format_frame(error=detail)
+            case ReplyFailed(code=code):
+                # A code only. The client owns the words, so no server text
+                # can reach a reader.
+                yield format_frame(error={"code": code})
             case ReplyCompleted():
                 yield format_frame(done=True)

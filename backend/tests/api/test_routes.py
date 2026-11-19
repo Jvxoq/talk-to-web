@@ -381,7 +381,7 @@ class TestGenerateText:
         ]
 
     async def test_a_mid_stream_failure_arrives_as_an_error_frame_not_a_500(self) -> None:
-        stub = StubGenerateReply([ReplyDelta(text="part"), ReplyFailed(detail="rate limited")])
+        stub = StubGenerateReply([ReplyDelta(text="part"), ReplyFailed(code="overloaded")])
 
         async with client(StubContainer(generate_reply=stub)) as http:
             response = await http.post(
@@ -389,7 +389,7 @@ class TestGenerateText:
             )
 
         assert response.status_code == 200
-        assert response.text.endswith('data: {"error": "rate limited"}\n\n')
+        assert frames(response.text)[-1] == {"error": {"code": "overloaded"}}
 
     async def test_a_spent_chat_budget_is_a_429_before_the_stream_opens(self) -> None:
         # The whole reason the use case is awaited rather than iterated: a limit

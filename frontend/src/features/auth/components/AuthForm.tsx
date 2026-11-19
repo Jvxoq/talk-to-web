@@ -1,8 +1,7 @@
 import { useCallback, useState, type FormEvent } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
-import { Mark } from '../../../components/ui'
-import { buttonClass } from '../../../components/ui'
-import { easeStandard, springs, timing } from '../../../lib/motion'
+import { Mark, buttonClass, WordReveal } from '../../../components/ui'
+import { easings, springs, timing } from '../../../lib/motion'
 import { messageFrom } from '../../../lib/http'
 import { useAuth } from '../hooks/useAuth'
 import type { AuthMode } from '../types'
@@ -14,6 +13,11 @@ const COPY: Record<AuthMode, { title: string; action: string; switchTo: string }
 
 /** Matches the backend's `MIN_PASSWORD_LENGTH`, purely to say so before submitting. */
 const MIN_PASSWORD_LENGTH = 12
+
+const rise = (reduce: boolean) => ({
+  hidden: { opacity: 0, y: reduce ? 0 : 12 },
+  show: { opacity: 1, y: 0, transition: springs.card },
+})
 
 export function AuthForm() {
   const { submit } = useAuth()
@@ -63,29 +67,23 @@ export function AuthForm() {
     >
       <motion.div
         variants={{
-          hidden: { opacity: 0, scale: 0.6, rotate: reduce ? 0 : -90 },
-          show: { opacity: 1, scale: 1, rotate: 0, transition: springs.card },
+          hidden: { opacity: 0, scale: reduce ? 1 : 0.85 },
+          show: { opacity: 1, scale: 1, transition: springs.card },
         }}
       >
         <Mark className="mark" />
       </motion.div>
 
-      <motion.h1
-        variants={{
-          hidden: { opacity: 0, y: reduce ? 0 : 12 },
-          show: { opacity: 1, y: 0, transition: springs.card },
-        }}
-      >
-        {copy.title}
-      </motion.h1>
+      <motion.p className="eyebrow" variants={{ hidden: { opacity: 0 }, show: { opacity: 1 } }}>
+        Talk to web
+      </motion.p>
+
+      <WordReveal as="h1" text={copy.title} className="auth__title" />
 
       <motion.form
         className="auth__form"
         onSubmit={handleSubmit}
-        variants={{
-          hidden: { opacity: 0, y: reduce ? 0 : 12 },
-          show: { opacity: 1, y: 0, transition: springs.card },
-        }}
+        variants={rise(reduce)}
       >
         <label className="auth__field">
           <span>Email</span>
@@ -127,7 +125,7 @@ export function AuthForm() {
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
               exit={{ opacity: 0, height: 0 }}
-              transition={{ duration: timing.standard, ease: easeStandard }}
+              transition={{ duration: timing.height, ease: easings.standard }}
               style={{ overflow: 'hidden' }}
             >
               {error}
@@ -135,27 +133,22 @@ export function AuthForm() {
           )}
         </AnimatePresence>
 
-        <motion.button
+        <button
           type="submit"
-          className={buttonClass('primary')}
+          className={buttonClass('primary', { className: 'auth__submit' })}
           disabled={!canSubmit}
-          whileHover={canSubmit ? { x: -2, y: -2 } : undefined}
-          whileTap={canSubmit ? { x: 0, y: 0 } : undefined}
-          transition={springs.press}
+          aria-busy={busy || undefined}
         >
           {busy ? 'Working…' : copy.action}
-        </motion.button>
+        </button>
       </motion.form>
 
       <motion.button
         type="button"
-        className="auth__switch"
+        className="switch"
         onClick={switchMode}
         disabled={busy}
-        variants={{
-          hidden: { opacity: 0, y: reduce ? 0 : 12 },
-          show: { opacity: 1, y: 0, transition: springs.card },
-        }}
+        variants={{ hidden: { opacity: 0 }, show: { opacity: 1 } }}
       >
         {copy.switchTo}
       </motion.button>

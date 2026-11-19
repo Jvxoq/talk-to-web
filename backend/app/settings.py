@@ -120,6 +120,14 @@ class Settings(BaseSettings):
     llm_models: list[str] = Field(default_factory=lambda: ["deepseek-ai/DeepSeek-V4-Flash-0731"])
     llm_api_key: SecretStr
     llm_max_tokens: int = 2048
+    # Per HTTP call, and on a stream it bounds each wait for the next chunk.
+    # Unset, the OpenAI client waits 600 s, and one worker runs with
+    # `--limit-concurrency 5`, so five stalled providers stop the whole app.
+    llm_request_timeout_seconds: float = Field(default=60.0, gt=0)
+    # The whole reply: every model call, condense and tool lap together. The
+    # per-call timeout alone cannot bound a reply, because a stream that trickles
+    # one token a minute never trips it and a reply makes many calls.
+    chat_reply_timeout_seconds: float = Field(default=150.0, gt=0)
     llm_system_prompt: str = (
         "You are a helpful assistant with access to tools.\n"
         "Most user turns open with a bracketed tag: [DOCUMENTS AVAILABLE] "

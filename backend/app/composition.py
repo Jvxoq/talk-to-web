@@ -220,6 +220,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         models=list(dict.fromkeys([*settings.llm_models, settings.agent_condenser_model])),
         api_key=settings.llm_api_key.get_secret_value(),
         max_tokens=settings.llm_max_tokens,
+        request_timeout_seconds=settings.llm_request_timeout_seconds,
     )
     token_counter = ApproximateTokenCounter()
     condenser = Condenser(
@@ -405,6 +406,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 tool_output_guard=tool_output_guard,
                 max_digest_documents=settings.chat_digest_max_documents,
                 max_digest_summary_chars=settings.chat_digest_max_summary_chars,
+                reply_timeout_seconds=settings.chat_reply_timeout_seconds,
             ),
             start_conversation=StartConversation(
                 uow_factory, max_per_owner=settings.max_conversations_per_user

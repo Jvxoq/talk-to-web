@@ -1,6 +1,6 @@
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { Plus, Trash2 } from 'lucide-react'
-import { buttonClass, IconButton } from '../../../components/ui'
+import { IconButton, buttonClass } from '../../../components/ui'
 import { springs } from '../../../lib/motion'
 import type { ConversationSummary } from '../../../lib/conversation'
 
@@ -13,6 +13,8 @@ interface SidebarProps {
   onDelete: (id: number) => void
   /** Why the last "new chat" did nothing, most often the per-account cap. */
   error: string | null
+  /** The signed-in address, so a user with two accounts can tell which is open. */
+  account?: string
 }
 
 /**
@@ -30,6 +32,7 @@ export function Sidebar({
   onNew,
   onDelete,
   error,
+  account,
 }: SidebarProps) {
   const reduce = useReducedMotion() ?? false
 
@@ -40,7 +43,7 @@ export function Sidebar({
         <IconButton
           variant="secondary"
           label="New chat"
-          icon={<Plus strokeWidth={2} aria-hidden="true" />}
+          icon={<Plus strokeWidth={1.5} aria-hidden="true" />}
           onClick={() => void onNew()}
         />
       </div>
@@ -58,12 +61,17 @@ export function Sidebar({
           <li className="sidebar-empty">{isLoading ? 'Loading…' : 'No conversations yet'}</li>
         )}
 
-        <AnimatePresence initial={false}>
+        {/* `popLayout` lifts a deleted row out of the flow the moment it starts
+            to fade, and `layout` lets the rows below glide up into its place.
+            Without them the faded row kept its slot, then vanished, and the
+            list snapped. */}
+        <AnimatePresence initial={false} mode="popLayout">
           {conversations.map((conversation) => {
             const selected = conversation.id === activeId
             return (
               <motion.li
                 key={conversation.id}
+                layout={!reduce}
                 className={`sidebar-item${selected ? ' is-selected' : ''}`}
                 initial={{ opacity: 0, y: reduce ? 0 : -8 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -78,23 +86,26 @@ export function Sidebar({
                 >
                   <span className="sidebar-item-title">{conversation.title}</span>
                 </button>
-                <motion.button
+                <button
                   type="button"
                   className={buttonClass('ghost', { icon: true, className: 'sidebar-item-delete' })}
                   onClick={() => void onDelete(conversation.id)}
                   aria-label={`Delete ${conversation.title}`}
                   title="Delete conversation"
-                  whileHover={{ x: -1, y: -1 }}
-                  whileTap={{ x: 0, y: 0 }}
-                  transition={springs.press}
                 >
-                  <Trash2 strokeWidth={2} aria-hidden="true" />
-                </motion.button>
+                  <Trash2 strokeWidth={1.5} aria-hidden="true" />
+                </button>
               </motion.li>
             )
           })}
         </AnimatePresence>
       </ul>
+
+      {account && (
+        <p className="sidebar-account" title={account}>
+          {account}
+        </p>
+      )}
     </nav>
   )
 }
