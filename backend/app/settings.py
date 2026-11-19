@@ -114,10 +114,8 @@ class Settings(BaseSettings):
     # Every entry must support tool calling reliably. Run `evals --suite tools`
     # against any model added here.
     #
-    # The default measured 0.36 exact_match_rate on that suite (n=11): it calls
-    # `search_web` instead of `retrieve_documents` on document-scoped questions.
-    # A known, accepted gap. The first entry is what a new chat opens with.
-    llm_models: list[str] = Field(default_factory=lambda: ["deepseek-ai/DeepSeek-V4-Flash-0731"])
+    # The first entry is what a new chat opens with.
+    llm_models: list[str] = Field(default_factory=lambda: ["zai-org/GLM-5.3-Flash"])
     llm_api_key: SecretStr
     llm_max_tokens: int = 2048
     llm_system_prompt: str = (
