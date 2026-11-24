@@ -398,6 +398,8 @@ def test_json_keeps_transcript(drive: Any) -> None:
         "answer": "nope",
         "tool_calls": [{"name": "search_web", "arguments": "search_web(query='q')"}],
         "error": None,
+        "seeded_turns": 0,
+        "summarized": False,
     }
     assert (first["tokens_in"], first["tokens_out"]) == (1000, 100)
 

@@ -64,6 +64,11 @@ class Transcript:
     tool_calls: tuple[ToolCallRecord, ...] = ()
     # Why the trial errored. `None` for a trial that passed or failed.
     error: str | None = None
+    # How many history turns were seeded before the final input. 0 for a
+    # one-turn task. A seeded trial is not comparable to a one-turn trial.
+    seeded_turns: int = 0
+    # Whether a summarize event fired during the trial.
+    summarized: bool = False
 
 
 @dataclass(frozen=True, slots=True)

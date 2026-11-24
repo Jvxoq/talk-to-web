@@ -56,16 +56,18 @@ from app.adapters.vector.qdrant_index import QdrantVectorIndex
 from app.adapters.web.aiohttp_scraper import AiohttpWebContentFetcher
 from app.adapters.web.tavily_search import TavilyWebSearcher
 from app.application.chat.agent.condenser import Condenser
-from app.application.chat.agent.graph import build_agent_graph
+from app.application.chat.agent.graph import AgentGraph, build_agent_graph
 from app.application.chat.dto import (
     GenerateReplyInput,
     ReplyDelta,
     ReplyEvent,
     ReplyFailed,
+    ReplySummarizing,
     ReplyUsage,
 )
 from app.application.chat.guardrails.policy import InputGuardPolicy
 from app.application.chat.guardrails.tool_output import ToolOutputGuard
+from app.application.chat.models import ChatMessage
 from app.application.chat.ports import Tracer, WebContentFetcher
 from app.application.chat.tools.base import ToolRegistry, ToolRoutingPolicy, ToolSpec
 from app.application.chat.tools.fetch_web_pages import FetchWebPages
@@ -75,7 +77,7 @@ from app.application.chat.use_cases.generate_reply import GenerateReply
 from app.domain.ingestion.entities import Document, UploadedDocument
 from app.domain.ingestion.value_objects import Chunk, DocumentName
 from app.settings import Settings
-from evals.cases import EvalCase, Owner
+from evals.cases import EvalCase, Owner, expanded_history
 from evals.judge import Judge
 from evals.recorded_web import RecordedSearchClient, RecordedWeb, RecordedWebContentFetcher
 
@@ -185,6 +187,16 @@ class CaseRun:
     # rate limit) comes back as `failed` instead, because `GenerateReply`
     # itself never raises those; see its own docstring.
     error: str | None = None
+    # How many history turns were seeded into this trial's thread before the
+    # final `input` ran. 0 for a one-turn task.
+    seeded_turns: int = 0
+
+    @property
+    def summarized(self) -> bool:
+        """Did the agent shorten the thread during this trial?"""
+        return any(
+            isinstance(event, ReplySummarizing) and event.status == "start" for event in self.events
+        )
 
     @property
     def answer(self) -> str:
@@ -367,6 +379,12 @@ class EvalHarness:
     chunk_overlap: int
     embedding_dimensions: int
     _shelf: _Shelf
+    # The compiled graph and the system prompt `generate_reply` was built with.
+    # Held here so a multi-turn task can seed history into a thread: the seed
+    # has to write the same system message `GenerateReply` writes on a new
+    # thread, because it skips that message once a thread has history.
+    graph: AgentGraph
+    system_prompt: str
     # Short hash of what the model is shown: the system prompt and every tool
     # spec. Stored in the results file so two runs can be told apart by what
     # they were given, not by the date they ran.
@@ -448,22 +466,51 @@ class EvalHarness:
             run.attempts = attempt
         return run
 
+    async def _seed_history(self, case: EvalCase, owner_id: int, conversation_id: int) -> None:
+        """Write a task's earlier turns into its thread, with no model call.
+
+        The turns go straight into the checkpointer as if they had already
+        happened, so only the final `input` reaches the model under test. The
+        system prompt goes first, because `GenerateReply` adds it only to an
+        empty thread. The thread key mirrors `generate_reply._thread_id`; a
+        wrong key leaves the history unread and the answer cannot recall it,
+        which `tests/evals/test_seeding.py` catches.
+        """
+        if not case.history:
+            return
+        messages = [
+            ChatMessage(role="system", content=self.system_prompt),
+            *(
+                ChatMessage(role=role, content=text)
+                for role, text in expanded_history(case.history)
+            ),
+        ]
+        await self.graph.aupdate_state(
+            {"configurable": {"thread_id": f"{owner_id}:{conversation_id}"}},
+            {"messages": messages},
+            as_node="agent",
+        )
+
     async def _run_once(self, case: EvalCase, *, temperature: float) -> CaseRun:
         started = time.perf_counter()
         run = CaseRun(case=case)
+        owner_id = owner_id_for(case.owner)
+        # Every case is its own thread: cross-case state would make one case's
+        # answer depend on run order, which is exactly what an eval must not
+        # do. A number rather than `None`, because a turn with no thread owns no
+        # documents and the rag suite would then have nothing to retrieve. Drawn
+        # per attempt, so a retried trial is seeded into a thread of its own.
+        conversation_id = next(_case_threads)
         try:
+            await self._seed_history(case, owner_id, conversation_id)
+            run.seeded_turns = len(case.history)
             events = await self.generate_reply(
                 GenerateReplyInput(
                     model=self.model,
                     user_input=case.input,
-                    owner_id=owner_id_for(case.owner),
+                    owner_id=owner_id,
                     temperature=temperature,
-                    # Every case is its own thread: cross-case state would make
-                    # one case's answer depend on run order, which is exactly
-                    # what an eval must not do. A number rather than `None`,
-                    # because a turn with no thread owns no documents and the
-                    # rag suite would then have nothing to retrieve.
-                    conversation_id=next(_case_threads),
+                    conversation_id=conversation_id,
                 )
             )
             async for event in events:
@@ -716,6 +763,8 @@ async def build_harness(
         chunk_overlap=settings.chunk_overlap,
         embedding_dimensions=settings.embedding_dimensions,
         _shelf=shelf,
+        graph=graph,
+        system_prompt=settings.llm_system_prompt,
         prompt_version=compute_prompt_version(settings.llm_system_prompt, registry.specs()),
         web_mode=web_mode,
     )

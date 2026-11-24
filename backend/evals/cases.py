@@ -13,6 +13,7 @@ judge real grounding text, so a stale filename now changes a score instead of
 only a comment.
 """
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal
 
@@ -46,6 +47,78 @@ is the state `ToolRoutingPolicy` refuses `retrieve_documents` in and, for the
 same turn, stops holding `search_web` back. Nothing exercised that state
 before, and it is not a corner: it is every account's first session.
 """
+
+
+class HistoryTurn(BaseModel):
+    """One earlier turn of a multi-turn task, seeded before the final `input`.
+
+    `text` is the part a reader of the dataset cares about, such as the fact
+    the final question depends on. `pad_chars` adds deterministic filler after
+    it, so a task can pass the summarize threshold (about 12k tokens) without a
+    50 KB literal in the `.jsonl` file. The filler is plain chatter that holds
+    no fact, so it cannot change the answer. See `expanded_history`.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    role: Literal["user", "assistant"]
+    text: str
+    # Upper bound is a typo guard: 200k characters is already about 50k tokens.
+    pad_chars: int = Field(default=0, ge=0, le=200_000)
+
+    @model_validator(mode="after")
+    def _text_is_not_blank(self) -> "HistoryTurn":
+        """A blank turn seeds nothing, and most providers reject an empty message."""
+        if not self.text.strip():
+            raise ValueError("history text must not be blank")
+        return self
+
+
+_FILLER_SENTENCES: tuple[str, ...] = (
+    "The garden shed still needs a fresh coat of paint before the weather turns.",
+    "A neighbour offered to lend a ladder, which would make the gutters much easier.",
+    "The bookshelf in the hallway has started to lean a little toward the window.",
+    "Someone left a folded newspaper on the bench outside the bakery this morning.",
+    "The kettle in the shared kitchen takes forever to boil these days.",
+    "A cyclist rang a bell twice at the corner and then turned toward the river.",
+    "The radio played a slow song about trains while the soup simmered on the stove.",
+    "Rain tapped on the skylight for most of the afternoon and then stopped quietly.",
+)
+"""Neutral sentences for `HistoryTurn.pad_chars`. No digits, no names, no money, no
+codes, so no task needle can collide with them."""
+
+
+def _filler(chars: int, seed: int) -> str:
+    """About `chars` characters of filler, the same every time for the same inputs.
+
+    Whole sentences only, so the result is at most `chars` long (one sentence
+    over when `chars` is smaller than a sentence). `seed` shifts where in the
+    list a turn starts, so neighbouring turns do not repeat each other.
+    """
+    sentences: list[str] = []
+    size = 0
+    index = seed * 3
+    while True:
+        sentence = _FILLER_SENTENCES[index % len(_FILLER_SENTENCES)]
+        if sentences and size + len(sentence) + 1 > chars:
+            break
+        sentences.append(sentence)
+        size += len(sentence) + 1
+        index += 1
+    return " ".join(sentences)
+
+
+def expanded_history(
+    history: Sequence[HistoryTurn],
+) -> list[tuple[Literal["user", "assistant"], str]]:
+    """Every history turn as `(role, text)`, with its filler added."""
+    return [
+        (
+            turn.role,
+            f"{turn.text} {_filler(turn.pad_chars, index)}" if turn.pad_chars else turn.text,
+        )
+        for index, turn in enumerate(history)
+    ]
 
 
 class Expectation(BaseModel):
@@ -113,8 +186,31 @@ class EvalCase(BaseModel):
     # Which eval account to run as. Defaults to the account the fixtures are
     # indexed under, which is what almost every case wants.
     owner: Owner = "with_documents"
+    # Earlier turns of a multi-turn task (B5). The harness seeds them into the
+    # trial's own fresh thread without calling any model, then runs `input` as
+    # the one turn the model under test answers. Empty for a one-turn task.
+    history: list[HistoryTurn] = Field(default_factory=list)
     expect: Expectation = Field(default_factory=Expectation)
     tags: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _history_alternates(self) -> "EvalCase":
+        """History starts with the user and ends with the assistant, turn by turn.
+
+        It ends with the assistant because `input` is the next user turn. Two
+        user turns in a row is a shape the app never stores, and a seeded thread
+        shaped that way would grade a state no real chat reaches.
+        """
+        for index, turn in enumerate(self.history):
+            expected = "user" if index % 2 == 0 else "assistant"
+            if turn.role != expected:
+                raise ValueError(
+                    f"history turn {index} is {turn.role!r}, expected {expected!r}: "
+                    "history must start with user and alternate"
+                )
+        if self.history and self.history[-1].role != "assistant":
+            raise ValueError("history must end with an assistant turn, before the final input")
+        return self
 
     @model_validator(mode="after")
     def _empty_owner_expects_nothing_retrieved(self) -> "EvalCase":

@@ -18,7 +18,10 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from evals.cases import BEHAVIORS, EvalCase, load_cases
+from app.adapters.llm.approximate_token_counter import ApproximateTokenCounter
+from app.application.chat.models import ChatMessage
+from app.settings import Settings
+from evals.cases import BEHAVIORS, EvalCase, expanded_history, load_cases
 from evals.recorded_web import INDEX_NAME, RecordedWeb, normalize_url
 
 _EVALS_DIR = Path(__file__).parents[2] / "evals"
@@ -203,3 +206,55 @@ def test_web_tasks_in_ci_do_not_need_the_live_web(name: str) -> None:
         )
     ]
     assert not offenders
+
+
+_HISTORY_BUDGET = Settings.model_fields["agent_history_token_budget"].default
+"""The production summarize threshold, read from the settings default so a
+change to it fails here instead of quietly leaving a task under the line."""
+
+
+def _history_tasks() -> list[EvalCase]:
+    return [case for name in _DATASETS for case in _load(name) if case.history]
+
+
+def test_a_multi_turn_task_is_exercised() -> None:
+    """B5 is a multi-turn behavior. With no seeded task in the dataset, the
+    schema field and the harness path that reads it run on nothing."""
+    assert [case.id for case in _history_tasks() if "b5" in case.tags]
+
+
+def test_summary_tasks_pass_the_summarize_threshold() -> None:
+    """A task tagged `summary` claims the chat is long enough to be shortened.
+    Under the threshold the agent never summarizes, and the task would pass
+    without testing recall after a summary."""
+    counter = ApproximateTokenCounter()
+    short = [
+        case.id
+        for case in _history_tasks()
+        if "summary" in case.tags
+        and counter.count(
+            [ChatMessage(role=role, content=text) for role, text in expanded_history(case.history)]
+        )
+        <= _HISTORY_BUDGET
+    ]
+    assert short == []
+
+
+def test_summary_tag_needs_history() -> None:
+    """The tag on a one-turn task would promise a summary no trial can reach."""
+    summary_tasks = [case for name in _DATASETS for case in _load(name) if "summary" in case.tags]
+    assert summary_tasks
+    assert [case.id for case in summary_tasks if not case.history] == []
+
+
+def test_history_needles_are_not_in_the_filler() -> None:
+    """A needle that also appears in the generated filler would pass or fail
+    for the filler's reason, not the model's."""
+    clashes = [
+        (case.id, needle)
+        for case in _history_tasks()
+        for needle in (*case.expect.must_contain, *case.expect.must_not_contain)
+        for turn, (_, expanded) in zip(case.history, expanded_history(case.history), strict=True)
+        if turn.pad_chars and needle.lower() in expanded.removeprefix(turn.text).lower()
+    ]
+    assert clashes == []

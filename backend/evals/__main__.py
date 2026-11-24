@@ -463,6 +463,8 @@ def _transcript(run: CaseRun) -> Transcript:
             if isinstance(event, ReplyToolStarted)
         ),
         error=error,
+        seeded_turns=run.seeded_turns,
+        summarized=run.summarized,
     )
 
 
