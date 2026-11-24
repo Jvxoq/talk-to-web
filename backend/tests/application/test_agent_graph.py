@@ -10,7 +10,7 @@ No Postgres: the checkpointer is `InMemorySaver` or absent entirely.
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -42,6 +42,7 @@ from app.application.chat.tools.base import AgentTool, ToolRegistry, ToolRouting
 from app.application.chat.use_cases.generate_reply import GenerateReply
 from app.domain.ingestion.entities import DocumentStatus, UploadedDocument
 from app.domain.usage.errors import RateLimited
+from tests.conftest import logged
 from tests.fakes import (
     FakeAgentTool,
     FakeChatModel,
@@ -50,6 +51,9 @@ from tests.fakes import (
     RecordingTracer,
     UnitOfWorkSpy,
 )
+
+if TYPE_CHECKING:
+    from loguru import Record
 
 SYSTEM_PROMPT = "SYSTEM PROMPT"
 
@@ -250,7 +254,18 @@ class TestPlainAnswer:
         # event rather than raised through a half-written stream.
         failures = [event for event in events if isinstance(event, ReplyFailed)]
         assert len(failures) == 1
-        assert "boom" in failures[0].detail
+        assert failures[0].detail == GENERIC_FAILURE
+
+
+GENERIC_FAILURE = "Something went wrong while generating the reply - please try again."
+
+# A provider message that names the key and links to a dashboard, worded so that
+# no known classification matches it. Its fragments must stay out of anything
+# the client is sent.
+LEAKY_PROVIDER_TEXT = (
+    "Quota policy violated for key sk-live-abc123 - see https://dashboard.provider.example/keys"
+)
+LEAKY_FRAGMENTS = ("sk-live-abc123", "dashboard.provider.example", "Quota policy")
 
 
 class TestOneToolCall:
@@ -891,6 +906,85 @@ class TestFriendlyAuthFailure:
         )
         assert "api-keys" not in failures[0].detail
         assert "401" not in failures[0].detail
+
+
+class TestUnrecognisedProviderError:
+    async def test_the_reader_gets_our_own_sentence(self) -> None:
+        model = FakeChatModel(
+            turns=[[ModelChunk(text="x")]], fail_with=RuntimeError(LEAKY_PROVIDER_TEXT)
+        )
+
+        events = await collect(build_use_case(model))
+
+        failures = [event for event in events if isinstance(event, ReplyFailed)]
+        assert [failure.detail for failure in failures] == [GENERIC_FAILURE]
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            pytest.param(LEAKY_PROVIDER_TEXT, id="unrecognised"),
+            pytest.param(
+                "Invalid API key sk-live-abc123 - see https://dashboard.provider.example/keys",
+                id="auth-failure",
+            ),
+        ],
+    )
+    async def test_no_raw_text_reaches_any_event(self, raw: str) -> None:
+        model = FakeChatModel(turns=[[ModelChunk(text="x")]], fail_with=RuntimeError(raw))
+
+        events = await collect(build_use_case(model))
+
+        sent = " ".join(event.model_dump_json() for event in events)
+        for fragment in (*LEAKY_FRAGMENTS, "Invalid API key"):
+            assert fragment not in sent
+
+    async def test_the_raw_text_is_logged(self, log_records: list["Record"]) -> None:
+        model = FakeChatModel(
+            turns=[[ModelChunk(text="x")]], fail_with=RuntimeError(LEAKY_PROVIDER_TEXT)
+        )
+
+        await collect(build_use_case(model))
+
+        assert logged(log_records) == [
+            ("WARNING", f"Agent run failed for model test-model: {LEAKY_PROVIDER_TEXT}", False)
+        ]
+
+    async def test_the_raw_error_is_on_the_reply_span(self) -> None:
+        tracer = RecordingTracer()
+        error = RuntimeError(LEAKY_PROVIDER_TEXT)
+        model = FakeChatModel(turns=[[ModelChunk(text="x")]], fail_with=error)
+
+        await collect(build_use_case(model, tracer=tracer))
+
+        assert tracer.named("chat.reply")[0].errors == [error]
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            pytest.param(
+                "rate_limit_exceeded: slow down",
+                "The assistant is busy right now - please try again in a moment.",
+                id="rate-limit-marker",
+            ),
+            pytest.param(
+                "Error code: 429 - too many requests",
+                "The assistant is busy right now - please try again in a moment.",
+                id="429",
+            ),
+            pytest.param(
+                "Error code: 401 - invalid_api_key",
+                "The assistant is unavailable right now - please try again later.",
+                id="auth-failure",
+            ),
+        ],
+    )
+    async def test_known_cases_keep_their_sentence(self, raw: str, expected: str) -> None:
+        model = FakeChatModel(turns=[[ModelChunk(text="x")]], fail_with=RuntimeError(raw))
+
+        events = await collect(build_use_case(model))
+
+        failures = [event for event in events if isinstance(event, ReplyFailed)]
+        assert [failure.detail for failure in failures] == [expected]
 
 
 class TestUsageStream:
