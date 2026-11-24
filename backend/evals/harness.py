@@ -525,7 +525,13 @@ class EvalHarness:
         return run
 
 
-def compute_prompt_version(system_prompt: str, specs: Sequence[ToolSpec]) -> str:
+def compute_prompt_version(
+    system_prompt: str,
+    specs: Sequence[ToolSpec],
+    *,
+    condenser_model: str,
+    condenser_prompts: Sequence[str],
+) -> str:
     """A 12-character hash of everything the model is shown before it answers.
 
     The system prompt, then each tool's name, description and argument schema,
@@ -533,11 +539,15 @@ def compute_prompt_version(system_prompt: str, specs: Sequence[ToolSpec]) -> str
     the hash. The schema is included because it carries the argument
     descriptions the model reads when it fills a call in.
 
-    Not included: the condenser prompts. They shape what the model reads back
-    after a tool call, but they are not what it is told, and a hash that moves
-    on every unrelated tweak stops meaning "the prompt changed".
+    The condenser model name and its prompts (summary, tool result, document
+    summary) are included too. They write the summary and the shortened tool
+    output the answering model reads on a long chat, so a change to them
+    changes what the model sees.
     """
     digest = hashlib.sha256(system_prompt.encode("utf-8"))
+    for text in (condenser_model, *condenser_prompts):
+        digest.update(b"\x00")
+        digest.update(text.encode("utf-8"))
     for spec in sorted(specs, key=lambda item: item.name):
         digest.update(b"\x00")
         digest.update(spec.name.encode("utf-8"))
@@ -765,7 +775,16 @@ async def build_harness(
         _shelf=shelf,
         graph=graph,
         system_prompt=settings.llm_system_prompt,
-        prompt_version=compute_prompt_version(settings.llm_system_prompt, registry.specs()),
+        prompt_version=compute_prompt_version(
+            settings.llm_system_prompt,
+            registry.specs(),
+            condenser_model=settings.agent_condenser_model,
+            condenser_prompts=(
+                settings.agent_summary_prompt,
+                settings.agent_tool_condense_prompt,
+                settings.agent_document_summary_prompt,
+            ),
+        ),
         web_mode=web_mode,
     )
 

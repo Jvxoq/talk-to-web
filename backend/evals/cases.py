@@ -13,6 +13,7 @@ judge real grounding text, so a stale filename now changes a score instead of
 only a comment.
 """
 
+import inspect
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal
@@ -106,6 +107,15 @@ def _filler(chars: int, seed: int) -> str:
         size += len(sentence) + 1
         index += 1
     return " ".join(sentences)
+
+
+def filler_fingerprint() -> str:
+    """The padding inputs as one string, for the dataset version.
+
+    The sentences and the code that picks them. A change to either gives every
+    padded task different text, so two runs on either side are not comparable.
+    """
+    return "\x00".join((*_FILLER_SENTENCES, inspect.getsource(_filler)))
 
 
 def expanded_history(

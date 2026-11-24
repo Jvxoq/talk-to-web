@@ -126,11 +126,11 @@ class TestRecordedSearch:
     async def test_an_unknown_query_gets_the_real_empty_search_text(
         self, search_tool: SearchWeb
     ) -> None:
-        outcome = await search_tool.run({"query": "weather in Paris"}, CONTEXT)
+        outcome = await search_tool.run({"query": "bus timetable in Paris"}, CONTEXT)
 
         assert outcome.ok
         assert outcome.content.startswith(
-            "The web search for 'weather in Paris' returned no results."
+            "The web search for 'bus timetable in Paris' returned no results."
         )
         assert outcome.sources == ()
 

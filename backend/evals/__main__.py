@@ -70,7 +70,14 @@ from uuid import uuid4
 from loguru import logger
 
 from app.application.chat.dto import ReplyToolStarted
-from evals.cases import SUITES, EvalCase, behavior_of, load_all_cases, load_cases
+from evals.cases import (
+    SUITES,
+    EvalCase,
+    behavior_of,
+    filler_fingerprint,
+    load_all_cases,
+    load_cases,
+)
 from evals.harness import CaseRun, EvalHarness, WebMode, build_harness, fixture_text
 from evals.judge import JudgeScore
 from evals.metrics.budgets import summarize_budgets
@@ -358,6 +365,9 @@ def _label(run: CaseRun) -> str:
     return run.case.id if run.sample == 1 else f"{run.case.id}#{run.sample}"
 
 
+_SUMMARY_TAG = "summary"
+
+
 def _sample_failures(run: CaseRun, harness: EvalHarness) -> list[str]:
     """What one sample got wrong, or nothing.
 
@@ -384,6 +394,12 @@ def _sample_failures(run: CaseRun, harness: EvalHarness) -> list[str]:
                 f"expected one of {case.expect.expected_sources} in "
                 f"top-{harness.retrieval_k}, got {returned[: harness.retrieval_k]}"
             )
+
+    if _SUMMARY_TAG in case.tags and not run.summarized:
+        # The task claims its chat is long enough to be shortened. If no
+        # summary fired, the model read the fact verbatim and the pass proves
+        # nothing about recall after a summary.
+        failures.append("task is tagged `summary` but no summary fired")
 
     check = _substring_check(run)
     if check.missing_required:
@@ -495,11 +511,12 @@ def dataset_version(datasets_dir: Path, fixtures_dir: Path, suites: Sequence[str
     """A 12-character hash of the dataset files and fixtures a run used.
 
     Hashes each suite's `.jsonl` and every fixture file, recorded web pages
-    included, by name and bytes, in sorted order. Fixtures are all included
+    included, by name and bytes, in sorted order, plus the history filler a
+    padded task is built from. Fixtures are all included
     because `index_fixtures` indexes the whole directory for every suite, so
     any of them can change an answer.
     """
-    digest = hashlib.sha256()
+    digest = hashlib.sha256(filler_fingerprint().encode("utf-8"))
     files = [datasets_dir / f"{suite}.jsonl" for suite in sorted(suites)]
     if fixtures_dir.is_dir():
         files.extend(sorted(path for path in fixtures_dir.rglob("*") if path.is_file()))
@@ -539,6 +556,11 @@ async def _main(argv: list[str] | None = None) -> int:
     cases = _select_cases(args.suite, args.limit, args.tag)
     if not cases:
         logger.warning("No cases matched the given --suite/--tag/--limit; nothing to run.")
+        if args.mode is not None:
+            # A gate or release run that measured nothing must not read as a
+            # pass. A wrong --tag would otherwise turn the check green.
+            logger.error(f"--mode {args.mode} selected no tasks, so nothing was measured.")
+            return 2
         return 0
 
     async with build_harness(

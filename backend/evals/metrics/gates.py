@@ -99,6 +99,9 @@ def judge_gate(trials: Sequence[TrialResult]) -> BarVerdict:
         summary += ", ".join(sorted(rerun_ids)) + "."
     else:
         summary += "None failed the first trial."
+    errored = sorted({t.task_id for t in first if t.outcome == "errored"})
+    if errored:
+        summary += f" {len(errored)} errored, not graded: " + ", ".join(errored) + "."
     return BarVerdict(failed=False, reasons=(summary,))
 
 

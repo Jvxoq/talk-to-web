@@ -29,7 +29,8 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Never cancel: a second manual start must wait, not kill a paid run.
+  cancel-in-progress: false
 
 defaults:
   run:

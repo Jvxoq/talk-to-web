@@ -1,0 +1,15 @@
+{
+  "answer": "Mistral Vale is cloudy at 11 C with a light westerly wind, and rain is expected after dusk.",
+  "results": [
+    {
+      "title": "Mistral Vale weather today",
+      "url": "https://valeweather.example/mistral-vale/today",
+      "content": "Mistral Vale right now: cloudy, 11 C, wind 14 km/h from the west. Rain is expected after dusk, with a low of 7 C overnight."
+    },
+    {
+      "title": "Mistral Vale five-day forecast",
+      "url": "https://valeweather.example/mistral-vale/forecast",
+      "content": "Thursday: showers, high 12 C. Friday: clearing, high 14 C. Saturday: sunny, high 16 C."
+    }
+  ]
+}

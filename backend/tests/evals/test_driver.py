@@ -32,8 +32,9 @@ from app.application.chat.dto import (
 from app.application.chat.models import Source
 from app.application.chat.tools.base import ToolSpec
 from evals import __main__ as driver
+from evals import cases as cases_module
 from evals.__main__ import _select_cases, _verdicts, dataset_version
-from evals.cases import EvalCase, Expectation, behavior_of
+from evals.cases import EvalCase, Expectation, behavior_of, expanded_history, load_cases
 from evals.harness import CaseRun, EvalHarness, compute_prompt_version
 from evals.judge import JudgeScore
 from evals.report import (
@@ -364,6 +365,55 @@ def test_release_exits_one_on_three_failures_in_a_task(drive: Any) -> None:
     assert results["tasks"][0]["failed"] == 3
 
 
+def test_gate_errored_extra_trial_exits_two(drive: Any) -> None:
+    """The first trial failed and an extra trial errored. Nothing confirmed the
+    failure and nothing cleared it, so the run cannot be trusted: exit 2."""
+    code, results, harness = drive(["--mode", "gate"], {"t1": ["fail", "error", "pass"]})
+
+    assert code == 2
+    assert harness.calls.count("t1") == 3
+    assert results["quality_failed"] is False
+    assert results["tasks"][0]["errored"] == 1
+
+
+def test_release_allows_eight_failures_of_280(drive: Any) -> None:
+    """28 tasks x 10 trials. Four tasks fail twice: 8 failures, no task has 3."""
+    script = {f"t{n}": ["fail", "fail"] for n in range(1, 5)}
+
+    code, results, _ = drive(["--mode", "release"], script, tasks=28)
+
+    assert results["totals"] == {"passed": 272, "failed": 8, "errored": 0}
+    assert code == 0
+    assert results["quality_failed"] is False
+
+
+def test_release_blocks_nine_failures_of_280(drive: Any) -> None:
+    script = {f"t{n}": ["fail", "fail"] for n in range(1, 5)} | {"t5": ["fail"]}
+
+    code, results, _ = drive(["--mode", "release"], script, tasks=28)
+
+    assert results["totals"] == {"passed": 271, "failed": 9, "errored": 0}
+    assert code == 1
+    assert results["quality_failed"] is True
+
+
+@pytest.mark.parametrize("mode", ["gate", "release"])
+def test_mode_with_no_matching_tag_exits_two(mode: str, tmp_path: Path) -> None:
+    """A gate that selected nothing measured nothing. Exit 0 would read as a pass."""
+    out = tmp_path / "r.json"
+
+    code = driver.main(["--mode", mode, "--tag", "no-such-tag", "--out", str(out)])
+
+    assert code == 2
+    assert not out.exists()
+
+
+def test_plain_run_with_no_matching_tag_exits_zero(tmp_path: Path) -> None:
+    code = driver.main(["--tag", "no-such-tag", "--out", str(tmp_path / "r.json")])
+
+    assert code == 0
+
+
 def test_release_errored_trials_are_excluded(drive: Any) -> None:
     """Three errors are not three failures: the task is still within its limit."""
     code, results, _ = drive(["--mode", "release"], {"t1": ["error"] * 3})
@@ -459,15 +509,41 @@ def test_dataset_version_tracks_content(tmp_path: Path) -> None:
     assert dataset_version(datasets, fixtures, ["tools"]) != before
 
 
+def _prompt_version(
+    prompt: str,
+    specs: list[ToolSpec],
+    *,
+    model: str = "cheap-model",
+    prompts: tuple[str, ...] = ("summary", "tool", "document"),
+) -> str:
+    return compute_prompt_version(prompt, specs, condenser_model=model, condenser_prompts=prompts)
+
+
 def test_prompt_version_tracks_prompt_and_tools() -> None:
     spec = ToolSpec(name="a", description="finds files", parameters={"type": "object"})
     other = ToolSpec(name="b", description="searches", parameters={"type": "object"})
-    base = compute_prompt_version("be helpful", [spec, other])
+    base = _prompt_version("be helpful", [spec, other])
 
-    assert compute_prompt_version("be helpful", [other, spec]) == base
-    assert compute_prompt_version("be kind", [spec, other]) != base
+    assert _prompt_version("be helpful", [other, spec]) == base
+    assert _prompt_version("be kind", [spec, other]) != base
     reworded = spec.model_copy(update={"description": "finds docs"})
-    assert compute_prompt_version("be helpful", [reworded, other]) != base
+    assert _prompt_version("be helpful", [reworded, other]) != base
+
+
+def test_prompt_version_tracks_condenser() -> None:
+    """The summary text and the condenser model decide what the model reads on a
+    long chat, so changing either is a different prompt."""
+    spec = ToolSpec(name="a", description="finds files", parameters={"type": "object"})
+    base = _prompt_version("be helpful", [spec])
+
+    assert _prompt_version("be helpful", [spec], model="other-model") != base
+    assert (
+        _prompt_version("be helpful", [spec], prompts=("new summary", "tool", "document")) != base
+    )
+    assert (
+        _prompt_version("be helpful", [spec], prompts=("summary", "new tool", "document")) != base
+    )
+    assert _prompt_version("be helpful", [spec], prompts=("summary", "tool", "new doc")) != base
 
 
 # --- results grouped by behavior ---------------------------------------------------
@@ -628,3 +704,20 @@ def test_dataset_version_tracks_recorded_web_pages(tmp_path: Path) -> None:
     page.write_text("two")
 
     assert dataset_version(datasets, fixtures, ["tools"]) != before
+
+
+def test_dataset_version_moves_when_history_filler_changes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Someone edits the filler sentences. Every padded trial now sees different
+    text, but the version hash read only .jsonl and fixture files, so two
+    non-comparable runs carried the same dataset version."""
+    evals_dir = Path(__file__).parents[2] / "evals"
+    [task] = [
+        c for c in load_cases(Path("tools.jsonl")) if c.id == "tools-018-recall-fact-after-summary"
+    ]
+    before_text = expanded_history(task.history)
+    before = dataset_version(evals_dir / "datasets", evals_dir / "fixtures", ["tools"])
+
+    monkeypatch.setattr(cases_module, "_FILLER_SENTENCES", ("A different sentence.",))
+
+    assert expanded_history(task.history) != before_text
+    assert dataset_version(evals_dir / "datasets", evals_dir / "fixtures", ["tools"]) != before

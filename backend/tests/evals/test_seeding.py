@@ -15,7 +15,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from app.application.chat.models import ChatMessage, ModelChunk
 from app.settings import Settings
-from evals.__main__ import _transcript
+from evals.__main__ import _sample_failures, _transcript
 from evals.cases import EvalCase, load_cases
 from evals.harness import CaseRun, EvalHarness
 from tests.application import test_system_layer as layer
@@ -190,3 +190,39 @@ async def test_recent_correction_stays_verbatim(rig: Rig) -> None:
     [seen] = rig.model.seen_messages
     assert any("tavish-2058" in m.content for m in seen)
     assert all("marlowe-7731" not in m.content for m in seen)
+
+
+async def test_summary_task_is_flagged_when_no_summary_fired(settings: Settings) -> None:
+    """A dev's .env sets AGENT_HISTORY_TOKEN_BUDGET=50000. The 14k-token chat is
+    never summarized, the model reads marlowe-7731 straight from turn 1, and
+    tools-018 passes. `summarized` is stored but never graded."""
+    big = settings.model_copy(update={"agent_history_token_budget": 50_000})
+    model = FakeChatModel(turns=[[ModelChunk(text="marlowe-7731")]])
+    graph = layer.build_graph(big, model, [], checkpointer=InMemorySaver())
+    harness = EvalHarness(
+        generate_reply=layer.build_use_case(big, graph),
+        judge=cast(Any, None),
+        embedder=cast(Any, None),
+        vector_index=cast(Any, None),
+        model="m",
+        retrieval_k=3,
+        chunk_size=1,
+        chunk_overlap=0,
+        embedding_dimensions=1,
+        _shelf=cast(Any, None),
+        graph=graph,
+        system_prompt=layer.SYSTEM_PROMPT,
+    )
+    task = _dataset_task("tools-018-recall-fact-after-summary")
+
+    run = await harness.run_case(task)
+
+    assert not run.summarized
+    assert _sample_failures(run, harness), "task tagged `summary` passed with no summary"
+
+
+async def test_summary_task_is_not_flagged_when_summary_fired(rig: Rig) -> None:
+    run = await rig.run(_dataset_task("tools-018-recall-fact-after-summary"))
+
+    assert run.summarized
+    assert not any("summary" in reason for reason in _sample_failures(run, rig.harness))

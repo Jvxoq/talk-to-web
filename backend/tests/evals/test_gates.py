@@ -125,3 +125,15 @@ def test_counts_per_task() -> None:
         TaskCounts("a", passed=2, failed=1, errored=1),
         TaskCounts("b", passed=0, failed=1, errored=0),
     ]
+
+
+def test_gate_summary_names_errored_first_trials() -> None:
+    """Two tasks ran and one errored. "None failed" alone would read as two clean passes."""
+    trials = _trials("a", "passed") + _trials("b", "errored")
+
+    verdict = judge_gate(trials)
+
+    assert not verdict.failed
+    assert verdict.reasons == (
+        "2 task(s) ran. None failed the first trial. 1 errored, not graded: b.",
+    )

@@ -9,6 +9,10 @@
     {
       "terms": ["brindlewick", "tram"],
       "file": "search/brindlewick-tram.json"
+    },
+    {
+      "terms": ["weather"],
+      "file": "search/mistral-vale-weather.json"
     }
   ]
 }

@@ -194,18 +194,38 @@ def test_every_example_url_a_task_names_has_a_recording(name: str) -> None:
 def test_web_tasks_in_ci_do_not_need_the_live_web(name: str) -> None:
     """`ci` rule 1: recorded pages make a B2 task offline, but a task that
     names a real host would still reach for the internet under `--web live`
-    only. Keep every `ci` fetch task on a recorded URL."""
+    only. Keep every `ci` fetch task on a recorded URL, and every `ci` search
+    task on a recorded search."""
+    web = RecordedWeb.load(_WEB_DIR)
     offenders = [
         case.id
         for case in _load(name)
         if _CI_TAG in case.tags
-        and "fetch_web_pages" in case.expect.tools
-        and any(
-            not (urlsplit(url).hostname or "").endswith(".example")
-            for url in _URL.findall(case.input)
+        and (
+            (
+                "fetch_web_pages" in case.expect.tools
+                and any(
+                    not (urlsplit(url).hostname or "").endswith(".example")
+                    for url in _URL.findall(case.input)
+                )
+            )
+            or ("search_web" in case.expect.tools and web.search(case.input) is None)
         )
     ]
     assert not offenders
+
+
+def test_fetch_task_needle_is_not_copied_from_the_input() -> None:
+    """tools-017 once graded the URL the user pasted. A model that echoes the
+    question satisfies that without using what it fetched."""
+    echoed = [
+        (case.id, needle)
+        for name in _DATASETS
+        for case in _load(name)
+        for needle in case.expect.must_contain
+        if needle.lower() in case.input.lower()
+    ]
+    assert echoed == []
 
 
 _HISTORY_BUDGET = Settings.model_fields["agent_history_token_budget"].default
