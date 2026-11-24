@@ -10,10 +10,18 @@ See `conftest.py` for what SQLite can and cannot stand in for.
 """
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
+from psycopg.errors import UndefinedColumn, UndefinedTable
 from sqlalchemy import func, select, update
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import (
+    DisconnectionError,
+    InterfaceError,
+    OperationalError,
+    ProgrammingError,
+)
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.adapters.persistence.models import (
@@ -33,6 +41,7 @@ from app.domain.chat.entities import Conversation, Message
 from app.domain.identity.entities import RefreshToken, User
 from app.domain.identity.value_objects import Email
 from app.domain.ingestion.entities import DocumentStatus, UploadedDocument
+from app.domain.ingestion.errors import DocumentStoreUnavailable
 from tests.adapters.conftest import make_user
 
 NOW = datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
@@ -825,3 +834,72 @@ class TestSqlAlchemyUnitOfWork:
 
         async with session_factory() as other:
             assert await other.scalar(select(func.count()).select_from(UserModel)) == 1
+
+
+class FailingExecuteSession(AsyncSession):
+    """A real session whose `execute` fails with a chosen driver error.
+
+    Injected through the session factory, the same seam `FailingCommitSession`
+    uses. SQLite cannot produce Postgres's `UndefinedColumn`, so the driver
+    error is built by hand with the class psycopg really raises.
+    """
+
+    error: Exception
+
+    async def execute(self, *args: Any, **kwargs: Any) -> Any:
+        raise self.error
+
+
+def failing_documents(
+    engine: AsyncEngine, error: Exception
+) -> tuple[SqlAlchemyDocumentRepository, AsyncSession]:
+
+    class Failing(FailingExecuteSession):
+        pass
+
+    Failing.error = error
+    session: AsyncSession = async_sessionmaker(engine, class_=Failing, expire_on_commit=False)()
+    return SqlAlchemyDocumentRepository(session), session
+
+
+class TestDocumentReadFailures:
+    """Which driver errors the thread read turns into the swallowable kind."""
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            OperationalError("SELECT", {}, Exception("connection lost")),
+            InterfaceError("SELECT", {}, Exception("connection closed")),
+            DisconnectionError("connection invalidated"),
+            PoolTimeoutError("QueuePool limit reached"),
+        ],
+        ids=["operational", "interface", "disconnected", "pool-timeout"],
+    )
+    async def test_connection_trouble_is_unavailable(
+        self, engine: AsyncEngine, error: Exception
+    ) -> None:
+        repository, session = failing_documents(engine, error)
+
+        with pytest.raises(DocumentStoreUnavailable, match="temporarily unavailable"):
+            await repository.list_by_conversation(1, 1)
+        await session.close()
+
+    async def test_undefined_column_propagates(self, engine: AsyncEngine) -> None:
+        error = ProgrammingError(
+            "SELECT", {}, UndefinedColumn('column "conversation_id" does not exist')
+        )
+        repository, session = failing_documents(engine, error)
+
+        with pytest.raises(ProgrammingError, match="conversation_id"):
+            await repository.list_by_conversation(1, 1)
+        await session.close()
+
+    async def test_undefined_table_propagates(self, engine: AsyncEngine) -> None:
+        error = ProgrammingError(
+            "SELECT", {}, UndefinedTable('relation "documents" does not exist')
+        )
+        repository, session = failing_documents(engine, error)
+
+        with pytest.raises(ProgrammingError, match="documents"):
+            await repository.list_by_conversation(1, 1)
+        await session.close()

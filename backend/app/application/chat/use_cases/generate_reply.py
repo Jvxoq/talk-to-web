@@ -34,6 +34,7 @@ from app.domain.chat.errors import UnsafeUserMessage
 from app.domain.chat.tool_routing import is_document_scoped
 from app.domain.chat.value_objects import UserMessage
 from app.domain.ingestion.entities import DocumentStatus, UploadedDocument
+from app.domain.ingestion.errors import DocumentStoreUnavailable
 from app.observability.metrics import emit_reply_metrics
 
 
@@ -133,6 +134,10 @@ class GenerateReply:
         `None` rather than `[]` on failure, because the two are not the same to
         the gate. Collapsed together, one slow query would tell a user with a
         full shelf that they have none, and refuse the retrieval.
+
+        Only `DocumentStoreUnavailable` is swallowed. Anything else, a missing
+        column above all, is a fault in the deploy and has to stop the request:
+        a reply that looks healthy over a broken schema hides the outage.
         """
         # No conversation owns no documents, and that is a fact rather than a
         # failed read: `[]`, not `None`, so the gate closes.
@@ -142,7 +147,7 @@ class GenerateReply:
         try:
             async with self._uow_factory() as uow:
                 documents = await uow.documents.list_by_conversation(owner_id, conversation_id)
-        except Exception as exc:  # noqa: BLE001
+        except DocumentStoreUnavailable as exc:
             logger.warning(
                 f"Could not read documents for owner {owner_id} "
                 f"in conversation {conversation_id}: {exc}"

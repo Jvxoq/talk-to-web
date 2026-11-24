@@ -10,7 +10,7 @@ No Postgres: the checkpointer is `InMemorySaver` or absent entirely.
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -41,7 +41,9 @@ from app.application.chat.models import ChatMessage, ModelChunk, TokenUsage, Too
 from app.application.chat.tools.base import AgentTool, ToolRegistry, ToolRoutingPolicy
 from app.application.chat.use_cases.generate_reply import GenerateReply
 from app.domain.ingestion.entities import DocumentStatus, UploadedDocument
+from app.domain.ingestion.errors import DocumentStoreUnavailable
 from app.domain.usage.errors import RateLimited
+from tests.conftest import logged
 from tests.fakes import (
     FakeAgentTool,
     FakeChatModel,
@@ -50,6 +52,9 @@ from tests.fakes import (
     RecordingTracer,
     UnitOfWorkSpy,
 )
+
+if TYPE_CHECKING:
+    from loguru import Record
 
 SYSTEM_PROMPT = "SYSTEM PROMPT"
 
@@ -1289,15 +1294,15 @@ class TestDocumentQuestionsDoNotReachTheWeb:
         assert [(payload["name"], payload["ok"]) for payload in ended] == [("search_web", False)]
 
 
-class FailingUnitOfWork:
-    """A unit of work factory whose documents cannot be read.
+class SchemaFaultError(Exception):
+    """Stands for the driver's undefined-column error, which the adapter never translates."""
 
-    Not a flag on `UnitOfWorkSpy`: the point is that `GenerateReply` catches
-    whatever the repository raises, so what it raises has to be real.
-    """
 
-    def __call__(self) -> Any:
-        raise RuntimeError("the database is not answering")
+def unreadable_documents(error: Exception) -> UnitOfWorkSpy:
+    """A unit of work whose document read raises `error`, as the adapter would."""
+    factory = UnitOfWorkSpy()
+    factory.documents.list_by_conversation_error = error
+    return factory
 
 
 class TestAnEmptyShelfIsNotSearched:
@@ -1362,7 +1367,7 @@ class TestAnEmptyShelfIsNotSearched:
             model,
             [retrieve, FakeAgentTool(name="search_web")],
             routing=DOCS_BEFORE_WEB,
-            uow_factory=cast(UnitOfWorkSpy, FailingUnitOfWork()),
+            uow_factory=unreadable_documents(DocumentStoreUnavailable()),
         )
 
         events = await collect(use_case, user_input="When was Aurora Robotics founded?")
@@ -1497,7 +1502,9 @@ class TestTheModelIsToldWhatWasUploaded:
         # database that did not answer is no grounds to make it - saying it
         # here would tell a user with a full shelf that they have none.
         model = FakeChatModel()
-        use_case = build_use_case(model, uow_factory=cast(UnitOfWorkSpy, FailingUnitOfWork()))
+        use_case = build_use_case(
+            model, uow_factory=unreadable_documents(DocumentStoreUnavailable())
+        )
 
         await collect(use_case, user_input="what did we spend?")
 
@@ -1588,18 +1595,48 @@ class TestTheModelIsToldWhatWasUploaded:
         # it, or the link note would read as part of the document's content.
         assert turn.index("</untrusted_content>") < turn.index("[The user linked:")
 
-    async def test_a_database_failure_costs_the_digest_not_the_reply(self) -> None:
-        class BrokenFactory:
-            def __call__(self) -> Any:
-                raise RuntimeError("database is down")
-
+    async def test_a_transient_failure_costs_the_digest_not_the_reply(self) -> None:
         model = FakeChatModel()
-        use_case = build_use_case(model, uow_factory=cast(Any, BrokenFactory()))
+        use_case = build_use_case(
+            model, uow_factory=unreadable_documents(DocumentStoreUnavailable())
+        )
 
         events = await collect(use_case, user_input="hello")
 
         assert isinstance(events[-1], ReplyCompleted)
         assert user_turn(model) == "hello"
+
+    async def test_a_transient_failure_is_logged_as_a_warning(
+        self, log_records: list["Record"]
+    ) -> None:
+        use_case = build_use_case(
+            FakeChatModel(), uow_factory=unreadable_documents(DocumentStoreUnavailable())
+        )
+
+        await collect(use_case, owner_id=1)
+
+        assert logged(log_records) == [
+            (
+                "WARNING",
+                f"Could not read documents for owner 1 in conversation {THREAD}: "
+                "Documents are temporarily unavailable",
+                False,
+            )
+        ]
+
+    async def test_a_schema_failure_stops_the_request(self) -> None:
+        # A missing column is a bad deploy. Swallowing it let every reply look
+        # healthy over a broken database.
+        model = FakeChatModel()
+        use_case = build_use_case(
+            model,
+            uow_factory=unreadable_documents(SchemaFaultError('column "summary" does not exist')),
+        )
+
+        with pytest.raises(SchemaFaultError, match='column "summary" does not exist'):
+            await collect(use_case, user_input="hello")
+
+        assert model.seen_messages == []
 
 
 class TestNamingAnUploadHoldsTheSearch:

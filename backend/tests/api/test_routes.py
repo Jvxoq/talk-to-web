@@ -391,6 +391,20 @@ class TestGenerateText:
         assert response.status_code == 200
         assert response.text.endswith('data: {"error": "rate limited"}\n\n')
 
+    async def test_a_schema_failure_is_a_500_that_leaks_nothing(self) -> None:
+        # The use case no longer swallows a missing column, so it reaches the
+        # catch-all before any byte of the stream is sent.
+        stub = StubUseCase(raises=RuntimeError('column "summary" of relation "documents" missing'))
+
+        async with client(StubContainer(generate_reply=stub), reraise=False) as http:
+            response = await http.post(
+                "/generate/text/", json={"model": MODELS[0], "user_input": "hi"}
+            )
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == "Internal server error"
+        assert "summary" not in response.text
+
     async def test_a_spent_chat_budget_is_a_429_before_the_stream_opens(self) -> None:
         # The whole reason the use case is awaited rather than iterated: a limit
         # discovered mid-stream could only truncate a body that already sent 200,

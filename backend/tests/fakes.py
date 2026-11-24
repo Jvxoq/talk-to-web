@@ -214,6 +214,9 @@ class FakeDocumentRepository:
     def __init__(self) -> None:
         self.rows: dict[int, UploadedDocument] = {}
         self._next_id = 1
+        # Raised by `list_by_conversation` when set, so a test chooses the
+        # failure: the adapter's transient error or a schema fault.
+        self.list_by_conversation_error: Exception | None = None
 
     async def get(self, document_id: int, owner_id: int) -> UploadedDocument | None:
         row = self.rows.get(document_id)
@@ -227,6 +230,8 @@ class FakeDocumentRepository:
     async def list_by_conversation(
         self, owner_id: int, conversation_id: int
     ) -> list[UploadedDocument]:
+        if self.list_by_conversation_error is not None:
+            raise self.list_by_conversation_error
         return self._newest_first(
             row
             for row in self.rows.values()
