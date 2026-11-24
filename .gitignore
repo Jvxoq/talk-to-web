@@ -73,3 +73,8 @@ understanding-memory.md
 
 # Running list of known issues, maintained locally across sessions.
 issues.md
+
+# Design and review docs, kept locally.
+CI-BEHAVIORS.md
+SLO.md
+SPEC.md
