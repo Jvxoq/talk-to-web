@@ -123,6 +123,17 @@ real turns. Only the last 2 or 3 turns hit the real model.
 | Trial ends with text | Fake model asks for tools forever: the agent stops at 8 laps, last lap has no tools, reply is non-empty text | System layer, code | Anthropic "Building effective agents": use stopping conditions like max iterations [2] |
 | Answer at the cap | Real model on a question that tempts many searches: still gives a useful answer | Judge, pass/fail | Skill line "the run ends" |
 
+## Where new tasks come from
+
+Now, while the agent is not live:
+
+- Bugs you find while testing it yourself become tasks.
+- Every failed CI gate that turns out to be a real agent bug becomes a task.
+
+Later, once real users chat with it, sample their chats and read them. Name
+the failure modes you see. Turn each one into a task. This follows Hamel [15]
+and Anthropic [1]. The real-chat loop is out of scope until the agent is live.
+
 ## Rules for every behavior
 
 - **Never trust one trial.** pass^k = all k trials of a task pass. Anthropic:
@@ -140,6 +151,14 @@ real turns. Only the last 2 or 3 turns hit the real model.
   answers and their own outputs [14].
 - **Two suites.** Regression suite sits near 100% and gates. Capability suite
   starts low and only reports. A task moves over once it passes steadily [1].
+- **Save every transcript.** Each trial's transcript (final answer, every tool
+  call with its arguments, any error) goes into the results file. People read
+  transcripts to see why a task failed. The judge check needs about 100
+  hand-labeled transcripts. Anthropic: "read the transcripts" [1].
+- **Every trial starts clean.** Each trial runs in its own chat thread, with no
+  state from another trial. The shared document shelf is the one exception, on
+  purpose (see "What evals cannot prove" in the `evals` skill). Keep trials
+  independent [1].
 
 ## Redesign: what changes in `backend/evals/`
 
@@ -190,6 +209,8 @@ real turns. Only the last 2 or 3 turns hit the real model.
    that failed every trial (`regressions`) or some trials (`flaky`), as text.
    Add one record per task with its passed, failed and errored trial counts,
    plus suite totals. Both gates read these counts.
+   Each run also records the model, a prompt version, a dataset version and
+   the estimated cost. Two runs can then be compared fairly [17].
 8. **Two run modes in the evals command.** `gate`: 1 trial per task, no judge
    calls, a failed task gets 2 more trials, exit 1 if any of those fail.
    `release`: 10 trials per task, judges on, exit 1 unless the suite fails 8
@@ -220,6 +241,7 @@ suite, kept local in `security-evals/` (gitignored).
 14. Zheng et al., "Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena", 2023. https://arxiv.org/abs/2306.05685
 15. Hamel Husain, "LLM Evals FAQ". https://hamel.dev/blog/posts/evals-faq/
 16. Together AI pricing, read 2026-11-24. https://www.together.ai/pricing
+17. GitHub, "How to evaluate LLMs before production", 2026. https://github.blog/2026-08-25-how-to-evaluate-llms-before-production/
 
 Not used: two OpenAI pages (hallucination scoring, SimpleQA) blocked the fetch.
 Nothing here leans on them.
