@@ -27,6 +27,8 @@ whatever is indexed is what the reply is told exists.
 """
 
 import asyncio
+import hashlib
+import json
 import time
 from collections.abc import AsyncIterator, Iterator, Sequence
 from contextlib import asynccontextmanager
@@ -65,7 +67,7 @@ from app.application.chat.dto import (
 from app.application.chat.guardrails.policy import InputGuardPolicy
 from app.application.chat.guardrails.tool_output import ToolOutputGuard
 from app.application.chat.ports import Tracer
-from app.application.chat.tools.base import ToolRegistry, ToolRoutingPolicy
+from app.application.chat.tools.base import ToolRegistry, ToolRoutingPolicy, ToolSpec
 from app.application.chat.tools.fetch_web_pages import FetchWebPages
 from app.application.chat.tools.retrieve_documents import RetrieveDocuments
 from app.application.chat.tools.search_web import SearchWeb
@@ -318,6 +320,10 @@ class EvalHarness:
     chunk_overlap: int
     embedding_dimensions: int
     _shelf: _Shelf
+    # Short hash of what the model is shown: the system prompt and every tool
+    # spec. Stored in the results file so two runs can be told apart by what
+    # they were given, not by the date they ran.
+    prompt_version: str = ""
 
     async def index_fixtures(self) -> int:
         """Chunk, embed and upsert every file in `evals/fixtures/`, then record
@@ -420,6 +426,29 @@ class EvalHarness:
             run.error = str(error)
         run.latency_ms = (time.perf_counter() - started) * 1000
         return run
+
+
+def compute_prompt_version(system_prompt: str, specs: Sequence[ToolSpec]) -> str:
+    """A 12-character hash of everything the model is shown before it answers.
+
+    The system prompt, then each tool's name, description and argument schema,
+    sorted by tool name so registering tools in another order does not change
+    the hash. The schema is included because it carries the argument
+    descriptions the model reads when it fills a call in.
+
+    Not included: the condenser prompts. They shape what the model reads back
+    after a tool call, but they are not what it is told, and a hash that moves
+    on every unrelated tweak stops meaning "the prompt changed".
+    """
+    digest = hashlib.sha256(system_prompt.encode("utf-8"))
+    for spec in sorted(specs, key=lambda item: item.name):
+        digest.update(b"\x00")
+        digest.update(spec.name.encode("utf-8"))
+        digest.update(b"\x00")
+        digest.update(spec.description.encode("utf-8"))
+        digest.update(b"\x00")
+        digest.update(json.dumps(spec.parameters, sort_keys=True).encode("utf-8"))
+    return digest.hexdigest()[:12]
 
 
 def fixture_text(name: str) -> str | None:
@@ -573,25 +602,27 @@ async def build_harness(
     checkpointer = InMemorySaver()
     shelf = _Shelf()
 
+    registry = ToolRegistry(
+        [
+            RetrieveDocuments(knowledge),
+            FetchWebPages(web),
+            SearchWeb(searcher, max_results=settings.tavily_max_results),
+        ],
+        guard=tool_output_guard,
+        # Without this, a case scores on the model's unassisted tool
+        # choice - a different, easier-to-fail question than the one
+        # production actually answers, where `composition.py` wires this
+        # same gate in front of every request. Mirrored here so `tools`
+        # eval numbers mean what they claim to mean.
+        routing=ToolRoutingPolicy(
+            document_tool=RetrieveDocuments.name,
+            web_search_tool=SearchWeb.name,
+        ),
+    )
+
     graph = build_agent_graph(
         model=chat_model,
-        tools=ToolRegistry(
-            [
-                RetrieveDocuments(knowledge),
-                FetchWebPages(web),
-                SearchWeb(searcher, max_results=settings.tavily_max_results),
-            ],
-            guard=tool_output_guard,
-            # Without this, a case scores on the model's unassisted tool
-            # choice - a different, easier-to-fail question than the one
-            # production actually answers, where `composition.py` wires this
-            # same gate in front of every request. Mirrored here so `tools`
-            # eval numbers mean what they claim to mean.
-            routing=ToolRoutingPolicy(
-                document_tool=RetrieveDocuments.name,
-                web_search_tool=SearchWeb.name,
-            ),
-        ),
+        tools=registry,
         max_iterations=settings.agent_max_tool_iterations,
         checkpointer=checkpointer,
         condenser=condenser,
@@ -633,6 +664,7 @@ async def build_harness(
         chunk_overlap=settings.chunk_overlap,
         embedding_dimensions=settings.embedding_dimensions,
         _shelf=shelf,
+        prompt_version=compute_prompt_version(settings.llm_system_prompt, registry.specs()),
     )
 
     try:

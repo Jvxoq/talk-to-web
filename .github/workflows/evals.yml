@@ -1,24 +1,28 @@
-name: evals
-
 # The only workflow that spends money and talks to a model provider, which is
 # why it is its own file rather than a fourth job in `backend.yml`: it needs
-# secrets none of those jobs need, it fails for reasons none of them fail for,
-# and its path filter is much narrower than theirs.
+# secrets none of those jobs need, and it fails for reasons none of them fail
+# for.
 #
-# Narrower on purpose. A regression this catches comes from a prompt, a model
-# name, a tool definition or a guardrail — not from a repository change, a
-# migration or a README fix — so those are the only paths that pay for a run.
-# Same caveat as `backend.yml`: a filtered workflow reports no status at all
-# when it is skipped, so this must not be marked required in branch protection.
+# Started by hand only. There is no `pull_request` trigger: a run costs money
+# and a model's answers vary, so a person decides when it is worth running.
+# Pick a mode when you start it:
+#   gate     1 trial per task, no judge. A failed task gets 2 more trials, and
+#            the run fails if one of those fails too. Cheap. Run it before merge.
+#   release  10 trials per task, judges on. Fails if the suite misses more than
+#            3% of trials or any task fails 3 times. Run it before the agent
+#            goes out, and after a model or prompt change.
+# Because nothing runs on its own, this must not be marked required in branch
+# protection.
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'backend/app/application/chat/**'
-      - 'backend/app/settings.py'
-      - 'backend/evals/**'
-      - '.github/workflows/evals.yml'
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'gate (1 trial per task) or release (10 trials per task)'
+        type: choice
+        options:
+          - gate
+          - release
+        default: gate
 
 permissions:
   contents: read
@@ -33,12 +37,9 @@ defaults:
 
 jobs:
   evals:
-    # A pull request from a fork gets no secrets, so this job could only fail
-    # there, and confusingly — the run would look like a model regression and
-    # actually be an empty API key.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Room for a release run: 280 trials at concurrency 2.
+    timeout-minutes: 60
 
     services:
       # `evals.harness._require_local_qdrant` refuses any non-local Qdrant, so
@@ -90,6 +91,9 @@ jobs:
       # repository's. `tests/evals/test_datasets.py` is what stops the tag from
       # quietly disappearing and leaving a green job that ran nothing.
       #
+      # `--mode` sets the trial count and the pass bar, so `--repeat` is not
+      # passed. The exit code is 1 for a missed bar and 2 for a broken run.
+      #
       # Concurrency 2, not 4: Groq's free tier throttles, and the harness only
       # retries a 429 once per case.
       #
@@ -112,6 +116,7 @@ jobs:
           uv run python -m evals \
             --suite all \
             --tag ci \
+            --mode "${{ inputs.mode }}" \
             --concurrency 2 \
             --out evals/results/ci.json \
             | tee -a "$GITHUB_STEP_SUMMARY"

@@ -12,8 +12,14 @@ check here for a reason that has nothing to do with the model. Collapsing any
 two of those sends someone to edit a prompt that was fine.
 """
 
+import json
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
+from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
+
+import pytest
 
 from app.application.chat.dto import (
     ReplyDelta,
@@ -21,12 +27,16 @@ from app.application.chat.dto import (
     ReplyFailed,
     ReplyToolFinished,
     ReplyToolStarted,
+    ReplyUsage,
 )
 from app.application.chat.models import Source
-from evals.__main__ import _select_cases, _verdicts
+from app.application.chat.tools.base import ToolSpec
+from evals import __main__ as driver
+from evals.__main__ import _select_cases, _verdicts, dataset_version
 from evals.cases import EvalCase, Expectation
-from evals.harness import CaseRun, EvalHarness
-from evals.report import RunReport
+from evals.harness import CaseRun, EvalHarness, compute_prompt_version
+from evals.judge import JudgeScore
+from evals.report import RunReport, estimate_cost
 
 _HARNESS = cast(EvalHarness, SimpleNamespace(retrieval_k=3))
 """Only `retrieval_k` is read by the functions under test. A real harness would
@@ -199,3 +209,251 @@ def test_tag_selection_keeps_suite_order() -> None:
 
     assert suites == sorted(suites, key=["tools", "rag"].index)
     assert all("ci" in case.tags for case in selected)
+
+
+# --- the two run modes, driven end to end with a scripted harness -----------------
+
+
+class _ScriptedHarness:
+    """Stands in for `EvalHarness`: each task's trials answer from a script.
+
+    `script["a"] = ["fail", "pass", "pass"]` means the first call to
+    `run_case` for task `a` gets a wrong answer, and the next two get the right
+    one. A task with no script entry passes. Records every call, so a test can
+    say how many trials a task was given.
+    """
+
+    model = "fake-model"
+    retrieval_k = 3
+    prompt_version = "pv-test"
+
+    def __init__(self, script: dict[str, list[str]]) -> None:
+        self._script = {key: list(value) for key, value in script.items()}
+        self.calls: list[str] = []
+        self.judge = _CountingJudge()
+
+    async def index_fixtures(self) -> int:
+        return 0
+
+    async def run_case(self, case: EvalCase) -> CaseRun:
+        self.calls.append(case.id)
+        steps = self._script.get(case.id)
+        step = steps.pop(0) if steps else "pass"
+        if step == "error":
+            return CaseRun(case=case, failed=ReplyFailed(detail="provider down"))
+        events: list[ReplyEvent] = [
+            ReplyToolStarted(name="search_web", summary="search_web(query='q')"),
+            _finished("search_web"),
+            ReplyDelta(text="ok" if step == "pass" else "nope"),
+            ReplyUsage(prompt_tokens=1000, completion_tokens=100, elapsed_ms=5, model="m"),
+        ]
+        run = CaseRun(case=case, events=events, latency_ms=5.0)
+        run.usage = cast(ReplyUsage, events[-1])
+        return run
+
+
+class _CountingJudge:
+    prompt_tokens = 0
+    completion_tokens = 0
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def score(self, **_: object) -> JudgeScore | None:
+        self.calls += 1
+        self.prompt_tokens += 200
+        self.completion_tokens += 20
+        return None
+
+
+@pytest.fixture
+def drive(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Any]:
+    """Run the CLI against a scripted harness. Returns `(exit_code, results, harness)`."""
+
+    def _drive(
+        argv: list[str], script: dict[str, list[str]], *, suite: str = "tools", tasks: int = 2
+    ) -> tuple[int, dict[str, Any], _ScriptedHarness]:
+        harness = _ScriptedHarness(script)
+        cases = [
+            _case(id=f"t{n}", suite=suite, expect=Expectation(must_contain=["ok"]))
+            for n in range(1, tasks + 1)
+        ]
+
+        @asynccontextmanager
+        async def fake_build(**_: object) -> AsyncIterator[_ScriptedHarness]:
+            yield harness
+
+        monkeypatch.setattr(driver, "build_harness", fake_build)
+        monkeypatch.setattr(driver, "_select_cases", lambda *_: cases)
+        out = tmp_path / "results.json"
+        code = driver.main([*argv, "--out", str(out)])
+        return code, json.loads(out.read_text()), harness
+
+    yield _drive
+
+
+def test_gate_runs_each_task_once(drive: Any) -> None:
+    code, results, harness = drive(["--mode", "gate"], {})
+
+    assert code == 0
+    assert sorted(harness.calls) == ["t1", "t2"]
+    assert results["totals"] == {"passed": 2, "failed": 0, "errored": 0}
+
+
+def test_gate_fail_then_pass_exits_zero(drive: Any) -> None:
+    code, results, harness = drive(["--mode", "gate"], {"t1": ["fail", "pass", "pass"]})
+
+    assert code == 0
+    assert harness.calls.count("t1") == 3
+    assert harness.calls.count("t2") == 1
+    assert results["tasks"][0] == {
+        "task_id": "t1",
+        "suite": "tools",
+        "passed": 2,
+        "failed": 1,
+        "errored": 0,
+    }
+
+
+def test_gate_fail_then_fail_exits_one(drive: Any, capsys: pytest.CaptureFixture[str]) -> None:
+    code, _, harness = drive(["--mode", "gate"], {"t1": ["fail", "pass", "fail"]})
+
+    assert code == 1
+    assert harness.calls.count("t1") == 3
+    assert "t1 failed its first trial and then failed again on trial 3" in capsys.readouterr().out
+
+
+def test_gate_does_not_rerun_errored(drive: Any) -> None:
+    code, results, harness = drive(["--mode", "gate"], {"t1": ["error"]})
+
+    assert code == 2
+    assert harness.calls.count("t1") == 1
+    assert results["totals"] == {"passed": 1, "failed": 0, "errored": 1}
+
+
+def test_gate_makes_no_judge_calls(drive: Any) -> None:
+    _, results, harness = drive(["--mode", "gate"], {}, suite="rag")
+
+    assert harness.judge.calls == 0
+    assert results["cost"]["judge_tokens_in"] == 0
+
+
+def test_release_runs_ten_trials_with_judge(drive: Any) -> None:
+    code, results, harness = drive(["--mode", "release"], {}, suite="rag")
+
+    assert code == 0
+    assert harness.calls.count("t1") == 10
+    assert harness.judge.calls == 20
+    assert results["totals"]["passed"] == 20
+
+
+def test_release_exits_one_on_three_failures_in_a_task(drive: Any) -> None:
+    code, results, _ = drive(["--mode", "release"], {"t1": ["fail"] * 3})
+
+    assert code == 1
+    assert results["quality_failed"] is True
+    assert results["tasks"][0]["failed"] == 3
+
+
+def test_release_errored_trials_are_excluded(drive: Any) -> None:
+    """Three errors are not three failures: the task is still within its limit."""
+    code, results, _ = drive(["--mode", "release"], {"t1": ["error"] * 3})
+
+    assert code == 2
+    assert results["quality_failed"] is False
+    assert results["tasks"][0]["errored"] == 3
+    assert len(results["errors"]) == 3
+
+
+def test_plain_run_keeps_repeat(drive: Any) -> None:
+    code, _, harness = drive(["--repeat", "3"], {"t1": ["fail", "fail", "fail"]})
+
+    assert code == 1
+    assert harness.calls.count("t1") == 3
+
+
+def test_mode_rejects_repeat(drive: Any) -> None:
+    with pytest.raises(SystemExit):
+        drive(["--mode", "gate", "--repeat", "3"], {})
+
+
+def test_json_keeps_transcript(drive: Any) -> None:
+    _, results, _ = drive(["--mode", "gate"], {"t1": ["fail", "pass", "pass"]})
+
+    first = results["trials"][0]
+    assert first["task_id"] == "t1"
+    assert first["trial"] == 1
+    assert first["outcome"] == "failed"
+    assert first["failure_reasons"] == ["missing ['ok']"]
+    assert first["transcript"] == {
+        "answer": "nope",
+        "tool_calls": [{"name": "search_web", "arguments": "search_web(query='q')"}],
+        "error": None,
+    }
+    assert (first["tokens_in"], first["tokens_out"]) == (1000, 100)
+
+
+def test_json_keeps_error_text(drive: Any) -> None:
+    _, results, _ = drive(["--mode", "gate"], {"t1": ["error"]})
+
+    errored = results["trials"][0]
+    assert errored["outcome"] == "errored"
+    assert errored["failure_reasons"] == []
+    assert errored["transcript"]["error"] == "provider down"
+
+
+def test_json_has_run_versions_and_cost(drive: Any) -> None:
+    _, results, _ = drive(
+        ["--mode", "release", "--price-in", "1", "--price-out", "2"], {}, suite="rag", tasks=1
+    )
+
+    assert results["model"] == "fake-model"
+    assert results["prompt_version"] == "pv-test"
+    assert len(results["dataset_version"]) == 12
+    # 10 trials x (1000 in, 100 out) plus the judge's 10 x (200 in, 20 out).
+    assert results["cost"]["tokens_in"] == 10_000
+    assert results["cost"]["judge_tokens_in"] == 2_000
+    assert results["cost"]["usd"] == pytest.approx((12_000 * 1 + 1_200 * 2) / 1_000_000)
+
+
+def test_markdown_has_task_line(drive: Any, capsys: pytest.CaptureFixture[str]) -> None:
+    drive(["--mode", "gate"], {"t1": ["fail", "pass", "pass"]})
+
+    assert "- t1: 2 passed, 1 failed, 0 errored" in capsys.readouterr().out
+
+
+def test_cost_math() -> None:
+    cost = estimate_cost(
+        tokens_in=1_000_000,
+        tokens_out=500_000,
+        judge_tokens_in=100_000,
+        judge_tokens_out=0,
+        price_in_per_million=0.30,
+        price_out_per_million=1.20,
+    )
+
+    assert cost.usd == pytest.approx(1.1 * 0.30 + 0.5 * 1.20)
+
+
+def test_dataset_version_tracks_content(tmp_path: Path) -> None:
+    datasets, fixtures = tmp_path / "datasets", tmp_path / "fixtures"
+    datasets.mkdir()
+    fixtures.mkdir()
+    (datasets / "tools.jsonl").write_text("{}\n")
+    (fixtures / "a.txt").write_text("one")
+    before = dataset_version(datasets, fixtures, ["tools"])
+
+    assert dataset_version(datasets, fixtures, ["tools"]) == before
+    (fixtures / "a.txt").write_text("two")
+    assert dataset_version(datasets, fixtures, ["tools"]) != before
+
+
+def test_prompt_version_tracks_prompt_and_tools() -> None:
+    spec = ToolSpec(name="a", description="finds files", parameters={"type": "object"})
+    other = ToolSpec(name="b", description="searches", parameters={"type": "object"})
+    base = compute_prompt_version("be helpful", [spec, other])
+
+    assert compute_prompt_version("be helpful", [other, spec]) == base
+    assert compute_prompt_version("be kind", [spec, other]) != base
+    reworded = spec.model_copy(update={"description": "finds docs"})
+    assert compute_prompt_version("be helpful", [reworded, other]) != base

@@ -7,6 +7,22 @@ This runs against real APIs and spends real money - see `evals.harness` for
 what it builds and `evals.judge` for the one extra model call each `rag` case
 makes on top of the reply itself.
 
+Two modes set how many trials each task gets and which bar the run must clear.
+The bars themselves live in `evals.metrics.gates`.
+
+    --mode gate     1 trial per task, no judge calls. A task whose trial
+                    failed gets 2 more. Exit 1 if either extra trial fails.
+    --mode release  10 trials per task, judges on. Exit 1 unless the suite
+                    fails at most 3% of graded trials and no task fails 3.
+
+With no `--mode`, `--repeat N` runs N trials per task and the old rule holds:
+a task that fails every trial is a regression. That is the mode for trying out
+a new task by hand.
+
+An errored trial (a rate limit, a dropped connection) is neither a pass nor a
+failure. It is left out of both bars and listed, and it turns the exit code
+into 2 when nothing failed.
+
 Four rules shape this module, and each one exists because breaking it made a
 run report something other than what it measured.
 
@@ -39,17 +55,31 @@ claim is being tested.
 
 import argparse
 import asyncio
+import hashlib
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
 from loguru import logger
 
+from app.application.chat.dto import ReplyToolStarted
 from evals.cases import SUITES, EvalCase, load_all_cases, load_cases
 from evals.harness import CaseRun, EvalHarness, build_harness, fixture_text
 from evals.judge import JudgeScore
 from evals.metrics.budgets import summarize_budgets
+from evals.metrics.gates import (
+    GATE_EXTRA_TRIALS,
+    RELEASE_TRIALS,
+    BarVerdict,
+    Outcome,
+    TrialResult,
+    count_tasks,
+    judge_gate,
+    judge_release,
+    tasks_to_rerun,
+)
 from evals.metrics.generation import SubstringCheck, check_substrings, summarize_generation
 from evals.metrics.retrieval import hit_rate_at_k, mrr_at_k, sources_returned, summarize_retrieval
 from evals.metrics.tools import (
@@ -60,7 +90,18 @@ from evals.metrics.tools import (
     tools_completed,
     tools_refused,
 )
-from evals.report import RunReport, SuiteReport, render_markdown, write_json
+from evals.report import (
+    RunReport,
+    SuiteReport,
+    TaskRecord,
+    ToolCallRecord,
+    Totals,
+    Transcript,
+    TrialRecord,
+    estimate_cost,
+    render_markdown,
+    write_json,
+)
 
 _DOCUMENT_TOOL = "retrieve_documents"
 """The only tool whose sources a retrieval metric grades.
@@ -86,11 +127,33 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--repeat",
         type=int,
-        default=1,
+        default=None,
         help=(
-            "Run every case this many times. A case that fails every sample is "
-            "a regression; one that fails some is reported as flaky."
+            "Run every case this many times (default 1). A case that fails every "
+            "trial is a regression; one that fails some is reported as flaky. "
+            "Not allowed with --mode, which sets the trial count itself."
         ),
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["gate", "release"],
+        default=None,
+        help=(
+            "gate: 1 trial per task, no judge, 2 more for a failed task. "
+            "release: 10 trials per task, judges on. Omit for a plain run."
+        ),
+    )
+    parser.add_argument(
+        "--price-in",
+        type=float,
+        default=0.30,
+        help="USD per million input tokens, for the cost estimate (Together DeepSeek V4.1 Flash).",
+    )
+    parser.add_argument(
+        "--price-out",
+        type=float,
+        default=1.20,
+        help="USD per million output tokens, for the cost estimate.",
     )
     parser.add_argument(
         "--out",
@@ -106,7 +169,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Override the answering model. Defaults to the first configured LLM model.",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.mode is not None and args.repeat is not None:
+        parser.error("--repeat cannot be used with --mode; the mode sets the trial count.")
+    if args.repeat is None:
+        args.repeat = 1
+    return args
 
 
 def _select_cases(suite: str, limit: int | None, tags: list[str]) -> list[EvalCase]:
@@ -128,26 +196,29 @@ def _select_cases(suite: str, limit: int | None, tags: list[str]) -> list[EvalCa
     return selected
 
 
-async def _run_all(
-    cases: list[EvalCase], harness: EvalHarness, concurrency: int, repeat: int
+async def _run_trials(
+    cases: list[EvalCase], harness: EvalHarness, concurrency: int, trials: Sequence[int]
 ) -> list[CaseRun]:
-    """Run every case `repeat` times, up to `concurrency` samples at once.
+    """Run every case once for each trial number in `trials`, up to `concurrency` at once.
 
-    Samples of one case are scheduled like any other work rather than run back
+    Trials of one task are scheduled like any other work rather than run back
     to back. They are independent by construction - `run_case` gives each its
-    own thread - and spreading them out keeps a slow case from holding the
+    own thread - and spreading them out keeps a slow task from holding the
     whole run open at the end.
+
+    `trials` is a list of numbers, not a count, so the gate can run trials 2
+    and 3 of a failed task without renumbering the first one.
     """
     semaphore = asyncio.Semaphore(max(1, concurrency))
 
-    async def _one(case: EvalCase, sample: int) -> CaseRun:
+    async def _one(case: EvalCase, trial: int) -> CaseRun:
         async with semaphore:
             run = await harness.run_case(case)
-            run.sample = sample
+            run.sample = trial
             return run
 
-    schedule = [(case, sample) for sample in range(1, max(1, repeat) + 1) for case in cases]
-    return list(await asyncio.gather(*(_one(case, sample) for case, sample in schedule)))
+    schedule = [(case, trial) for trial in trials for case in cases]
+    return list(await asyncio.gather(*(_one(case, trial) for case, trial in schedule)))
 
 
 def _substring_check(run: CaseRun) -> SubstringCheck:
@@ -192,12 +263,17 @@ def _judge_context(case: EvalCase, returned: list[str]) -> str:
     return "\n".join(returned)
 
 
-async def _score_suite(suite_name: str, runs: list[CaseRun], harness: EvalHarness) -> SuiteReport:
+async def _score_suite(
+    suite_name: str, runs: list[CaseRun], harness: EvalHarness, *, use_judge: bool = True
+) -> SuiteReport:
     """Score the cases that produced an answer. Broken runs are counted, not graded.
 
     `n` is every case the suite ran, so a suite that half fell over cannot be
     mistaken for a smaller suite that passed. The rates underneath are computed
     over `graded` only.
+
+    `use_judge=False` is the gate: no judge call is made, so the quality
+    numbers come from the code graders alone.
     """
     graded = [run for run in runs if not run.broke]
 
@@ -222,14 +298,15 @@ async def _score_suite(suite_name: str, runs: list[CaseRun], harness: EvalHarnes
             expected = run.case.expect.expected_sources
             hit_rates.append(hit_rate_at_k(returned, expected, harness.retrieval_k))
             reciprocal_ranks.append(mrr_at_k(returned, expected, harness.retrieval_k))
-            judge_scores.append(
-                await harness.judge.score(
-                    question=run.case.input,
-                    answer=run.answer,
-                    context=_judge_context(run.case, returned),
-                    reference=run.case.expect.reference,
+            if use_judge:
+                judge_scores.append(
+                    await harness.judge.score(
+                        question=run.case.input,
+                        answer=run.answer,
+                        context=_judge_context(run.case, returned),
+                        reference=run.case.expect.reference,
+                    )
                 )
-            )
         retrieval_report = summarize_retrieval(hit_rates, reciprocal_ranks)
 
     generation_report = None
@@ -351,6 +428,89 @@ def _by_case(runs: list[CaseRun]) -> dict[str, list[CaseRun]]:
     return grouped
 
 
+def _outcome(run: CaseRun, failures: list[str]) -> Outcome:
+    if run.broke:
+        return "errored"
+    return "failed" if failures else "passed"
+
+
+def _transcript(run: CaseRun) -> Transcript:
+    error = run.error
+    if error is None and run.failed is not None:
+        error = run.failed.detail
+    return Transcript(
+        answer=run.answer,
+        tool_calls=tuple(
+            ToolCallRecord(name=event.name, arguments=event.summary)
+            for event in run.events
+            if isinstance(event, ReplyToolStarted)
+        ),
+        error=error,
+    )
+
+
+def _trial_record(run: CaseRun, harness: EvalHarness) -> TrialRecord:
+    """One trial as the results file keeps it: outcome, reasons and transcript.
+
+    A broken run is never graded, so it gets no failure reasons. Its empty
+    answer would fail every check for a reason the error text already gives.
+    """
+    failures = [] if run.broke else _sample_failures(run, harness)
+    return TrialRecord(
+        task_id=run.case.id,
+        trial=run.sample,
+        outcome=_outcome(run, failures),
+        failure_reasons=tuple(failures),
+        transcript=_transcript(run),
+        tokens_in=run.usage.prompt_tokens if run.usage else 0,
+        tokens_out=run.usage.completion_tokens if run.usage else 0,
+        latency_ms=run.latency_ms,
+    )
+
+
+def _trial_results(trials: Sequence[TrialRecord]) -> list[TrialResult]:
+    return [TrialResult(t.task_id, t.trial, t.outcome) for t in trials]
+
+
+def dataset_version(datasets_dir: Path, fixtures_dir: Path, suites: Sequence[str]) -> str:
+    """A 12-character hash of the dataset files and fixtures a run used.
+
+    Hashes each suite's `.jsonl` and every fixture file, by name and bytes, in
+    sorted order. Fixtures are all included because `index_fixtures` indexes
+    the whole directory for every suite, so any of them can change an answer.
+    """
+    digest = hashlib.sha256()
+    files = [datasets_dir / f"{suite}.jsonl" for suite in sorted(suites)]
+    if fixtures_dir.is_dir():
+        files.extend(sorted(path for path in fixtures_dir.iterdir() if path.is_file()))
+    for path in files:
+        digest.update(path.name.encode("utf-8"))
+        digest.update(b"\x00")
+        digest.update(path.read_bytes() if path.is_file() else b"")
+        digest.update(b"\x00")
+    return digest.hexdigest()[:12]
+
+
+def _plain_verdict(report_regressions: tuple[str, ...], flaky: tuple[str, ...]) -> BarVerdict:
+    """The old rule for a run with no `--mode`: failing every trial is red."""
+    if report_regressions:
+        return BarVerdict(
+            failed=True,
+            reasons=tuple(f"Failed every graded trial: {entry}" for entry in report_regressions),
+        )
+    note = f" {len(flaky)} task(s) failed some trials." if flaky else ""
+    return BarVerdict(failed=False, reasons=(f"No task failed every graded trial.{note}",))
+
+
+def _judge_bar(mode: str | None, trials: Sequence[TrialRecord], verdicts: Verdicts) -> BarVerdict:
+    results = _trial_results(trials)
+    if mode == "gate":
+        return judge_gate(results)
+    if mode == "release":
+        return judge_release(results)
+    return _plain_verdict(verdicts.regressions, verdicts.flaky)
+
+
 async def _main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     run_id = uuid4().hex[:12]
@@ -366,16 +526,37 @@ async def _main(argv: list[str] | None = None) -> int:
         # gate with nothing behind it - see the module docstring.
         await harness.index_fixtures()
 
-        runs = await _run_all(cases, harness, args.concurrency, args.repeat)
+        use_judge = args.mode != "gate"
+        if args.mode == "release":
+            first_wave = list(range(1, RELEASE_TRIALS + 1))
+        elif args.mode == "gate":
+            first_wave = [1]
+        else:
+            first_wave = list(range(1, max(1, args.repeat) + 1))
+
+        runs = await _run_trials(cases, harness, args.concurrency, first_wave)
+        if args.mode == "gate":
+            # Only a task whose first trial FAILED is rerun. An errored one
+            # was never graded, so there is nothing to confirm.
+            first = [_trial_record(run, harness) for run in runs]
+            failed_ids = set(tasks_to_rerun(_trial_results(first)))
+            if failed_ids:
+                again = [case for case in cases if case.id in failed_ids]
+                extra = range(2, 2 + GATE_EXTRA_TRIALS)
+                runs += await _run_trials(again, harness, args.concurrency, list(extra))
 
         by_suite: dict[str, list[CaseRun]] = {}
         for run in runs:
             by_suite.setdefault(run.case.suite, []).append(run)
 
         suite_reports = [
-            await _score_suite(name, by_suite[name], harness) for name in SUITES if name in by_suite
+            await _score_suite(name, by_suite[name], harness, use_judge=use_judge)
+            for name in SUITES
+            if name in by_suite
         ]
         verdicts = _verdicts(runs, harness)
+        trials = tuple(_trial_record(run, harness) for run in runs)
+        bar = _judge_bar(args.mode, trials, verdicts)
         report = RunReport(
             run_id=run_id,
             model=harness.model,
@@ -386,6 +567,26 @@ async def _main(argv: list[str] | None = None) -> int:
             regressions=verdicts.regressions,
             flaky=verdicts.flaky,
             errors=tuple(_errors(runs)),
+            mode=args.mode,
+            prompt_version=harness.prompt_version,
+            dataset_version=dataset_version(
+                Path(__file__).parent / "datasets",
+                Path(__file__).parent / "fixtures",
+                sorted({case.suite for case in cases}),
+            ),
+            trials=trials,
+            tasks=_task_records(cases, trials),
+            totals=_totals(trials),
+            cost=estimate_cost(
+                tokens_in=sum(t.tokens_in for t in trials),
+                tokens_out=sum(t.tokens_out for t in trials),
+                judge_tokens_in=harness.judge.prompt_tokens,
+                judge_tokens_out=harness.judge.completion_tokens,
+                price_in_per_million=args.price_in,
+                price_out_per_million=args.price_out,
+            ),
+            quality_failed=bar.failed,
+            verdict=bar.reasons,
         )
 
     write_json(report, args.out)
@@ -397,8 +598,34 @@ async def _main(argv: list[str] | None = None) -> int:
     return _exit_code(report)
 
 
+def _task_records(cases: list[EvalCase], trials: Sequence[TrialRecord]) -> tuple[TaskRecord, ...]:
+    """One record per task, in dataset order, with its trial counts."""
+    counts = {c.task_id: c for c in count_tasks(_trial_results(trials))}
+    records: list[TaskRecord] = []
+    for case in cases:
+        row = counts.get(case.id)
+        records.append(
+            TaskRecord(
+                task_id=case.id,
+                suite=case.suite,
+                passed=row.passed if row else 0,
+                failed=row.failed if row else 0,
+                errored=row.errored if row else 0,
+            )
+        )
+    return tuple(records)
+
+
+def _totals(trials: Sequence[TrialRecord]) -> Totals:
+    return Totals(
+        passed=sum(1 for t in trials if t.outcome == "passed"),
+        failed=sum(1 for t in trials if t.outcome == "failed"),
+        errored=sum(1 for t in trials if t.outcome == "errored"),
+    )
+
+
 def _exit_code(report: RunReport) -> int:
-    """0 clean, 1 the model regressed, 2 the run could not be trusted.
+    """0 clean, 1 the quality bar was missed, 2 the run could not be trusted.
 
     Three codes rather than two, because the two mean opposite things to
     whoever is looking. A 1 is a prompt or a tool description to fix. A 2 is a
@@ -406,7 +633,7 @@ def _exit_code(report: RunReport) -> int:
     merge on it trains everyone to re-run red builds, including the ones a 1
     produced.
     """
-    if report.regressions:
+    if report.quality_failed:
         return 1
     if report.errors:
         return 2

@@ -71,6 +71,20 @@ class Judge:
         self._model = model
         self._model_name = model_name
         self._tracer = tracer
+        # Running totals across every call, read once at the end of a run to
+        # price the judge. Only what the provider reports: a call whose stream
+        # carries no usage adds nothing, so this can under-count but never
+        # invent tokens.
+        self._prompt_tokens = 0
+        self._completion_tokens = 0
+
+    @property
+    def prompt_tokens(self) -> int:
+        return self._prompt_tokens
+
+    @property
+    def completion_tokens(self) -> int:
+        return self._completion_tokens
 
     async def score(
         self, *, question: str, answer: str, context: str, reference: str | None = None
@@ -109,6 +123,9 @@ class Judge:
                 ):
                     if chunk.text:
                         parts.append(chunk.text)
+                    if chunk.usage is not None:
+                        self._prompt_tokens += chunk.usage.prompt_tokens
+                        self._completion_tokens += chunk.usage.completion_tokens
 
                 raw = "".join(parts).strip()
                 score = _parse(raw, has_reference=reference is not None)

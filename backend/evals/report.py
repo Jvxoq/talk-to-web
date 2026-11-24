@@ -11,6 +11,14 @@ run itself falling over - a rate limit, a dropped connection, a provider
 outage. The old report concatenated both into `failures`, so a red run said
 nothing about whether to fix a prompt or just run it again, and a flaky
 afternoon looked exactly like a quality regression.
+
+The JSON file also keeps what a person needs to look into one result later,
+without paying to run it again. Every trial is one record with its transcript:
+the final answer, each tool call with its arguments, and the error text if the
+trial errored. Every task is one record with its passed, failed and errored
+trial counts, and both pass bars in `evals.metrics.gates` read those counts.
+The run itself carries the model name, a prompt version, a dataset version and
+an estimated cost, so two files can be compared by what they were given.
 """
 
 import json
@@ -18,6 +26,7 @@ from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 
 from evals.metrics.budgets import BudgetSummary
+from evals.metrics.gates import Outcome
 from evals.metrics.generation import GenerationSuiteSummary
 from evals.metrics.retrieval import RetrievalSuiteSummary
 from evals.metrics.tools import ToolSuiteSummary
@@ -31,6 +40,108 @@ class SuiteReport:
     retrieval: RetrievalSuiteSummary | None = None
     generation: GenerationSuiteSummary | None = None
     budgets: BudgetSummary | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCallRecord:
+    """One tool call the agent made, as the user would have seen it announced."""
+
+    name: str
+    # The `ReplyToolStarted.summary` text: the tool name and its arguments,
+    # already shortened by the agent. Not the raw argument object.
+    arguments: str
+
+
+@dataclass(frozen=True, slots=True)
+class Transcript:
+    """What the agent did in one trial: the evidence a grader read."""
+
+    answer: str
+    tool_calls: tuple[ToolCallRecord, ...] = ()
+    # Why the trial errored. `None` for a trial that passed or failed.
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TrialRecord:
+    """One trial of one task."""
+
+    task_id: str
+    trial: int
+    outcome: Outcome
+    # What the graders found wrong. Empty unless the outcome is "failed".
+    failure_reasons: tuple[str, ...]
+    transcript: Transcript
+    tokens_in: int
+    tokens_out: int
+    latency_ms: float
+
+
+@dataclass(frozen=True, slots=True)
+class TaskRecord:
+    """How many trials of one task passed, failed and errored."""
+
+    task_id: str
+    suite: str
+    passed: int
+    failed: int
+    errored: int
+
+
+@dataclass(frozen=True, slots=True)
+class Totals:
+    """Trial counts for the whole suite. Errored trials are not graded."""
+
+    passed: int
+    failed: int
+    errored: int
+
+    @property
+    def graded(self) -> int:
+        return self.passed + self.failed
+
+
+@dataclass(frozen=True, slots=True)
+class CostEstimate:
+    """What the run cost, worked out from tokens and a price per million.
+
+    An estimate, not a bill: it prices every token at the two rates given, and
+    it counts only tokens the provider reported. Judge tokens are priced at the
+    same rates, though the judge answers through the cheaper condenser model.
+    """
+
+    tokens_in: int
+    tokens_out: int
+    judge_tokens_in: int
+    judge_tokens_out: int
+    price_in_per_million: float
+    price_out_per_million: float
+    usd: float
+
+
+def estimate_cost(
+    *,
+    tokens_in: int,
+    tokens_out: int,
+    judge_tokens_in: int,
+    judge_tokens_out: int,
+    price_in_per_million: float,
+    price_out_per_million: float,
+) -> CostEstimate:
+    """USD cost of the trial tokens plus the judge tokens."""
+    usd = (
+        (tokens_in + judge_tokens_in) * price_in_per_million
+        + (tokens_out + judge_tokens_out) * price_out_per_million
+    ) / 1_000_000
+    return CostEstimate(
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+        judge_tokens_in=judge_tokens_in,
+        judge_tokens_out=judge_tokens_out,
+        price_in_per_million=price_in_per_million,
+        price_out_per_million=price_out_per_million,
+        usd=usd,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +168,19 @@ class RunReport:
     # "<case id>: <why the run broke>" - infrastructure, not quality. A sample
     # here was never graded, so it appears in none of the rates above.
     errors: tuple[str, ...] = ()
+    # "gate", "release", or `None` for a plain run with `--repeat`.
+    mode: str | None = None
+    prompt_version: str = ""
+    dataset_version: str = ""
+    trials: tuple[TrialRecord, ...] = ()
+    tasks: tuple[TaskRecord, ...] = ()
+    totals: Totals = Totals(passed=0, failed=0, errored=0)
+    cost: CostEstimate | None = None
+    # Did the run miss its quality bar? Decides exit code 1. Kept in the report
+    # so the file says why the run was red without re-deriving it.
+    quality_failed: bool = False
+    # Why the run passed or failed, in plain words. Printed and stored.
+    verdict: tuple[str, ...] = ()
 
     @property
     def graded(self) -> int:
@@ -81,11 +205,38 @@ def render_markdown(report: RunReport) -> str:
         f"# Eval run `{report.run_id}`",
         "",
         f"- **model**: `{report.model}`",
+        f"- **mode**: {report.mode or '(plain run)'}",
+        f"- **prompt version**: `{report.prompt_version or 'n/a'}`",
+        f"- **dataset version**: `{report.dataset_version or 'n/a'}`",
         f"- **tags**: {', '.join(report.tags) if report.tags else '(none)'}",
         f"- **cases**: {len(report.case_ids)}",
-        f"- **samples**: {report.samples} ({report.graded} graded)",
-        "",
+        f"- **trials**: {report.samples} ({report.graded} graded)",
+        f"- **passed / failed / errored**: {report.totals.passed} / "
+        f"{report.totals.failed} / {report.totals.errored}",
     ]
+    if report.cost is not None:
+        c = report.cost
+        lines.append(
+            f"- **estimated cost**: ${c.usd:.4f} "
+            f"({c.tokens_in + c.judge_tokens_in} tokens in, "
+            f"{c.tokens_out + c.judge_tokens_out} out, "
+            f"at ${c.price_in_per_million}/${c.price_out_per_million} per million)"
+        )
+    lines.append("")
+    lines.extend(_punch_list("Verdict", report.verdict, ""))
+    if report.tasks:
+        lines.extend(
+            [
+                "## Tasks",
+                "",
+                *(
+                    f"- {task.task_id}: {task.passed} passed, {task.failed} failed, "
+                    f"{task.errored} errored"
+                    for task in report.tasks
+                ),
+                "",
+            ]
+        )
     for suite in report.suites:
         lines.append(f"## {suite.suite} (n={suite.n})")
         lines.append("")
