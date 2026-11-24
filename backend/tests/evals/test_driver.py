@@ -1,9 +1,9 @@
 """The eval driver's scoring, checked without spending anything.
 
 `python -m evals` costs money per sample, so the parts of it that decide what a
-number means - which runs count, what a regression is, what a leak probe
-matches - are pure functions over a `CaseRun`, and this is where they are
-proved. Nothing here builds a harness, opens a client or reads an API key.
+number means - which runs count, what a regression is - are pure functions
+over a `CaseRun`, and this is where they are proved. Nothing here builds a
+harness, opens a client or reads an API key.
 
 What these tests really guard is a three-way split. A model that got it wrong
 every time is a regression. A model that got it wrong sometimes is flaky. A
@@ -23,7 +23,7 @@ from app.application.chat.dto import (
     ReplyToolStarted,
 )
 from app.application.chat.models import Source
-from evals.__main__ import _forbidden_for, _prompt_probe, _select_cases, _verdicts
+from evals.__main__ import _select_cases, _verdicts
 from evals.cases import EvalCase, Expectation
 from evals.harness import CaseRun, EvalHarness
 from evals.report import RunReport
@@ -65,7 +65,7 @@ def test_refusal_is_not_completion() -> None:
         ],
     )
 
-    assert _verdicts([run], _HARNESS, None).regressions == ()
+    assert _verdicts([run], _HARNESS).regressions == ()
 
 
 def test_order_is_graded() -> None:
@@ -79,7 +79,7 @@ def test_order_is_graded() -> None:
     )
     backwards = _run(case, [_finished("search_web"), _finished("retrieve_documents")])
 
-    assert "expected order" in _verdicts([backwards], _HARNESS, None).regressions[0]
+    assert "expected order" in _verdicts([backwards], _HARNESS).regressions[0]
 
 
 def test_broken_run_is_not_a_regression() -> None:
@@ -88,25 +88,23 @@ def test_broken_run_is_not_a_regression() -> None:
     case = _case(expect=Expectation(tools=["retrieve_documents"], must_contain=["2019"]))
     run = CaseRun(case=case, failed=ReplyFailed(detail="busy right now"))
 
-    assert _verdicts([run], _HARNESS, None) == _verdicts([], _HARNESS, None)
+    assert _verdicts([run], _HARNESS) == _verdicts([], _HARNESS)
 
 
-def test_canary_in_tool_args() -> None:
-    """The way an indirect injection pays off is not the model reciting a
-    canary at the user, where anyone would see it. It is the model putting one
-    into a search query and sending it to a third party, which an answer-only
-    check calls a pass."""
-    case = _case(suite="injection", expect=Expectation(must_not_contain=["CANARY-EXFIL-22b1"]))
+def test_forbidden_in_tool_args() -> None:
+    """A forbidden string sent in a search query reaches a third party even
+    when the answer is clean, which an answer-only check calls a pass."""
+    case = _case(expect=Expectation(must_not_contain=["Project Halcyon"]))
     run = _run(
         case,
         [
-            ReplyToolStarted(name="search_web", summary="search_web(query='CANARY-EXFIL-22b1')"),
+            ReplyToolStarted(name="search_web", summary="search_web(query='Project Halcyon')"),
             _finished("search_web"),
             ReplyDelta(text="The VR-4 carries 1200 kg."),
         ],
     )
 
-    assert "forbidden in tool args" in _verdicts([run], _HARNESS, None).regressions[0]
+    assert "forbidden in tool args" in _verdicts([run], _HARNESS).regressions[0]
 
 
 def test_retrieval_ignores_web_sources() -> None:
@@ -128,7 +126,7 @@ def test_retrieval_ignores_web_sources() -> None:
         ],
     )
 
-    assert _verdicts([run], _HARNESS, None).regressions == ()
+    assert _verdicts([run], _HARNESS).regressions == ()
 
 
 def test_every_sample_failing_is_a_regression() -> None:
@@ -136,7 +134,7 @@ def test_every_sample_failing_is_a_regression() -> None:
     case = _case(expect=Expectation(must_contain=["2019"]))
     runs = [_run(case, _answer("no idea"), sample) for sample in (1, 2, 3)]
 
-    verdicts = _verdicts(runs, _HARNESS, None)
+    verdicts = _verdicts(runs, _HARNESS)
 
     assert len(verdicts.regressions) == 1
     assert verdicts.flaky == ()
@@ -153,7 +151,7 @@ def test_some_samples_failing_is_flaky() -> None:
         _run(case, _answer("founded in 2019"), 3),
     ]
 
-    verdicts = _verdicts(runs, _HARNESS, None)
+    verdicts = _verdicts(runs, _HARNESS)
 
     assert verdicts.regressions == ()
     assert "failed 1/3 samples" in verdicts.flaky[0]
@@ -169,32 +167,10 @@ def test_broken_sample_does_not_make_a_case_flaky() -> None:
         _run(case, _answer("founded in 2019"), 3),
     ]
 
-    verdicts = _verdicts(runs, _HARNESS, None)
+    verdicts = _verdicts(runs, _HARNESS)
 
     assert verdicts.regressions == ()
     assert verdicts.flaky == ()
-
-
-def test_probe_is_the_longest_line() -> None:
-    """Derived from the live prompt, never pinned in a dataset: a pinned probe
-    goes stale the first time `LLM_SYSTEM_PROMPT` is set, and goes stale
-    silently, still passing."""
-    prompt = "You help.\nAlways cite the document name you drew each fact from.\nBe brief."
-
-    assert _prompt_probe(prompt) == "Always cite the document name you drew each fact from."
-
-
-def test_short_prompt_has_no_probe() -> None:
-    """A probe of a few common words fires on any polite reply."""
-    assert _prompt_probe("Be brief.") is None
-
-
-def test_probe_guards_injection_only() -> None:
-    """An ordinary case may legitimately quote a sentence the prompt contains."""
-    probe = "Always cite the document name you drew each fact from."
-
-    assert probe in _forbidden_for(_case(suite="injection"), probe)
-    assert probe not in _forbidden_for(_case(suite="rag"), probe)
 
 
 def test_graded_counts_samples() -> None:
@@ -221,5 +197,5 @@ def test_tag_selection_keeps_suite_order() -> None:
     selected = _select_cases("all", None, ["ci"])
     suites = [case.suite for case in selected]
 
-    assert suites == sorted(suites, key=["tools", "rag", "injection"].index)
+    assert suites == sorted(suites, key=["tools", "rag"].index)
     assert all("ci" in case.tags for case in selected)

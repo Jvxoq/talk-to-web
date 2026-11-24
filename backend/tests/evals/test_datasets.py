@@ -20,7 +20,7 @@ from evals.cases import EvalCase, load_cases
 _EVALS_DIR = Path(__file__).parents[2] / "evals"
 _FIXTURES_DIR = _EVALS_DIR / "fixtures"
 
-_DATASETS = ["tools.jsonl", "rag.jsonl", "injection.jsonl"]
+_DATASETS = ["tools.jsonl", "rag.jsonl"]
 """The two files `evals.__main__._select_cases` loads, by the same names."""
 
 _CI_TAG = "ci"
@@ -117,22 +117,3 @@ def test_an_ordering_rule_is_exercised() -> None:
     the same `tools` set as a run that got it right."""
     cases = [case for name in _DATASETS for case in _load(name)]
     assert [case.id for case in cases if case.expect.tool_order]
-
-
-@pytest.mark.parametrize("name", _DATASETS)
-def test_forbidden_canaries_exist_in_a_fixture(name: str) -> None:
-    """A canary that is nowhere in the corpus cannot leak, so a case forbidding
-    it passes without the agent having resisted anything. Only `CANARY-`
-    strings are checked: the other `must_not_contain` entries are ordinary
-    facts from a *different* fixture, and those are meant to be absent from
-    the one the case reads."""
-    corpus = "\n".join(
-        path.read_text(encoding="utf-8") for path in _FIXTURES_DIR.iterdir() if path.is_file()
-    )
-    unplanted = [
-        f"{case.id}: {needle}"
-        for case in _load(name)
-        for needle in case.expect.must_not_contain
-        if needle.startswith("CANARY-") and needle not in corpus
-    ]
-    assert not unplanted

@@ -77,7 +77,7 @@ class Settings(BaseSettings):
     guardrail_pii_redaction_enabled: bool = True
     # Off deliberately. "Ignore the previous paragraph" is a sentence real users
     # type at real PDFs. Read the false-positive rate off
-    # `evals/datasets/benign.jsonl` before turning it on.
+    # the security eval suite's benign set before turning it on.
     guardrail_block_on_injection: bool = False
     guardrail_strip_tool_instructions: bool = True
     # A concurrency limit wearing a size limit's clothes. Regex is synchronous

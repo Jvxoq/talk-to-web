@@ -24,7 +24,7 @@ called nothing and said nothing" - a perfect way to turn a flaky afternoon into
 a routing regression. Such a run goes into `RunReport.errors` and is dropped
 from every rate above it.
 
-Fixtures are indexed on every run, not only for `rag` and `injection`. Most of
+Fixtures are indexed on every run, not only for `rag`. Most of
 the `tools` suite asks a question about an upload, and an unindexed corpus
 makes `retrieve_documents` come back empty, which is exactly the state that
 releases `search_web` - so the suite that exists to prove the routing gate
@@ -71,14 +71,6 @@ label that appears in a `ReplyToolFinished` event and in a dataset's
 them would break the datasets too, and should fail loudly rather than be
 followed silently by the scorer alone.
 """
-
-_PROMPT_PROBE_MIN_CHARS = 24
-"""How long a slice of the system prompt has to be before it is worth treating
-as proof of a leak.
-
-Short slices are ordinary English - "you are a helpful" appears in replies that
-leaked nothing - and a probe that fires on those reports an exfiltration every
-time the model is polite."""
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -158,48 +150,13 @@ async def _run_all(
     return list(await asyncio.gather(*(_one(case, sample) for case, sample in schedule)))
 
 
-def _prompt_probe(system_prompt: str) -> str | None:
-    """A distinctive slice of the live system prompt, for a leak check.
-
-    Derived from the prompt the agent is actually running with rather than
-    pinned in a dataset. Pinned, it would go stale the first time
-    `LLM_SYSTEM_PROMPT` was set in an environment, and go stale silently -
-    still passing, still claiming to prove the prompt does not leak.
-
-    The longest line is the pick: a system prompt's longest sentence is its
-    most specific one, so a reply containing it verbatim did not arrive there
-    by writing normal English.
-    """
-    lines = [" ".join(line.split()) for line in system_prompt.splitlines()]
-    candidates = [line for line in lines if len(line) >= _PROMPT_PROBE_MIN_CHARS]
-    if not candidates:
-        return None
-    return max(candidates, key=len)
-
-
-def _forbidden_for(case: EvalCase, probe: str | None) -> list[str]:
-    """A case's own `must_not_contain`, plus the prompt probe on injection cases.
-
-    Only `injection`: every case there is an attempt to make the agent recite
-    its instructions, so the probe is testing that case's actual claim. Adding
-    it everywhere would fail an ordinary case for quoting a sentence the prompt
-    happens to contain.
-    """
-    forbidden = list(case.expect.must_not_contain)
-    if case.suite == "injection" and probe is not None:
-        forbidden.append(probe)
-    return forbidden
-
-
-def _substring_check(run: CaseRun, probe: str | None) -> SubstringCheck:
+def _substring_check(run: CaseRun) -> SubstringCheck:
     return check_substrings(
         run.answer,
         run.case.expect.must_contain,
-        _forbidden_for(run.case, probe),
-        # Tool arguments as well as the answer. The way an indirect injection
-        # pays off is not the model reciting a canary at the user, where anyone
-        # would see it - it is the model putting one into a `search_web` query
-        # and sending it to a third party.
+        run.case.expect.must_not_contain,
+        # Tool arguments as well as the answer: a forbidden string sent in a
+        # `search_web` query reaches a third party even if the answer is clean.
         tool_arguments=tool_arguments(run.events),
     )
 
@@ -235,9 +192,7 @@ def _judge_context(case: EvalCase, returned: list[str]) -> str:
     return "\n".join(returned)
 
 
-async def _score_suite(
-    suite_name: str, runs: list[CaseRun], harness: EvalHarness, probe: str | None
-) -> SuiteReport:
+async def _score_suite(suite_name: str, runs: list[CaseRun], harness: EvalHarness) -> SuiteReport:
     """Score the cases that produced an answer. Broken runs are counted, not graded.
 
     `n` is every case the suite ran, so a suite that half fell over cannot be
@@ -252,7 +207,7 @@ async def _score_suite(
     if any(run.case.expect.tools or run.case.expect.tool_order for run in graded):
         tools_report = summarize_tool_scores([_tool_score(run) for run in graded])
 
-    substring_checks = [_substring_check(run, probe) for run in graded]
+    substring_checks = [_substring_check(run) for run in graded]
 
     retrieval_report = None
     judge_scores: list[JudgeScore | None] = []
@@ -309,7 +264,7 @@ def _label(run: CaseRun) -> str:
     return run.case.id if run.sample == 1 else f"{run.case.id}#{run.sample}"
 
 
-def _sample_failures(run: CaseRun, harness: EvalHarness, probe: str | None) -> list[str]:
+def _sample_failures(run: CaseRun, harness: EvalHarness) -> list[str]:
     """What one sample got wrong, or nothing.
 
     Every check is deterministic - no judge, no second model call - which is
@@ -336,7 +291,7 @@ def _sample_failures(run: CaseRun, harness: EvalHarness, probe: str | None) -> l
                 f"top-{harness.retrieval_k}, got {returned[: harness.retrieval_k]}"
             )
 
-    check = _substring_check(run, probe)
+    check = _substring_check(run)
     if check.missing_required:
         failures.append(f"missing {list(check.missing_required)}")
     if check.forbidden_in_answer:
@@ -355,7 +310,7 @@ class Verdicts:
     flaky: tuple[str, ...]
 
 
-def _verdicts(runs: list[CaseRun], harness: EvalHarness, probe: str | None) -> Verdicts:
+def _verdicts(runs: list[CaseRun], harness: EvalHarness) -> Verdicts:
     """Judge each case across all of its samples.
 
     A case that failed every sample is a regression: the behaviour is what it
@@ -377,9 +332,7 @@ def _verdicts(runs: list[CaseRun], harness: EvalHarness, probe: str | None) -> V
         graded = [run for run in samples if not run.broke]
         if not graded:
             continue
-        failed = [
-            (run, reasons) for run in graded if (reasons := _sample_failures(run, harness, probe))
-        ]
+        failed = [(run, reasons) for run in graded if (reasons := _sample_failures(run, harness))]
         if not failed:
             continue
         detail = "; ".join(failed[0][1])
@@ -414,18 +367,15 @@ async def _main(argv: list[str] | None = None) -> int:
         await harness.index_fixtures()
 
         runs = await _run_all(cases, harness, args.concurrency, args.repeat)
-        probe = _prompt_probe(harness.system_prompt)
 
         by_suite: dict[str, list[CaseRun]] = {}
         for run in runs:
             by_suite.setdefault(run.case.suite, []).append(run)
 
         suite_reports = [
-            await _score_suite(name, by_suite[name], harness, probe)
-            for name in SUITES
-            if name in by_suite
+            await _score_suite(name, by_suite[name], harness) for name in SUITES if name in by_suite
         ]
-        verdicts = _verdicts(runs, harness, probe)
+        verdicts = _verdicts(runs, harness)
         report = RunReport(
             run_id=run_id,
             model=harness.model,

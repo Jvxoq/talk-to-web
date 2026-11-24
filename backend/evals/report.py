@@ -6,7 +6,7 @@ metric nobody looks at again.
 
 Two lists come out of a run, not one, and keeping them apart is the point of
 this module's shape. A `regression` is the model doing the wrong thing - a
-missed tool, a leaked canary, a document it failed to find. An `error` is the
+missed tool, a forbidden string, a document it failed to find. An `error` is the
 run itself falling over - a rate limit, a dropped connection, a provider
 outage. The old report concatenated both into `failures`, so a red run said
 nothing about whether to fix a prompt or just run it again, and a flaky

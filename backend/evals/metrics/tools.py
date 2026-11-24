@@ -48,7 +48,7 @@ def tool_arguments(events: Sequence[ReplyEvent]) -> list[str]:
 
     `ReplyToolStarted.summary` is `name(arg='value', ...)`, truncated by the
     tool node. It is not a complete record of what was sent, and this is the
-    one place that matters: it is enough to catch a canary being smuggled into
+    one place that matters: it is enough to catch a forbidden string being smuggled into
     a `search_web` query, which an answer-only check never sees.
     """
     return [event.summary for event in events if isinstance(event, ReplyToolStarted)]

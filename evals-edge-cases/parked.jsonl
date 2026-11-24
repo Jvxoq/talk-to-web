@@ -1,0 +1,2 @@
+{"id": "tools-021-greeting-needs-no-tool", "suite": "tools", "input": "hi", "fixtures": [], "expect": {"tools": []}, "tags": ["no-tool", "greeting", "edge", "wip"]}
+{"id": "tools-024-empty-account-personal-document-no-search", "suite": "tools", "input": "Based on the lease contract I uploaded, when does my lease end?", "fixtures": [], "owner": "empty", "expect": {"tools": []}, "tags": ["empty-account", "no-tool", "edge", "wip"]}

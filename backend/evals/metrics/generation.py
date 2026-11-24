@@ -8,10 +8,8 @@ flagging them. `must_contain` / `must_not_contain` catch it exactly, for free,
 with no model call.
 
 `must_not_contain` is checked against the tool arguments as well as the answer,
-and that is the half that was missing. The way an indirect prompt injection
-actually pays off is not the model reciting a canary back to the user, where
-anyone would notice - it is the model putting one into a `search_web` query
-and sending it to a third party. An answer-only check calls that a pass.
+because a forbidden string sent in a `search_web` query reaches a third party
+even when the answer itself is clean.
 """
 
 from collections.abc import Sequence
@@ -83,9 +81,9 @@ def summarize_generation(
     """Summarize one suite's answer quality.
 
     `judge_scores` defaults to empty rather than being required, because the
-    `injection` suite has no judge: what it asserts is binary and deterministic
-    (did a canary escape) and paying a second model to have an opinion about
-    that would add cost and noise to a question with one right answer. The old
+    `tools` suite has no judge: what it asserts is binary and deterministic
+    and paying a second model to have an opinion about that would add cost
+    and noise to a question with one right answer. The old
     shape forced a caller to pass `[None] * len(runs)` to say so, which read
     as "the judge failed on every case".
     """

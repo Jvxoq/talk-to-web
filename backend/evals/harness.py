@@ -309,12 +309,6 @@ class EvalHarness:
     embedder: GeminiEmbedder
     vector_index: QdrantVectorIndex
     model: str
-    # The prompt the agent under test is actually running with, so a leak probe
-    # can be derived from it instead of pinned as a literal in a dataset file.
-    # Pinned, it would go stale the first time `LLM_SYSTEM_PROMPT` was set in an
-    # environment - and go stale silently, still passing, still claiming to
-    # prove the prompt does not leak.
-    system_prompt: str
     # How many distinct source documents a retrieval metric grades. Not
     # `retrieval_limit`: that counts passages, and several passages routinely
     # come from one file, which `RetrieveDocuments` deduplicates before it
@@ -634,7 +628,6 @@ async def build_harness(
         embedder=embedder,
         vector_index=vector_index,
         model=answering_model,
-        system_prompt=settings.llm_system_prompt,
         retrieval_k=3,
         chunk_size=settings.chunk_size,
         chunk_overlap=settings.chunk_overlap,

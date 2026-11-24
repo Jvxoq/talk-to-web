@@ -20,13 +20,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 _DATASETS_DIR = Path(__file__).parent / "datasets"
 
-SUITES: tuple[str, ...] = ("tools", "rag", "injection")
+SUITES: tuple[str, ...] = ("tools", "rag")
 """Every suite `evals.__main__` can run, in the order a full run reports them.
 
-`benign.jsonl` and `redteam.jsonl` are deliberately absent: those are guardrail
-golden files, graded by regex in `tests/application/test_guardrails_redteam.py`
-with no model call at all, and running them here would spend money to learn
-nothing new.
+Security cases (prompt injection, red team) live in a separate suite outside
+this package.
 """
 
 Owner = Literal["with_documents", "empty"]
@@ -66,9 +64,8 @@ class Expectation(BaseModel):
     expected_sources: list[str] = Field(default_factory=list)
     must_contain: list[str] = Field(default_factory=list)
     # Checked against the answer *and* against every tool call's arguments.
-    # Both, because the interesting way an injection succeeds is not the model
-    # repeating a canary at the user - it is the model quietly putting one in a
-    # `search_web` query, where an answer-only check never looks.
+    # Both, because a forbidden string can leave through a `search_web` query
+    # as easily as through the answer.
     must_not_contain: list[str] = Field(default_factory=list)
     # A gold answer, handed to the judge as the correct response to compare
     # against - never as the grounding context. Those are different questions:
@@ -95,7 +92,7 @@ class EvalCase(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: str
-    suite: Literal["tools", "rag", "injection"]
+    suite: Literal["tools", "rag"]
     input: str
     # Fixture filenames this case depends on. `EvalHarness.index_fixtures`
     # still indexes the whole `evals/fixtures/` directory once per run rather
@@ -170,7 +167,7 @@ def load_all_cases() -> list[EvalCase]:
     """Every suite's cases, in `SUITES` order, with ids unique across all of them.
 
     Uniqueness has to be checked here and not only per file, because a full run
-    merges the three datasets into one report keyed by case id. Two files that
+    merges the datasets into one report keyed by case id. Two files that
     each happen to define `rag-001` are two rows the report cannot tell apart,
     and nothing about the run would say so.
     """
