@@ -120,6 +120,12 @@ class Settings(BaseSettings):
     llm_models: list[str] = Field(default_factory=lambda: ["deepseek-ai/DeepSeek-V4-Flash-0731"])
     llm_api_key: SecretStr
     llm_max_tokens: int = 2048
+    # Longest wait for the first chunk of a reply. Longer than the idle wait:
+    # the provider reads the whole prompt first, and a long thread is slow.
+    llm_stream_first_chunk_timeout_seconds: float = Field(default=60.0, gt=0)
+    # Longest wait for each later chunk. Not a cap on the whole reply: a long
+    # answer that keeps streaming is healthy.
+    llm_stream_idle_timeout_seconds: float = Field(default=30.0, gt=0)
     llm_system_prompt: str = (
         "You are a helpful assistant with access to tools.\n"
         "Most user turns open with a bracketed tag: [DOCUMENTS AVAILABLE] "

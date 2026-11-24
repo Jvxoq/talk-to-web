@@ -6,8 +6,10 @@ file, so the agent graph above it never imports `langchain` and never learns
 which company answered.
 """
 
+import asyncio
 import uuid
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
+from contextlib import aclosing
 from typing import Any
 
 from langchain.chat_models import init_chat_model
@@ -32,6 +34,46 @@ from app.application.chat.tools.base import ToolSpec
 
 _DEFAULT_RETRY_WAIT = wait_exponential_jitter(initial=1, max=8)
 """Module-level singleton so it isn't rebuilt on every call to the default."""
+
+
+class _StreamStalledError(TimeoutError):
+    """The provider sent nothing for a whole deadline.
+
+    Its own type so the retry predicate can tell our deadline apart from a
+    TimeoutError the provider's SDK raised.
+    """
+
+
+async def _with_idle_timeout[T](
+    chunks: AsyncIterator[T], *, first_seconds: float, idle_seconds: float
+) -> AsyncGenerator[T]:
+    """Yield `chunks`, failing if the provider goes quiet for too long.
+
+    The first chunk gets `first_seconds`: the provider reads the whole prompt
+    before it says anything, so a long thread is slow to start. Every later
+    chunk gets `idle_seconds`. Each wait has its own deadline, so a slow but
+    steady reply is never cut off. The yield sits outside the deadline on
+    purpose: time the caller spends on a chunk is not the provider's.
+    """
+    iterator = aiter(chunks)
+    seconds = first_seconds
+    while True:
+        deadline = asyncio.timeout(seconds)
+        try:
+            async with deadline:
+                chunk = await anext(iterator)
+        except StopAsyncIteration:
+            return
+        except TimeoutError:
+            # The provider's SDK raises its own TimeoutError too. That one
+            # is its failure, not our deadline, and keeps its own message.
+            if not deadline.expired():
+                raise
+            # Raised bare, the message is empty - and the empty text is
+            # what ends up in the log line and the RuntimeError above this.
+            raise _StreamStalledError(f"No chunk from the provider in {seconds}s") from None
+        yield chunk
+        seconds = idle_seconds
 
 
 def _to_langchain_message(message: ChatMessage) -> BaseMessage:
@@ -81,6 +123,8 @@ class LangChainChatModel:
         models: Sequence[str],
         api_key: str,
         max_tokens: int,
+        first_chunk_timeout_seconds: float,
+        idle_timeout_seconds: float,
         retry_attempts: int = 3,
         retry_wait: wait_base = _DEFAULT_RETRY_WAIT,
     ) -> None:
@@ -93,6 +137,10 @@ class LangChainChatModel:
                 f"{provider}:{name}",
                 api_key=api_key,
                 max_tokens=max_tokens,
+                # Retries belong to `stream` alone. The SDK's own would sleep
+                # through a 429 backoff inside the stream, where the idle
+                # deadline reads it as a stall, and would multiply our attempts.
+                max_retries=0,
             )
             if not isinstance(built, BaseChatModel):
                 # `init_chat_model` returns a late-bound configurable wrapper when
@@ -101,6 +149,8 @@ class LangChainChatModel:
                 raise RuntimeError(f"Provider {provider!r} did not return a usable chat model")
             self._models[name] = built
 
+        self._first_chunk_timeout_seconds = first_chunk_timeout_seconds
+        self._idle_timeout_seconds = idle_timeout_seconds
         self._retry_attempts = retry_attempts
         self._retry_wait = retry_wait
 
@@ -139,6 +189,10 @@ class LangChainChatModel:
             if is_auth_failure(str(error)):
                 logger.error(f"Provider rejected our credentials for model {model}")
                 return False
+            # A stall already cost the user the whole idle deadline of blank
+            # screen. Each retry would add another full deadline on top.
+            if isinstance(error, _StreamStalledError):
+                return False
             return not started
 
         try:
@@ -150,17 +204,26 @@ class LangChainChatModel:
             ):
                 with attempt:
                     accumulated = None
-                    async for chunk in runnable.astream(payload):
-                        if not isinstance(chunk, AIMessageChunk):
-                            continue
-                        accumulated = chunk if accumulated is None else accumulated + chunk
+                    # `aclosing`, so a caller that stops early closes the
+                    # provider's stream now, not when garbage collection runs.
+                    async with aclosing(
+                        _with_idle_timeout(
+                            runnable.astream(payload),
+                            first_seconds=self._first_chunk_timeout_seconds,
+                            idle_seconds=self._idle_timeout_seconds,
+                        )
+                    ) as chunks:
+                        async for chunk in chunks:
+                            if not isinstance(chunk, AIMessageChunk):
+                                continue
+                            accumulated = chunk if accumulated is None else accumulated + chunk
 
-                        text = str(chunk.text)
-                        if text:
-                            started = True
-                            # `model_construct` skips validation: this runs
-                            # once per token, on data we just built ourselves.
-                            yield ModelChunk.model_construct(text=text)
+                            text = str(chunk.text)
+                            if text:
+                                started = True
+                                # `model_construct` skips validation: this runs
+                                # once per token, on data we just built ourselves.
+                                yield ModelChunk.model_construct(text=text)
         except Exception as error:
             logger.warning(f"Chat stream failed for model {model}: {error}")
             raise RuntimeError(f"Completion provider failed: {error}") from error

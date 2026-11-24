@@ -14,8 +14,9 @@ Groq endpoint would test Groq's uptime instead, and would not let a test choose
 where the argument JSON gets split - which is the case that breaks.
 """
 
+import asyncio
 import json
-from collections.abc import AsyncIterator, Callable, Iterator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator, Sequence
 from typing import Any
 
 import pytest
@@ -34,6 +35,7 @@ from langchain_core.messages.tool import tool_call_chunk
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
+from langchain_together import ChatTogether
 from pydantic import Field
 from tenacity import wait_none
 
@@ -69,6 +71,15 @@ class ScriptedChatModel(BaseChatModel):
     # `chunks` instead - a real provider erroring on the first N attempts of a
     # retried call, then recovering on the next.
     fail_calls: int = 10**9
+    # A provider that goes quiet: the stream hangs forever once `stall_at`
+    # chunks have been sent.
+    stall_at: int | None = None
+    # Seconds between chunks: a provider that is slow but never silent.
+    chunk_gap: float = 0.0
+    # Seconds before the first chunk: a provider reading a long prompt.
+    first_delay: float = 0.0
+    # Set when the stream is closed, however it ends.
+    closed: bool = False
     calls: int = 0
     # What the model was actually called with. Recorded at the call rather than
     # at `bind`, so the assertions are about what reached the provider and not
@@ -104,8 +115,19 @@ class ScriptedChatModel(BaseChatModel):
         self.calls += 1
         if self.fail_with is not None and self.calls <= self.fail_calls:
             raise self.fail_with
-        for chunk in self.chunks:
-            yield ChatGenerationChunk(message=chunk)
+        try:
+            if self.first_delay:
+                await asyncio.sleep(self.first_delay)
+            for index, chunk in enumerate(self.chunks):
+                if index == self.stall_at:
+                    await asyncio.Event().wait()
+                if self.chunk_gap:
+                    await asyncio.sleep(self.chunk_gap)
+                yield ChatGenerationChunk(message=chunk)
+            if self.stall_at == len(self.chunks):
+                await asyncio.Event().wait()
+        finally:
+            self.closed = True
 
     def _stream(
         self,
@@ -131,6 +153,11 @@ def scripted(
     fails: Exception | None = None,
     fail_calls: int = 10**9,
     retry_attempts: int = 1,
+    stall_at: int | None = None,
+    chunk_gap: float = 0.0,
+    first_delay: float = 0.0,
+    idle_timeout: float = 30.0,
+    first_chunk_timeout: float | None = None,
 ) -> LangChainChatModel:
     """A `LangChainChatModel` wired to a scripted provider, built without one.
 
@@ -145,8 +172,19 @@ def scripted(
     """
     adapter = LangChainChatModel.__new__(LangChainChatModel)
     adapter._models = {
-        MODEL: ScriptedChatModel(chunks=list(chunks), fail_with=fails, fail_calls=fail_calls)
+        MODEL: ScriptedChatModel(
+            chunks=list(chunks),
+            fail_with=fails,
+            fail_calls=fail_calls,
+            stall_at=stall_at,
+            chunk_gap=chunk_gap,
+            first_delay=first_delay,
+        )
     }
+    adapter._first_chunk_timeout_seconds = (
+        idle_timeout if first_chunk_timeout is None else first_chunk_timeout
+    )
+    adapter._idle_timeout_seconds = idle_timeout
     adapter._retry_attempts = retry_attempts
     adapter._retry_wait = wait_none()
     return adapter
@@ -506,6 +544,112 @@ class TestRetries:
         assert provider.calls == 1
 
 
+class TestIdleTimeout:
+    """A provider that stops sending must not hold the reply open forever.
+
+    The stall tests use a deadline of a few hundredths of a second against a
+    fake that never answers, so they cannot flake. The two slow-path tests wait
+    on the real clock. There, every gap the provider leaves is a fifth of the
+    deadline, so only a badly stalled runner could turn them red.
+    """
+
+    async def test_silent_provider_fails_the_reply(self) -> None:
+        model = scripted(text("never sent"), stall_at=0, idle_timeout=0.05)
+
+        with pytest.raises(RuntimeError, match=r"No chunk from the provider in 0\.05s"):
+            await collect(model.stream(model=MODEL, temperature=0.5, messages=[], tools=[]))
+
+    async def test_stall_before_text_is_not_retried(self) -> None:
+        # The user already stared at a blank reply for the whole deadline. A
+        # retry would make them wait that long again, once per attempt.
+        model = scripted(text("never sent"), stall_at=0, retry_attempts=3, idle_timeout=0.05)
+        provider = model._models[MODEL]
+        assert isinstance(provider, ScriptedChatModel)
+
+        with pytest.raises(RuntimeError, match="No chunk from the provider"):
+            await collect(model.stream(model=MODEL, temperature=0.5, messages=[], tools=[]))
+
+        assert provider.calls == 1
+
+    async def test_stall_mid_reply_is_not_retried(self) -> None:
+        # "Once " is already on the client's screen. A retry would send it twice.
+        model = scripted(
+            text("Once "),
+            text("upon a time."),
+            stall_at=1,
+            retry_attempts=3,
+            idle_timeout=0.05,
+            first_chunk_timeout=5.0,
+        )
+        provider = model._models[MODEL]
+        assert isinstance(provider, ScriptedChatModel)
+        seen: list[str] = []
+
+        with pytest.raises(RuntimeError, match=r"No chunk from the provider in 0\.05s"):
+            async for chunk in model.stream(model=MODEL, temperature=0.5, messages=[], tools=[]):
+                seen.append(chunk.text)
+
+        assert seen == ["Once "]
+        assert provider.calls == 1
+
+    async def test_stall_after_last_chunk_fails(self) -> None:
+        # The provider sent everything but never closed the stream.
+        model = scripted(text("Done."), stall_at=1, idle_timeout=0.05)
+
+        with pytest.raises(RuntimeError, match="No chunk from the provider"):
+            await collect(model.stream(model=MODEL, temperature=0.5, messages=[], tools=[]))
+
+    async def test_slow_steady_reply_is_not_cut(self) -> None:
+        # Each gap is a fifth of the deadline, the whole reply is well over it.
+        # The deadline is per chunk, so a long answer that keeps coming survives.
+        letters = "abcdefgh"
+        model = scripted(*map(text, letters), chunk_gap=0.05, idle_timeout=0.25)
+
+        chunks = await collect(model.stream(model=MODEL, temperature=0.5, messages=[], tools=[]))
+
+        assert "".join(chunk.text for chunk in chunks) == letters
+
+    async def test_slow_first_chunk_gets_longer_deadline(self) -> None:
+        # The provider reads a long thread before it says anything. That wait
+        # is over the idle deadline but under the first-chunk one.
+        model = scripted(
+            text("a"), text("b"), first_delay=0.1, idle_timeout=0.02, first_chunk_timeout=0.5
+        )
+
+        chunks = await collect(model.stream(model=MODEL, temperature=0.5, messages=[], tools=[]))
+
+        assert [chunk.text for chunk in chunks] == ["a", "b"]
+
+    async def test_early_stop_closes_provider_stream(self) -> None:
+        # A client gone mid-reply must stop the provider sending, and billing,
+        # right away rather than whenever garbage collection runs.
+        model = scripted(text("a"), text("b"))
+        provider = model._models[MODEL]
+        assert isinstance(provider, ScriptedChatModel)
+        stream = model.stream(model=MODEL, temperature=0.5, messages=[], tools=[])
+        assert isinstance(stream, AsyncGenerator)
+
+        await anext(stream)
+        await stream.aclose()
+        # LangChain's own inner layers close on the loop's next few ticks, once
+        # ours is closed. Left open, they never close until garbage collection.
+        for _ in range(10):
+            await asyncio.sleep(0)
+
+        assert provider.closed
+
+    async def test_slow_consumer_does_not_count(self) -> None:
+        # Time the graph spends on a chunk is ours, not the provider's.
+        model = scripted(text("a"), text("b"), idle_timeout=0.05)
+        seen: list[str] = []
+
+        async for chunk in model.stream(model=MODEL, temperature=0.5, messages=[], tools=[]):
+            seen.append(chunk.text)
+            await asyncio.sleep(0.1)
+
+        assert seen == ["a", "b"]
+
+
 class TestConstruction:
     """The constructor, with real `init_chat_model` and a real provider class.
 
@@ -519,6 +663,8 @@ class TestConstruction:
             models=[MODEL, "llama-3.1-8b-instant"],
             api_key="not-a-real-key",
             max_tokens=1024,
+            first_chunk_timeout_seconds=60.0,
+            idle_timeout_seconds=30.0,
         )
 
         assert sorted(model._models) == ["llama-3.1-8b-instant", MODEL]
@@ -527,21 +673,54 @@ class TestConstruction:
         # Otherwise every request would fail with "unknown model" and the real
         # fault - an empty setting - would never be named.
         with pytest.raises(ValueError, match="At least one model"):
-            LangChainChatModel(provider="together", models=[], api_key="k", max_tokens=1024)
+            LangChainChatModel(
+                provider="together",
+                models=[],
+                api_key="k",
+                max_tokens=1024,
+                first_chunk_timeout_seconds=60.0,
+                idle_timeout_seconds=30.0,
+            )
 
     def test_an_unresolvable_provider_fails_at_startup(self) -> None:
         # At startup rather than per request: a misconfigured provider should
         # stop a deploy, not surface as a 500 for whoever chats first.
         with pytest.raises(Exception, match=r"(?i)provider|model"):
             LangChainChatModel(
-                provider="not-a-real-provider", models=[MODEL], api_key="k", max_tokens=1024
+                provider="not-a-real-provider",
+                models=[MODEL],
+                api_key="k",
+                max_tokens=1024,
+                first_chunk_timeout_seconds=60.0,
+                idle_timeout_seconds=30.0,
             )
+
+    def test_sdk_retries_are_off(self) -> None:
+        # `stream` owns retries. The SDK's own would sleep through a 429 inside
+        # the stream, where the idle deadline reads it as a stall.
+        model = LangChainChatModel(
+            provider="together",
+            models=[MODEL],
+            api_key="k",
+            max_tokens=1024,
+            first_chunk_timeout_seconds=60.0,
+            idle_timeout_seconds=30.0,
+        )
+        built = model._models[MODEL]
+        assert isinstance(built, ChatTogether)
+
+        assert built.root_async_client.max_retries == 0
 
     async def test_closing_it_is_safe(self) -> None:
         # `init_chat_model` clients own no long-lived socket, but the lifespan
         # calls this in its `finally` regardless.
         model = LangChainChatModel(
-            provider="together", models=[MODEL], api_key="k", max_tokens=1024
+            provider="together",
+            models=[MODEL],
+            api_key="k",
+            max_tokens=1024,
+            first_chunk_timeout_seconds=60.0,
+            idle_timeout_seconds=30.0,
         )
 
         await model.aclose()
