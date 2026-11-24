@@ -318,11 +318,11 @@ These are accepted for now. Each has a reason.
 | `pytest` | Domain, use cases and API work, with no infrastructure | CI, on backend changes |
 | `pytest -m integration` | Real Postgres and Qdrant behaviour, and the migration history | CI, separate job |
 | Red-team tests | Guardrails catch known attacks. Zero API calls. | CI, on backend changes, inside `pytest` |
-| Evals, `ci` tag | The real model picks the right tools and cites the right source | CI, on pull requests that touch a prompt, tool, guardrail or dataset |
+| Eval tasks tagged `ci` | The real model picks the right tools and cites the right source | CI, on pull requests that touch a prompt, tool, guardrail or dataset |
 | Vitest | Frontend logic | CI, on frontend changes |
 
-The eval judge's scores are reported but never block a merge. A 0 to 1 score
-from a model is too noisy to gate on.
+The judge is a grader that is a model. Its scores are reported but never block
+a merge. A 0 to 1 score from a model is too noisy to gate on.
 
 ---
 
