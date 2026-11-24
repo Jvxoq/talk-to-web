@@ -84,11 +84,11 @@ jobs:
             exit 1
           fi
 
-      # `--tag ci` selects only the cases that are deterministic and offline:
-      # the two that reach the live internet (`fetch_web_pages` against
-      # example.com, `search_web` for today's headline) are deliberately left
-      # untagged, because they fail for the internet's reasons rather than this
-      # repository's. `tests/evals/test_datasets.py` is what stops the tag from
+      # `--tag ci` selects only the cases that are deterministic and offline.
+      # The web tools run on saved pages (`--web recorded`, the default), so a
+      # B2 task needs no internet and no Tavily key. Tasks that need live web
+      # content are left untagged and run locally with `--web live`.
+      # `tests/evals/test_datasets.py` is what stops the tag from
       # quietly disappearing and leaving a green job that ran nothing.
       #
       # `--mode` sets the trial count and the pass bar, so `--repeat` is not

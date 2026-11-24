@@ -209,6 +209,8 @@ class RunReport:
     mode: str | None = None
     prompt_version: str = ""
     dataset_version: str = ""
+    # "recorded" or "live": which web tools the run used.
+    web_mode: str = ""
     trials: tuple[TrialRecord, ...] = ()
     tasks: tuple[TaskRecord, ...] = ()
     # The same trial counts, added up per behavior (b1 to b6).
@@ -247,6 +249,7 @@ def render_markdown(report: RunReport) -> str:
         f"- **mode**: {report.mode or '(plain run)'}",
         f"- **prompt version**: `{report.prompt_version or 'n/a'}`",
         f"- **dataset version**: `{report.dataset_version or 'n/a'}`",
+        f"- **web tools**: {report.web_mode or 'n/a'}",
         f"- **tags**: {', '.join(report.tags) if report.tags else '(none)'}",
         f"- **cases**: {len(report.case_ids)}",
         f"- **trials**: {report.samples} ({report.graded} graded)",

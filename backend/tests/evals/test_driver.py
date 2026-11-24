@@ -233,6 +233,7 @@ class _ScriptedHarness:
     model = "fake-model"
     retrieval_k = 3
     prompt_version = "pv-test"
+    web_mode = "recorded"
 
     def __init__(self, script: dict[str, list[str]]) -> None:
         self._script = {key: list(value) for key, value in script.items()}
@@ -552,3 +553,76 @@ def test_tag_selects_one_behavior() -> None:
         "tools-013-empty-account-needs-no-tool",
         "rag-014-empty-account-has-nothing-to-cite",
     ]
+
+
+@pytest.fixture
+def built_with(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
+    """Run the CLI once and return the keyword arguments `build_harness` got."""
+
+    def _run(argv: list[str]) -> dict[str, Any]:
+        seen: dict[str, Any] = {}
+
+        @asynccontextmanager
+        async def fake_build(**kwargs: Any) -> AsyncIterator[_ScriptedHarness]:
+            seen.update(kwargs)
+            harness = _ScriptedHarness({})
+            harness.web_mode = kwargs["web_mode"]
+            yield harness
+
+        monkeypatch.setattr(driver, "build_harness", fake_build)
+        monkeypatch.setattr(
+            driver, "_select_cases", lambda *_: [_case(expect=Expectation(must_contain=["ok"]))]
+        )
+        driver.main([*argv, "--out", str(tmp_path / "r.json")])
+        seen["results"] = json.loads((tmp_path / "r.json").read_text())
+        return seen
+
+    return _run
+
+
+def test_web_tools_are_recorded_unless_live_is_asked_for(built_with: Any) -> None:
+    seen = built_with(["--mode", "gate"])
+
+    assert seen["web_mode"] == "recorded"
+    assert seen["results"]["web_mode"] == "recorded"
+
+
+def test_web_live_reaches_the_harness_and_the_results_file(built_with: Any) -> None:
+    seen = built_with(["--mode", "gate", "--web", "live"])
+
+    assert seen["web_mode"] == "live"
+    assert seen["results"]["web_mode"] == "live"
+
+
+def test_web_rejects_an_unknown_mode() -> None:
+    with pytest.raises(SystemExit):
+        driver._parse_args(["--web", "cached"])
+
+
+def test_markdown_names_the_web_mode() -> None:
+    report = RunReport(
+        run_id="r",
+        model="m",
+        tags=(),
+        suites=(),
+        case_ids=(),
+        samples=0,
+        regressions=(),
+        web_mode="live",
+    )
+
+    assert "- **web tools**: live" in render_markdown(report)
+
+
+def test_dataset_version_tracks_recorded_web_pages(tmp_path: Path) -> None:
+    datasets, fixtures = tmp_path / "datasets", tmp_path / "fixtures"
+    (fixtures / "web" / "fetch").mkdir(parents=True)
+    datasets.mkdir()
+    (datasets / "tools.jsonl").write_text("{}\n")
+    page = fixtures / "web" / "fetch" / "p.txt"
+    page.write_text("one")
+    before = dataset_version(datasets, fixtures, ["tools"])
+
+    page.write_text("two")
+
+    assert dataset_version(datasets, fixtures, ["tools"]) != before

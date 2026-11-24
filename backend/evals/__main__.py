@@ -15,6 +15,10 @@ The bars themselves live in `evals.metrics.gates`.
     --mode release  10 trials per task, judges on. Exit 1 unless the suite
                     fails at most 3% of graded trials and no task fails 3.
 
+`--web recorded` is the default: the two web tools answer from saved pages in
+`evals/fixtures/web/`, so no network or Tavily key is needed. `--web live`
+keeps the real scraper and Tavily, for a local run with a real key.
+
 With no `--mode`, `--repeat N` runs N trials per task and the old rule holds:
 a task that fails every trial is a regression. That is the mode for trying out
 a new task by hand.
@@ -60,13 +64,14 @@ import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
 from loguru import logger
 
 from app.application.chat.dto import ReplyToolStarted
 from evals.cases import SUITES, EvalCase, behavior_of, load_all_cases, load_cases
-from evals.harness import CaseRun, EvalHarness, build_harness, fixture_text
+from evals.harness import CaseRun, EvalHarness, WebMode, build_harness, fixture_text
 from evals.judge import JudgeScore
 from evals.metrics.budgets import summarize_budgets
 from evals.metrics.gates import (
@@ -165,6 +170,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--tag", action="append", default=[], help="Only run cases carrying this tag. May repeat."
+    )
+    parser.add_argument(
+        "--web",
+        choices=["recorded", "live"],
+        default="recorded",
+        help=(
+            "recorded (default): fetch_web_pages and search_web return saved pages from "
+            "evals/fixtures/web/, no network or key needed. live: the real scraper and "
+            "Tavily, for a local run with a real TAVILY_API_KEY."
+        ),
     )
     parser.add_argument(
         "--model",
@@ -477,16 +492,18 @@ def _trial_results(trials: Sequence[TrialRecord]) -> list[TrialResult]:
 def dataset_version(datasets_dir: Path, fixtures_dir: Path, suites: Sequence[str]) -> str:
     """A 12-character hash of the dataset files and fixtures a run used.
 
-    Hashes each suite's `.jsonl` and every fixture file, by name and bytes, in
-    sorted order. Fixtures are all included because `index_fixtures` indexes
-    the whole directory for every suite, so any of them can change an answer.
+    Hashes each suite's `.jsonl` and every fixture file, recorded web pages
+    included, by name and bytes, in sorted order. Fixtures are all included
+    because `index_fixtures` indexes the whole directory for every suite, so
+    any of them can change an answer.
     """
     digest = hashlib.sha256()
     files = [datasets_dir / f"{suite}.jsonl" for suite in sorted(suites)]
     if fixtures_dir.is_dir():
-        files.extend(sorted(path for path in fixtures_dir.iterdir() if path.is_file()))
+        files.extend(sorted(path for path in fixtures_dir.rglob("*") if path.is_file()))
     for path in files:
-        digest.update(path.name.encode("utf-8"))
+        name = path.relative_to(fixtures_dir) if path.is_relative_to(fixtures_dir) else path.name
+        digest.update(str(name).encode("utf-8"))
         digest.update(b"\x00")
         digest.update(path.read_bytes() if path.is_file() else b"")
         digest.update(b"\x00")
@@ -522,7 +539,9 @@ async def _main(argv: list[str] | None = None) -> int:
         logger.warning("No cases matched the given --suite/--tag/--limit; nothing to run.")
         return 0
 
-    async with build_harness(run_id=run_id, model=args.model) as harness:
+    async with build_harness(
+        run_id=run_id, model=args.model, web_mode=cast(WebMode, args.web)
+    ) as harness:
         # Always, for every suite. Most `tools` cases ask about an upload, and
         # an unindexed corpus turns the routing gate this suite grades into a
         # gate with nothing behind it - see the module docstring.
@@ -572,6 +591,7 @@ async def _main(argv: list[str] | None = None) -> int:
             errors=tuple(_errors(runs)),
             mode=args.mode,
             prompt_version=harness.prompt_version,
+            web_mode=harness.web_mode,
             dataset_version=dataset_version(
                 Path(__file__).parent / "datasets",
                 Path(__file__).parent / "fixtures",

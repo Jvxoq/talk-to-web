@@ -11,11 +11,15 @@ Nothing here calls a model, touches Qdrant or reads an API key: importing
 suite rather than under `tests/integration/`.
 """
 
+import json
+import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
 from evals.cases import BEHAVIORS, EvalCase, load_cases
+from evals.recorded_web import INDEX_NAME, RecordedWeb, normalize_url
 
 _EVALS_DIR = Path(__file__).parents[2] / "evals"
 _FIXTURES_DIR = _EVALS_DIR / "fixtures"
@@ -133,3 +137,69 @@ def test_every_task_has_one_behavior(name: str) -> None:
 def test_behavior_tags_match_the_design_table() -> None:
     """`eval-design.md` lists B1 to B6. A seventh tag here has no row there."""
     assert BEHAVIORS == ("b1", "b2", "b3", "b4", "b5", "b6")
+
+
+_WEB_DIR = _FIXTURES_DIR / "web"
+_URL = re.compile(r"https?://[^\s)>\]\"']+")
+
+
+def test_recordings_load_and_every_file_in_web_is_indexed() -> None:
+    """A recording nobody lists is dead weight, and a listed one that is
+    missing would only fail on the first paid run. Loading checks the second;
+    this checks the first."""
+    RecordedWeb.load(_WEB_DIR)
+    index = json.loads((_WEB_DIR / INDEX_NAME).read_text())
+    listed = {*index["pages"].values(), *(entry["file"] for entry in index["searches"])}
+    on_disk = {
+        str(path.relative_to(_WEB_DIR))
+        for path in _WEB_DIR.rglob("*")
+        if path.is_file() and path.name != INDEX_NAME
+    }
+
+    assert on_disk == listed
+
+
+def test_recorded_urls_use_the_reserved_example_tld() -> None:
+    """`.example` can never resolve. A recording for a real host would look
+    live, and the model could answer from memory of the real page."""
+    index = json.loads((_WEB_DIR / INDEX_NAME).read_text())
+    urls = [*index["pages"], *index["unreachable"]]
+
+    assert [url for url in urls if not (urlsplit(url).hostname or "").endswith(".example")] == []
+
+
+@pytest.mark.parametrize("name", _DATASETS)
+def test_every_example_url_a_task_names_has_a_recording(name: str) -> None:
+    """A task that pastes a `.example` URL with no recording would fetch
+    nothing, and a model that cannot read the page fails for a reason that
+    looks like a regression."""
+    web = RecordedWeb.load(_WEB_DIR)
+    index = json.loads((_WEB_DIR / INDEX_NAME).read_text())
+    known = {normalize_url(url) for url in index["unreachable"]}
+    missing = [
+        (case.id, url)
+        for case in _load(name)
+        for url in _URL.findall(case.input)
+        if (urlsplit(url).hostname or "").endswith(".example")
+        and not web.page(url)
+        and normalize_url(url) not in known
+    ]
+    assert not missing
+
+
+@pytest.mark.parametrize("name", _DATASETS)
+def test_web_tasks_in_ci_do_not_need_the_live_web(name: str) -> None:
+    """`ci` rule 1: recorded pages make a B2 task offline, but a task that
+    names a real host would still reach for the internet under `--web live`
+    only. Keep every `ci` fetch task on a recorded URL."""
+    offenders = [
+        case.id
+        for case in _load(name)
+        if _CI_TAG in case.tags
+        and "fetch_web_pages" in case.expect.tools
+        and any(
+            not (urlsplit(url).hostname or "").endswith(".example")
+            for url in _URL.findall(case.input)
+        )
+    ]
+    assert not offenders

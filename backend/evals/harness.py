@@ -30,12 +30,12 @@ import asyncio
 import hashlib
 import json
 import time
-from collections.abc import AsyncIterator, Iterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from itertools import count
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -66,7 +66,7 @@ from app.application.chat.dto import (
 )
 from app.application.chat.guardrails.policy import InputGuardPolicy
 from app.application.chat.guardrails.tool_output import ToolOutputGuard
-from app.application.chat.ports import Tracer
+from app.application.chat.ports import Tracer, WebContentFetcher
 from app.application.chat.tools.base import ToolRegistry, ToolRoutingPolicy, ToolSpec
 from app.application.chat.tools.fetch_web_pages import FetchWebPages
 from app.application.chat.tools.retrieve_documents import RetrieveDocuments
@@ -77,6 +77,7 @@ from app.domain.ingestion.value_objects import Chunk, DocumentName
 from app.settings import Settings
 from evals.cases import EvalCase, Owner
 from evals.judge import Judge
+from evals.recorded_web import RecordedSearchClient, RecordedWeb, RecordedWebContentFetcher
 
 EVAL_OWNER_ID = 999_999_001
 """The account every fixture is indexed under, and the one almost every case
@@ -302,6 +303,52 @@ class _ShelfUnitOfWork:
         return None
 
 
+WebMode = Literal["recorded", "live"]
+"""Where `fetch_web_pages` and `search_web` get their pages.
+
+`recorded` is the default: saved pages from `evals/fixtures/web/`, no network
+and no key, so a B2 task can run in CI. `live` is today's behaviour, the real
+scraper and the real Tavily client, for a local run with a real
+`TAVILY_API_KEY`. The tools the model sees are the same in both."""
+
+
+@dataclass(frozen=True, slots=True)
+class WebTools:
+    """The two web ports a run builds its tools on, and how to close them."""
+
+    fetcher: WebContentFetcher
+    searcher: TavilyWebSearcher
+    aclose: Callable[[], Awaitable[None]]
+
+
+def build_web_tools(
+    mode: WebMode, *, http_session: aiohttp.ClientSession, tavily_api_key: str
+) -> WebTools:
+    """The fetcher and searcher for one run, recorded or live.
+
+    Only the ports differ. `FetchWebPages` and `SearchWeb` are built on top of
+    whichever pair comes back, so names, schemas, descriptions and failure
+    wording cannot drift between the two modes.
+    """
+    if mode == "recorded":
+        web = RecordedWeb.load()
+        recorded_searcher = TavilyWebSearcher(client=RecordedSearchClient(web))
+        return WebTools(
+            fetcher=RecordedWebContentFetcher(web),
+            searcher=recorded_searcher,
+            aclose=recorded_searcher.aclose,
+        )
+
+    live_fetcher = AiohttpWebContentFetcher(session=http_session)
+    live_searcher = TavilyWebSearcher(client=AsyncTavilyClient(api_key=tavily_api_key))
+
+    async def aclose() -> None:
+        await live_fetcher.aclose()
+        await live_searcher.aclose()
+
+    return WebTools(fetcher=live_fetcher, searcher=live_searcher, aclose=aclose)
+
+
 @dataclass(slots=True)
 class EvalHarness:
     """Every collaborator one eval run needs, built once and shared by every case."""
@@ -324,6 +371,9 @@ class EvalHarness:
     # spec. Stored in the results file so two runs can be told apart by what
     # they were given, not by the date they ran.
     prompt_version: str = ""
+    # Which web tools this run used. Stored in the results file, because a run
+    # on saved pages and a run on the live web are not comparable.
+    web_mode: WebMode = "recorded"
 
     async def index_fixtures(self) -> int:
         """Chunk, embed and upsert every file in `evals/fixtures/`, then record
@@ -505,7 +555,7 @@ def _require_local_qdrant(url: str) -> None:
 
 @asynccontextmanager
 async def build_harness(
-    *, run_id: str | None = None, model: str | None = None
+    *, run_id: str | None = None, model: str | None = None, web_mode: WebMode = "recorded"
 ) -> AsyncIterator[EvalHarness]:
     """Build one real container for a run, and tear every client down after -
     the scratch Qdrant collection included, even when the run is interrupted.
@@ -535,7 +585,6 @@ async def build_harness(
     http_session = aiohttp.ClientSession(
         timeout=aiohttp.ClientTimeout(total=settings.request_timeout_seconds)
     )
-    tavily_client = AsyncTavilyClient(api_key=settings.tavily_api_key.get_secret_value())
 
     # Unset Langfuse keys, same as production, is the normal case: no key held
     # locally, nothing sent, `NullTracer` everywhere.
@@ -587,8 +636,11 @@ async def build_harness(
         limit=settings.retrieval_limit,
         score_threshold=settings.retrieval_score_threshold,
     )
-    web = AiohttpWebContentFetcher(session=http_session)
-    searcher = TavilyWebSearcher(client=tavily_client)
+    web = build_web_tools(
+        web_mode,
+        http_session=http_session,
+        tavily_api_key=settings.tavily_api_key.get_secret_value(),
+    )
     tool_output_guard = ToolOutputGuard(
         strip_instructions=settings.guardrail_strip_tool_instructions,
         max_scan_chars=settings.guardrail_max_scan_chars,
@@ -605,8 +657,8 @@ async def build_harness(
     registry = ToolRegistry(
         [
             RetrieveDocuments(knowledge),
-            FetchWebPages(web),
-            SearchWeb(searcher, max_results=settings.tavily_max_results),
+            FetchWebPages(web.fetcher),
+            SearchWeb(web.searcher, max_results=settings.tavily_max_results),
         ],
         guard=tool_output_guard,
         # Without this, a case scores on the model's unassisted tool
@@ -665,6 +717,7 @@ async def build_harness(
         embedding_dimensions=settings.embedding_dimensions,
         _shelf=shelf,
         prompt_version=compute_prompt_version(settings.llm_system_prompt, registry.specs()),
+        web_mode=web_mode,
     )
 
     try:
@@ -682,5 +735,4 @@ async def build_harness(
         await chat_model.aclose()
         await vector_index.aclose()
         await web.aclose()
-        await searcher.aclose()
         await http_session.close()
