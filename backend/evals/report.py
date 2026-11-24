@@ -22,14 +22,18 @@ an estimated cost, so two files can be compared by what they were given.
 """
 
 import json
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 
+from evals.cases import BEHAVIORS
 from evals.metrics.budgets import BudgetSummary
 from evals.metrics.gates import Outcome
 from evals.metrics.generation import GenerationSuiteSummary
 from evals.metrics.retrieval import RetrievalSuiteSummary
 from evals.metrics.tools import ToolSuiteSummary
+
+UNTAGGED = "untagged"
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +90,39 @@ class TaskRecord:
     passed: int
     failed: int
     errored: int
+    # The task's behavior tag (b1 to b6), or "untagged" for a task with none.
+    behavior: str = UNTAGGED
+
+
+@dataclass(frozen=True, slots=True)
+class BehaviorRecord:
+    """Task and trial counts for every task that carries one behavior tag."""
+
+    behavior: str
+    tasks: int
+    passed: int
+    failed: int
+    errored: int
+
+
+def behavior_records(tasks: Sequence[TaskRecord]) -> tuple[BehaviorRecord, ...]:
+    """One record per behavior that has tasks, in b1 to b6 order.
+
+    A behavior with no task in the run is left out, so a `--tag b1` run does not
+    print five empty rows. "untagged" comes last.
+    """
+    order = [*BEHAVIORS, UNTAGGED]
+    return tuple(
+        BehaviorRecord(
+            behavior=name,
+            tasks=len(group),
+            passed=sum(t.passed for t in group),
+            failed=sum(t.failed for t in group),
+            errored=sum(t.errored for t in group),
+        )
+        for name in order
+        if (group := [t for t in tasks if t.behavior == name])
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +211,8 @@ class RunReport:
     dataset_version: str = ""
     trials: tuple[TrialRecord, ...] = ()
     tasks: tuple[TaskRecord, ...] = ()
+    # The same trial counts, added up per behavior (b1 to b6).
+    behaviors: tuple[BehaviorRecord, ...] = ()
     totals: Totals = Totals(passed=0, failed=0, errored=0)
     cost: CostEstimate | None = None
     # Did the run miss its quality bar? Decides exit code 1. Kept in the report
@@ -224,6 +263,20 @@ def render_markdown(report: RunReport) -> str:
         )
     lines.append("")
     lines.extend(_punch_list("Verdict", report.verdict, ""))
+    if report.behaviors:
+        lines.extend(
+            [
+                "## Behaviors",
+                "",
+                "| behavior | tasks | passed | failed | errored |",
+                "|---|---|---|---|---|",
+                *(
+                    f"| {b.behavior} | {b.tasks} | {b.passed} | {b.failed} | {b.errored} |"
+                    for b in report.behaviors
+                ),
+                "",
+            ]
+        )
     if report.tasks:
         lines.extend(
             [

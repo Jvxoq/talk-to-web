@@ -27,6 +27,16 @@ Security cases (prompt injection, red team) live in a separate suite outside
 this package.
 """
 
+BEHAVIORS: tuple[str, ...] = ("b1", "b2", "b3", "b4", "b5", "b6")
+"""The behavior tags, in the order the report lists them.
+
+They match the table in `eval-design.md`: B1 answer about the file, B2 read a
+link or search the web, B3 never search files on an empty account, B4 say "not
+in your file", B5 summarize a long chat, B6 answer when the loop limit hits.
+Every task carries exactly one, next to its other tags. `--tag b1` selects one
+behavior through the existing `--tag` option.
+"""
+
 Owner = Literal["with_documents", "empty"]
 """Which eval account a case runs as.
 
@@ -185,3 +195,14 @@ def _reject_duplicate_ids(cases: list[EvalCase], *, where: str) -> None:
         seen.add(case.id)
     if duplicates:
         raise CasesLoadError(f"{where}: duplicate case ids: {sorted(duplicates)}")
+
+
+def behavior_of(case: EvalCase) -> str | None:
+    """The one behavior tag on a task, or `None` when it carries none.
+
+    `tests/evals/test_datasets.py` guarantees every real task has exactly one.
+    A task built by hand in a test may have none, and the report files it under
+    "untagged" instead of failing a run.
+    """
+    found = [tag for tag in case.tags if tag in BEHAVIORS]
+    return found[0] if len(found) == 1 else None

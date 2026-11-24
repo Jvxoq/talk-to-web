@@ -65,7 +65,7 @@ from uuid import uuid4
 from loguru import logger
 
 from app.application.chat.dto import ReplyToolStarted
-from evals.cases import SUITES, EvalCase, load_all_cases, load_cases
+from evals.cases import SUITES, EvalCase, behavior_of, load_all_cases, load_cases
 from evals.harness import CaseRun, EvalHarness, build_harness, fixture_text
 from evals.judge import JudgeScore
 from evals.metrics.budgets import summarize_budgets
@@ -91,6 +91,7 @@ from evals.metrics.tools import (
     tools_refused,
 )
 from evals.report import (
+    UNTAGGED,
     RunReport,
     SuiteReport,
     TaskRecord,
@@ -98,6 +99,7 @@ from evals.report import (
     Totals,
     Transcript,
     TrialRecord,
+    behavior_records,
     estimate_cost,
     render_markdown,
     write_json,
@@ -557,6 +559,7 @@ async def _main(argv: list[str] | None = None) -> int:
         verdicts = _verdicts(runs, harness)
         trials = tuple(_trial_record(run, harness) for run in runs)
         bar = _judge_bar(args.mode, trials, verdicts)
+        tasks = _task_records(cases, trials)
         report = RunReport(
             run_id=run_id,
             model=harness.model,
@@ -575,7 +578,8 @@ async def _main(argv: list[str] | None = None) -> int:
                 sorted({case.suite for case in cases}),
             ),
             trials=trials,
-            tasks=_task_records(cases, trials),
+            tasks=tasks,
+            behaviors=behavior_records(tasks),
             totals=_totals(trials),
             cost=estimate_cost(
                 tokens_in=sum(t.tokens_in for t in trials),
@@ -611,6 +615,7 @@ def _task_records(cases: list[EvalCase], trials: Sequence[TrialRecord]) -> tuple
                 passed=row.passed if row else 0,
                 failed=row.failed if row else 0,
                 errored=row.errored if row else 0,
+                behavior=behavior_of(case) or UNTAGGED,
             )
         )
     return tuple(records)

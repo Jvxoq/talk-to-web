@@ -33,10 +33,17 @@ from app.application.chat.models import Source
 from app.application.chat.tools.base import ToolSpec
 from evals import __main__ as driver
 from evals.__main__ import _select_cases, _verdicts, dataset_version
-from evals.cases import EvalCase, Expectation
+from evals.cases import EvalCase, Expectation, behavior_of
 from evals.harness import CaseRun, EvalHarness, compute_prompt_version
 from evals.judge import JudgeScore
-from evals.report import RunReport, estimate_cost
+from evals.report import (
+    BehaviorRecord,
+    RunReport,
+    TaskRecord,
+    behavior_records,
+    estimate_cost,
+    render_markdown,
+)
 
 _HARNESS = cast(EvalHarness, SimpleNamespace(retrieval_k=3))
 """Only `retrieval_k` is read by the functions under test. A real harness would
@@ -312,6 +319,7 @@ def test_gate_fail_then_pass_exits_zero(drive: Any) -> None:
         "passed": 2,
         "failed": 1,
         "errored": 0,
+        "behavior": "untagged",
     }
 
 
@@ -457,3 +465,90 @@ def test_prompt_version_tracks_prompt_and_tools() -> None:
     assert compute_prompt_version("be kind", [spec, other]) != base
     reworded = spec.model_copy(update={"description": "finds docs"})
     assert compute_prompt_version("be helpful", [reworded, other]) != base
+
+
+# --- results grouped by behavior ---------------------------------------------------
+
+
+def _behavior_cases() -> list[EvalCase]:
+    return [
+        _case(id="t1", tags=["b1"], expect=Expectation(must_contain=["ok"])),
+        _case(id="t2", tags=["ci", "b1"], expect=Expectation(must_contain=["ok"])),
+        _case(id="t3", tags=["b3"], expect=Expectation(must_contain=["ok"])),
+        _case(id="t4", expect=Expectation(must_contain=["ok"])),
+    ]
+
+
+def test_behavior_of_reads_the_one_tag() -> None:
+    assert [behavior_of(case) for case in _behavior_cases()] == ["b1", "b1", "b3", None]
+
+
+def test_behavior_sums_trials_per_behavior() -> None:
+    tasks = (
+        TaskRecord("t1", "tools", passed=2, failed=1, errored=0, behavior="b1"),
+        TaskRecord("t2", "tools", passed=1, failed=0, errored=2, behavior="b1"),
+        TaskRecord("t3", "rag", passed=3, failed=0, errored=0, behavior="b3"),
+        TaskRecord("t4", "rag", passed=0, failed=4, errored=0),
+    )
+
+    assert behavior_records(tasks) == (
+        BehaviorRecord("b1", tasks=2, passed=3, failed=1, errored=2),
+        BehaviorRecord("b3", tasks=1, passed=3, failed=0, errored=0),
+        BehaviorRecord("untagged", tasks=1, passed=0, failed=4, errored=0),
+    )
+
+
+def test_json_groups_results_by_behavior(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    cases = _behavior_cases()
+    harness = _ScriptedHarness({"t1": ["fail", "fail", "fail"], "t3": ["error"]})
+
+    @asynccontextmanager
+    async def fake_build(**_: object) -> AsyncIterator[_ScriptedHarness]:
+        yield harness
+
+    monkeypatch.setattr(driver, "build_harness", fake_build)
+    monkeypatch.setattr(driver, "_select_cases", lambda *_: cases)
+    out = tmp_path / "behaviors.json"
+    driver.main(["--mode", "gate", "--out", str(out)])
+    results = json.loads(out.read_text())
+
+    assert results["behaviors"] == [
+        {"behavior": "b1", "tasks": 2, "passed": 1, "failed": 3, "errored": 0},
+        {"behavior": "b3", "tasks": 1, "passed": 0, "failed": 0, "errored": 1},
+        {"behavior": "untagged", "tasks": 1, "passed": 1, "failed": 0, "errored": 0},
+    ]
+    assert [(t["task_id"], t["behavior"]) for t in results["tasks"]] == [
+        ("t1", "b1"),
+        ("t2", "b1"),
+        ("t3", "b3"),
+        ("t4", "untagged"),
+    ]
+
+
+def test_markdown_has_behavior_table() -> None:
+    report = RunReport(
+        run_id="r",
+        model="m",
+        tags=(),
+        suites=(),
+        case_ids=(),
+        samples=0,
+        regressions=(),
+        behaviors=(BehaviorRecord("b2", tasks=3, passed=7, failed=1, errored=2),),
+    )
+
+    text = render_markdown(report)
+
+    assert "| behavior | tasks | passed | failed | errored |" in text
+    assert "| b2 | 3 | 7 | 1 | 2 |" in text
+
+
+def test_tag_selects_one_behavior() -> None:
+    """`--tag b1` is the whole selector: the existing `--tag` option, no new flag."""
+    selected = _select_cases("all", None, ["b3"])
+
+    assert [case.id for case in selected] == [
+        "tools-012-empty-account-cannot-retrieve",
+        "tools-013-empty-account-needs-no-tool",
+        "rag-014-empty-account-has-nothing-to-cite",
+    ]

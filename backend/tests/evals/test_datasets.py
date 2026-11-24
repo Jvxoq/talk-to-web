@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from evals.cases import EvalCase, load_cases
+from evals.cases import BEHAVIORS, EvalCase, load_cases
 
 _EVALS_DIR = Path(__file__).parents[2] / "evals"
 _FIXTURES_DIR = _EVALS_DIR / "fixtures"
@@ -117,3 +117,19 @@ def test_an_ordering_rule_is_exercised() -> None:
     the same `tools` set as a run that got it right."""
     cases = [case for name in _DATASETS for case in _load(name)]
     assert [case.id for case in cases if case.expect.tool_order]
+
+
+@pytest.mark.parametrize("name", _DATASETS)
+def test_every_task_has_one_behavior(name: str) -> None:
+    """The report groups by behavior and `--tag b1` selects by it. A task with
+    no behavior tag drops out of every group, and one with two is counted
+    twice."""
+    wrong = [
+        case.id for case in _load(name) if len([tag for tag in case.tags if tag in BEHAVIORS]) != 1
+    ]
+    assert not wrong
+
+
+def test_behavior_tags_match_the_design_table() -> None:
+    """`eval-design.md` lists B1 to B6. A seventh tag here has no row there."""
+    assert BEHAVIORS == ("b1", "b2", "b3", "b4", "b5", "b6")
