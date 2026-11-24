@@ -12,7 +12,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Self
 
-from app.application.chat.models import ChatMessage, ModelChunk, Passage, SearchResult, Source
+from app.application.chat.models import (
+    ChatMessage,
+    ModelChunk,
+    Passage,
+    SearchResult,
+    Source,
+    ToolCall,
+)
 from app.application.chat.ports import ConversationRepository
 from app.application.chat.tools.base import ToolContext, ToolOutcome, ToolSpec
 from app.application.identity.dto import IssuedAccessToken, TokenClaims
@@ -408,6 +415,41 @@ class FakeChatModel:
     @property
     def calls(self) -> int:
         return self._call
+
+
+class ToolHungryModel:
+    """A model that asks for a tool on every lap it is offered one, forever.
+
+    Unlike `FakeChatModel`, it reads the `tools` it is called with. That is the
+    point: a real provider cannot call a tool it was not given, so on a lap with
+    no tools this one answers in text, the way a well-behaved provider would.
+    Whether the harness takes the tools away is then visible in the reply.
+    """
+
+    def __init__(self, final_text: str = "Here is my best answer.") -> None:
+        self.final_text = final_text
+        self.seen_tools: list[list[str]] = []
+
+    async def stream(
+        self,
+        *,
+        model: str,
+        temperature: float,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolSpec],
+    ) -> AsyncIterator[ModelChunk]:
+        self.seen_tools.append([tool.name for tool in tools])
+        if not tools:
+            yield ModelChunk(text=self.final_text)
+            return
+        lap = len(self.seen_tools)
+        yield ModelChunk(
+            tool_calls=(ToolCall(id=f"call-{lap}", name=tools[0].name, arguments={"lap": lap}),)
+        )
+
+    @property
+    def calls(self) -> int:
+        return len(self.seen_tools)
 
 
 class FakeTokenCounter:
