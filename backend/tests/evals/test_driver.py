@@ -100,6 +100,35 @@ def test_order_is_graded() -> None:
     assert "expected order" in _verdicts([backwards], _HARNESS).regressions[0]
 
 
+def test_no_tool_task_fails_when_the_agent_calls_a_tool() -> None:
+    """A task that wrote `"tools": []` means "call no tool". An empty list
+    used to read as unchecked, so a search_web call passed the task."""
+    case = _case(expect=Expectation.model_validate({"tools": []}))
+    run = _run(
+        case,
+        [
+            ReplyToolStarted(name="search_web", summary="search_web(query='12 times 12')"),
+            _finished("search_web"),
+            ReplyDelta(text="144"),
+        ],
+    )
+
+    assert driver._sample_failures(run, _HARNESS)
+
+
+def test_no_tool_task_passes_when_the_agent_calls_no_tool() -> None:
+    case = _case(expect=Expectation.model_validate({"tools": []}))
+    run = _run(case, _answer("144"))
+
+    assert driver._sample_failures(run, _HARNESS) == []
+
+
+def test_checks_tools_is_set_only_when_the_task_wrote_tools() -> None:
+    """`[]` written in the JSON is a real check. An omitted field is not."""
+    assert not Expectation.model_validate({"must_contain": ["144"]}).checks_tools
+    assert Expectation.model_validate({"tools": []}).checks_tools
+
+
 def test_broken_run_is_not_a_regression() -> None:
     """A rate limit produces an empty answer and no tool calls. It belongs in
     `errors`, and counting it here would read as the model calling nothing."""

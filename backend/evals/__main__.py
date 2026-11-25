@@ -304,7 +304,7 @@ async def _score_suite(
     budgets = summarize_budgets([run.latency_ms for run in graded], [run.usage for run in graded])
 
     tools_report = None
-    if any(run.case.expect.tools or run.case.expect.tool_order for run in graded):
+    if any(run.case.expect.checks_tools for run in graded):
         tools_report = summarize_tool_scores([_tool_score(run) for run in graded])
 
     substring_checks = [_substring_check(run) for run in graded]
@@ -377,7 +377,7 @@ def _sample_failures(run: CaseRun, harness: EvalHarness) -> list[str]:
     case = run.case
     failures: list[str] = []
 
-    if case.expect.tools or case.expect.tool_order:
+    if case.expect.checks_tools:
         score = _tool_score(run)
         if not score.exact_match:
             failures.append(

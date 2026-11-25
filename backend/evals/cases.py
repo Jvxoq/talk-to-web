@@ -180,6 +180,15 @@ class Expectation(BaseModel):
             raise ValueError(f"tool_order names tools not in tools: {unknown}")
         return self
 
+    @property
+    def checks_tools(self) -> bool:
+        """True when the task wrote `tools` (even `[]`, meaning "no tool") or `tool_order`.
+
+        An empty list alone cannot tell "not checked" from "call no tool", so
+        this reads which fields the JSON actually wrote.
+        """
+        return "tools" in self.model_fields_set or bool(self.tool_order)
+
 
 class EvalCase(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
