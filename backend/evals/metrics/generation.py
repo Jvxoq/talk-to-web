@@ -1,11 +1,9 @@
-"""Answer-quality metrics: an LLM judge's scores, plus deterministic substring checks.
+"""Answer-quality metrics from deterministic substring checks.
 
-The substring checks matter in their own right, not only as a sanity check on
-the judge. A model that quietly stops citing sources, or that starts leaking a
-system instruction it should never repeat, is a loud regression - and a 0-1
-judge score smooths loud regressions into a slightly-lower average instead of
-flagging them. `must_contain` / `must_not_contain` catch it exactly, for free,
-with no model call.
+The judges' yes/no verdicts are counted per trial in `evals.report`, not here.
+A model that quietly stops citing sources, or that starts leaking a system
+instruction it should never repeat, is a loud regression. `must_contain` /
+`must_not_contain` catch it exactly, for free, with no model call.
 
 `must_not_contain` is checked against the tool arguments as well as the answer,
 because a forbidden string sent in a `search_web` query reaches a third party
@@ -14,8 +12,6 @@ even when the answer itself is clean.
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-
-from evals.judge import JudgeScore
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,41 +60,13 @@ def check_substrings(
 @dataclass(frozen=True, slots=True)
 class GenerationSuiteSummary:
     n: int
-    mean_groundedness: float | None
-    mean_relevance: float | None
-    mean_correctness: float | None
     substring_pass_rate: float
-    # How many cases the judge actually scored - out of `n`, not a duplicate
-    # of it, because a judge failure (see `evals.judge.Judge.score`) drops a
-    # case from the mean rather than counting it as zero.
-    judged: int
 
 
-def summarize_generation(
-    substring_checks: Sequence[SubstringCheck],
-    judge_scores: Sequence[JudgeScore | None] = (),
-) -> GenerationSuiteSummary:
-    """Summarize one suite's answer quality.
-
-    `judge_scores` defaults to empty rather than being required, because the
-    `tools` suite has no judge: what it asserts is binary and deterministic
-    and paying a second model to have an opinion about that would add cost
-    and noise to a question with one right answer. The old
-    shape forced a caller to pass `[None] * len(runs)` to say so, which read
-    as "the judge failed on every case".
-    """
+def summarize_generation(substring_checks: Sequence[SubstringCheck]) -> GenerationSuiteSummary:
+    """Summarize one suite's substring checks."""
     n = len(substring_checks)
-    judged = [score for score in judge_scores if score is not None]
-    correctness = [score.correctness for score in judged if score.correctness is not None]
     return GenerationSuiteSummary(
         n=n,
-        mean_groundedness=_mean([score.groundedness for score in judged]),
-        mean_relevance=_mean([score.relevance for score in judged]),
-        mean_correctness=_mean(correctness),
         substring_pass_rate=(sum(1 for check in substring_checks if check.ok) / n) if n else 0.0,
-        judged=len(judged),
     )
-
-
-def _mean(values: Sequence[float]) -> float | None:
-    return (sum(values) / len(values)) if values else None

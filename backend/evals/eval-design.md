@@ -225,30 +225,35 @@ and Anthropic [1]. The real-chat loop is out of scope until the agent is live.
 9. **Manual-only CI.** Change `.github/workflows/evals.yml`: remove the
    `pull_request` trigger, keep `workflow_dispatch`, and add a `mode` input
    (`gate` or `release`, default `gate`). Keep the results file upload.
-10. **Hand labels live in Langfuse, for development only.** Decided
-    2026-11-25. The app already traces to Langfuse Cloud, so labeling uses the
-    free Hobby plan: 50k units a month, 2 users, 1 annotation queue, 30 days
-    of data [18]. Production tracing and labeling are decided later.
-    - **One trace per trial.** Today the evaluation harness opens no span per
-      trial, and the judge's span lands in a trace of its own. Open one root
-      span per trial, run the judge inside it, and save the trace id in the
-      results file.
-    - **The judge writes scores.** Each verdict (grounded, eligible,
-      abstained) goes onto the trial's trace as a boolean score, through the
-      SDK's `create_score` [19]. The `Tracer` port gets a score method.
-      `NullTracer` ignores it.
-    - **The labeler can see the source.** Tool spans record arguments but not
-      the result text. Grounded cannot be labeled without the file chunk or
-      page the agent read, so record that text on the tool span, capped.
-    - **Labeling.** Create one human score config per judge and one annotation
-      queue. Add about 100 trial traces with a mix of passes and failures.
-      Label each one without looking at the judge's score first. Finish
-      within 30 days of the run, before the data leaves the plan's window.
-    - **Agreement.** Langfuse Score Analytics compares a human score with an
-      automated one on the same traces, with a confusion matrix and Cohen's
-      kappa [20]. It is in beta, and its plan is not stated. If the Hobby plan
-      lacks it, a small script pulls both scores through the API and reports
-      the true positive and true negative rates.
+10. **Hand labels live in LangSmith, for development only.** Decided
+    2026-11-25. LangGraph already traces to LangSmith through LangChain, with
+    no tracing code in `app/`. Labeling uses the free Developer plan: 1 seat,
+    5,000 traces a month, 14 days of data [18]. Whether the free plan has
+    annotation queues is not stated on the pricing page. Check it on the first
+    `queue` run. Production tracing is decided later. Langfuse is removed.
+    - **One trace per trial.** `evals.tracing.TrialTracer` opens one root
+      trace per trial, only when `LANGSMITH_API_KEY` is set. The agent's graph
+      run, model calls and tool steps nest under it [21]. Tracing is switched
+      on per trial, not globally, so judge calls and fixture embeddings never
+      use up the 5,000 traces. The trace id goes in the results file.
+    - **The labeler can see the source.** Each tool step's output is graph
+      state, so it shows in the trace. The results file also keeps the tool
+      result text of the final turn, capped at 8,000 characters per result.
+    - **Blind labels.** The judges run after all trials, outside any trace.
+      Their verdicts go only into the results file, so a person labeling the
+      trace never sees them.
+    - **Labeling.** `python -m evals.labels queue` adds about 100 traces of a
+      judged run, failures first, to one annotation queue per judge [19][20].
+      Each queue asks the person the same yes/no question its judge gets,
+      saved as a yes/no feedback key (`human_grounded` and so on). Label
+      within 14 days of the run.
+    - **Agreement.** `python -m evals.labels pull` reads the labels back and
+      writes one row per trace and judge to `evals/labels/labels.jsonl`, with
+      the question, answer, source text and judge verdict. The rows outlast
+      the 14 days, and a new judge prompt can be checked against them later.
+      It then prints each judge's true positive and true negative rates, with
+      the person's label as the truth, and lists every disagreement. A judge
+      gates only after both rates are measured (item 6).
 
 Moved out: `injection.jsonl`, `benign.jsonl`, `redteam.jsonl`, the planted
 attack memo, and the guardrail golden-file test go to the separate security
@@ -273,9 +278,10 @@ suite, kept local in `security-evals/` (gitignored).
 15. Hamel Husain, "LLM Evals FAQ". https://hamel.dev/blog/posts/evals-faq/
 16. Together AI pricing, read 2026-11-24. https://www.together.ai/pricing
 17. GitHub, "How to evaluate LLMs before production", 2026. https://github.blog/2026-08-25-how-to-evaluate-llms-before-production/
-18. Langfuse pricing, read 2026-11-25. https://langfuse.com/pricing
-19. Langfuse, "Custom scores", read 2026-11-25. https://langfuse.com/docs/evaluation/evaluation-methods/custom-scores
-20. Langfuse, "Score Analytics", read 2026-11-25. https://langfuse.com/docs/evaluation/evaluation-methods/score-analytics
+18. LangSmith pricing, read 2026-11-25. https://www.langchain.com/pricing
+19. LangSmith, "Annotation queues", read 2026-11-25. https://docs.langchain.com/langsmith/annotation-queues
+20. LangSmith, "Annotation queues with the SDK", read 2026-11-25. https://docs.langchain.com/langsmith/annotation-queues-sdk
+21. LangSmith, "Trace with LangGraph", read 2026-11-25. https://docs.langchain.com/langsmith/trace-with-langgraph
 
 Not used: two OpenAI pages (hallucination scoring, SimpleQA) blocked the fetch.
 Nothing here leans on them.

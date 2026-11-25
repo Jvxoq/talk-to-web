@@ -160,11 +160,9 @@ class Expectation(BaseModel):
     # Both, because a forbidden string can leave through a `search_web` query
     # as easily as through the answer.
     must_not_contain: list[str] = Field(default_factory=list)
-    # A gold answer, handed to the judge as the correct response to compare
-    # against - never as the grounding context. Those are different questions:
-    # an answer that matches the gold text while citing nothing is correct and
-    # ungrounded, and folding the two together made a hallucination that
-    # happened to be right score 1.0 for groundedness.
+    # A gold answer, for a person reading the task. No grader reads it: the
+    # key fact is graded by `must_contain`, and the grounded judge reads the
+    # tool results the agent actually got, never this text.
     reference: str | None = None
 
     @model_validator(mode="after")

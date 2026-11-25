@@ -31,7 +31,6 @@ from app.adapters.extraction.plain_text_extractor import PlainTextExtractor
 from app.adapters.extraction.pypdf_extractor import PypdfTextExtractor
 from app.adapters.llm.approximate_token_counter import ApproximateTokenCounter
 from app.adapters.llm.langchain_chat_model import LangChainChatModel
-from app.adapters.observability.langfuse_tracer import LangfuseTracer
 from app.adapters.observability.null_tracer import NullTracer
 from app.adapters.persistence.readiness import PostgresProbe
 from app.adapters.persistence.schema_version import verify_schema
@@ -182,25 +181,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     tavily_client = AsyncTavilyClient(api_key=settings.tavily_api_key.get_secret_value())
 
     # --- observability ---
-    # Built before anything that traces. Unset keys are the normal case: local
-    # runs and the test suite get `NullTracer` and send nothing.
+    # Built before anything that traces. Tracing is a no-op for now: the eval
+    # suite uses LangSmith, and production tracing is not decided yet.
     tracer: Tracer = NullTracer()
-    if settings.langfuse_public_key and settings.langfuse_secret_key:
-        candidate = LangfuseTracer(
-            public_key=settings.langfuse_public_key.get_secret_value(),
-            secret_key=settings.langfuse_secret_key.get_secret_value(),
-            host=settings.langfuse_host,
-            capture_content=settings.langfuse_capture_content,
-            flush_timeout_seconds=settings.langfuse_flush_timeout_seconds,
-        )
-        # Checked here, never on `/ready`: a tracing outage must not return
-        # 503. One startup log line catches the only failure that matters, a
-        # typo in a key.
-        if await candidate.credentials_valid():
-            tracer = candidate
-            logger.info("Langfuse tracing enabled")
-        else:
-            logger.warning("Langfuse credentials rejected; tracing disabled")
 
     input_guard = InputGuardPolicy(
         redact_pii=settings.guardrail_pii_redaction_enabled,

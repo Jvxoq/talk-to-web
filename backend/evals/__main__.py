@@ -4,8 +4,9 @@
         --out evals/results/latest.json
 
 This runs against real APIs and spends real money - see `evals.harness` for
-what it builds and `evals.judge` for the one extra model call each `rag` case
-makes on top of the reply itself.
+what it builds and `evals.judge` for the yes/no judge calls a judged trial
+makes on top of the reply itself. With `LANGSMITH_API_KEY` set, each trial is
+also one LangSmith trace, ready for hand labeling with `python -m evals.labels`.
 
 Two modes set how many trials each task gets and which bar the run must clear.
 The bars themselves live in `evals.metrics.gates`.
@@ -78,8 +79,8 @@ from evals.cases import (
     load_all_cases,
     load_cases,
 )
-from evals.harness import CaseRun, EvalHarness, WebMode, build_harness, fixture_text
-from evals.judge import JudgeScore
+from evals.harness import CaseRun, EvalHarness, ToolResult, WebMode, build_harness
+from evals.judge import JUDGES_BY_BEHAVIOR
 from evals.metrics.budgets import summarize_budgets
 from evals.metrics.gates import (
     GATE_EXTRA_TRIALS,
@@ -104,15 +105,18 @@ from evals.metrics.tools import (
 )
 from evals.report import (
     UNTAGGED,
+    JudgeRecord,
     RunReport,
     SuiteReport,
     TaskRecord,
     ToolCallRecord,
+    ToolResultRecord,
     Totals,
     Transcript,
     TrialRecord,
     behavior_records,
     estimate_cost,
+    judge_tallies,
     render_markdown,
     write_json,
 )
@@ -265,39 +269,13 @@ def _tool_score(run: CaseRun) -> ToolCallScore:
     )
 
 
-def _judge_context(case: EvalCase, returned: list[str]) -> str:
-    """The source text an answer was supposed to be drawn from.
-
-    The fixtures the case names, read off disk - never the gold answer. Those
-    are different questions: grading groundedness against the gold answer means
-    an invented fact that happens to be right scores a perfect 1.0, which is
-    the failure the metric exists to catch. `expect.reference` goes to the
-    judge separately, as the reference.
-
-    Falls back to the labels the reply actually cited when a case names no
-    fixture, which is all a negative case ("this is not in the corpus") has and
-    all it needs.
-    """
-    texts = [text for name in case.fixtures if (text := fixture_text(name)) is not None]
-    missing = [name for name in case.fixtures if fixture_text(name) is None]
-    if missing:
-        logger.warning(f"Case {case.id!r} names fixtures that do not exist: {missing}")
-    if texts:
-        return "\n\n".join(texts)
-    return "\n".join(returned)
-
-
-async def _score_suite(
-    suite_name: str, runs: list[CaseRun], harness: EvalHarness, *, use_judge: bool = True
-) -> SuiteReport:
+def _score_suite(suite_name: str, runs: list[CaseRun], harness: EvalHarness) -> SuiteReport:
     """Score the cases that produced an answer. Broken runs are counted, not graded.
 
     `n` is every case the suite ran, so a suite that half fell over cannot be
     mistaken for a smaller suite that passed. The rates underneath are computed
     over `graded` only.
 
-    `use_judge=False` is the gate: no judge call is made, so the quality
-    numbers come from the code graders alone.
     """
     graded = [run for run in runs if not run.broke]
 
@@ -310,7 +288,6 @@ async def _score_suite(
     substring_checks = [_substring_check(run) for run in graded]
 
     retrieval_report = None
-    judge_scores: list[JudgeScore | None] = []
     if suite_name == "rag":
         hit_rates: list[float | None] = []
         reciprocal_ranks: list[float | None] = []
@@ -322,20 +299,11 @@ async def _score_suite(
             expected = run.case.expect.expected_sources
             hit_rates.append(hit_rate_at_k(returned, expected, harness.retrieval_k))
             reciprocal_ranks.append(mrr_at_k(returned, expected, harness.retrieval_k))
-            if use_judge:
-                judge_scores.append(
-                    await harness.judge.score(
-                        question=run.case.input,
-                        answer=run.answer,
-                        context=_judge_context(run.case, returned),
-                        reference=run.case.expect.reference,
-                    )
-                )
         retrieval_report = summarize_retrieval(hit_rates, reciprocal_ranks)
 
     generation_report = None
-    if substring_checks or judge_scores:
-        generation_report = summarize_generation(substring_checks, judge_scores)
+    if substring_checks:
+        generation_report = summarize_generation(substring_checks)
 
     return SuiteReport(
         suite=suite_name,
@@ -467,6 +435,44 @@ def _outcome(run: CaseRun, failures: list[str]) -> Outcome:
     return "failed" if failures else "passed"
 
 
+def _sources_text(results: Sequence[ToolResult]) -> str:
+    """The tool results as one block of source text for a judge."""
+    return "\n\n".join(f"[{result.tool}]\n{result.text}" for result in results)
+
+
+async def _judge_trials(
+    runs: Sequence[CaseRun], harness: EvalHarness, concurrency: int
+) -> dict[int, tuple[JudgeRecord, ...]]:
+    """Ask each judge its question about each trial it covers, keyed by `id(run)`.
+
+    Run after every trial has finished and outside any trial's trace, so the
+    verdicts never show up on the trace a person labels. A broken trial is not
+    judged: its answer is empty for a reason the error text already gives. A
+    judge call that fails is left out, never counted as a "no".
+    """
+    gate = asyncio.Semaphore(max(1, concurrency))
+
+    async def judge_one(run: CaseRun) -> tuple[JudgeRecord, ...]:
+        names = JUDGES_BY_BEHAVIOR.get(behavior_of(run.case) or "", ())
+        if run.broke or not names:
+            return ()
+        sources = _sources_text(run.tool_results)
+        records: list[JudgeRecord] = []
+        for name in names:
+            async with gate:
+                result = await harness.judge.verdict(
+                    name, question=run.case.input, answer=run.answer, sources=sources
+                )
+            if result is not None:
+                records.append(
+                    JudgeRecord(judge=result.judge, verdict=result.verdict, reason=result.reason)
+                )
+        return tuple(records)
+
+    verdicts = await asyncio.gather(*(judge_one(run) for run in runs))
+    return {id(run): records for run, records in zip(runs, verdicts, strict=True)}
+
+
 def _transcript(run: CaseRun) -> Transcript:
     error = run.error
     if error is None and run.failed is not None:
@@ -481,10 +487,15 @@ def _transcript(run: CaseRun) -> Transcript:
         error=error,
         seeded_turns=run.seeded_turns,
         summarized=run.summarized,
+        tool_results=tuple(
+            ToolResultRecord(tool=result.tool, text=result.text) for result in run.tool_results
+        ),
     )
 
 
-def _trial_record(run: CaseRun, harness: EvalHarness) -> TrialRecord:
+def _trial_record(
+    run: CaseRun, harness: EvalHarness, judges: tuple[JudgeRecord, ...] = ()
+) -> TrialRecord:
     """One trial as the results file keeps it: outcome, reasons and transcript.
 
     A broken run is never graded, so it gets no failure reasons. Its empty
@@ -500,6 +511,9 @@ def _trial_record(run: CaseRun, harness: EvalHarness) -> TrialRecord:
         tokens_in=run.usage.prompt_tokens if run.usage else 0,
         tokens_out=run.usage.completion_tokens if run.usage else 0,
         latency_ms=run.latency_ms,
+        question=run.case.input,
+        trace_id=run.trace_id,
+        judges=judges,
     )
 
 
@@ -595,12 +609,11 @@ async def _main(argv: list[str] | None = None) -> int:
             by_suite.setdefault(run.case.suite, []).append(run)
 
         suite_reports = [
-            await _score_suite(name, by_suite[name], harness, use_judge=use_judge)
-            for name in SUITES
-            if name in by_suite
+            _score_suite(name, by_suite[name], harness) for name in SUITES if name in by_suite
         ]
         verdicts = _verdicts(runs, harness)
-        trials = tuple(_trial_record(run, harness) for run in runs)
+        judged = await _judge_trials(runs, harness, args.concurrency) if use_judge else {}
+        trials = tuple(_trial_record(run, harness, judged.get(id(run), ())) for run in runs)
         bar = _judge_bar(args.mode, trials, verdicts)
         tasks = _task_records(cases, trials)
         report = RunReport(
@@ -625,6 +638,7 @@ async def _main(argv: list[str] | None = None) -> int:
             tasks=tasks,
             behaviors=behavior_records(tasks),
             totals=_totals(trials),
+            judges=judge_tallies(trials),
             cost=estimate_cost(
                 tokens_in=sum(t.tokens_in for t in trials),
                 tokens_out=sum(t.tokens_out for t in trials),

@@ -827,7 +827,7 @@ class RecordingTracer:
 
     Records rather than asserts: a test that wanted "the agent opened a
     generation span carrying token counts" should be able to say exactly that,
-    without a network, a Langfuse key, or a mock's did-you-call-me bookkeeping.
+    without a network, a tracing key, or a mock's did-you-call-me bookkeeping.
 
     Deliberately not nesting. The real adapter nests through OpenTelemetry
     context, which is machinery no fake should try to reproduce; every span

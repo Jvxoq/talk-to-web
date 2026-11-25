@@ -69,6 +69,25 @@ class Transcript:
     seeded_turns: int = 0
     # Whether a summarize event fired during the trial.
     summarized: bool = False
+    # What each tool handed back, in call order, capped. The text a grounded
+    # verdict is checked against, and what a labeled row keeps after the
+    # trace is gone.
+    tool_results: tuple["ToolResultRecord", ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ToolResultRecord:
+    tool: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class JudgeRecord:
+    """One judge's yes/no for one trial. Recorded, not gating yet."""
+
+    judge: str
+    verdict: bool
+    reason: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +103,34 @@ class TrialRecord:
     tokens_in: int
     tokens_out: int
     latency_ms: float
+    # The question the task asked. Kept so a labeled row can be rebuilt from
+    # this file alone.
+    question: str = ""
+    # The trial's LangSmith trace, for `evals.labels`. `None` with tracing off.
+    trace_id: str | None = None
+    # The judges that read this trial. Empty in a gate run, and for a task
+    # whose behavior no judge covers.
+    judges: tuple[JudgeRecord, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class JudgeTally:
+    """How many trials one judge read, and how many it said yes to."""
+
+    judge: str
+    judged: int
+    yes: int
+
+
+def judge_tallies(trials: Sequence[TrialRecord]) -> tuple[JudgeTally, ...]:
+    """One tally per judge that read any trial, in first-seen order."""
+    tallies: dict[str, list[int]] = {}
+    for trial in trials:
+        for record in trial.judges:
+            counts = tallies.setdefault(record.judge, [0, 0])
+            counts[0] += 1
+            counts[1] += int(record.verdict)
+    return tuple(JudgeTally(judge=name, judged=n, yes=yes) for name, (n, yes) in tallies.items())
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +268,9 @@ class RunReport:
     # The same trial counts, added up per behavior (b1 to b6).
     behaviors: tuple[BehaviorRecord, ...] = ()
     totals: Totals = Totals(passed=0, failed=0, errored=0)
+    # Yes counts per judge. Shown, not gated on, until each judge's agreement
+    # with hand labels is measured (eval-design.md, item 6).
+    judges: tuple[JudgeTally, ...] = ()
     cost: CostEstimate | None = None
     # Did the run miss its quality bar? Decides exit code 1. Kept in the report
     # so the file says why the run was red without re-deriving it.
@@ -282,6 +332,17 @@ def render_markdown(report: RunReport) -> str:
                     f"| {b.behavior} | {b.tasks} | {b.passed} | {b.failed} | {b.errored} |"
                     for b in report.behaviors
                 ),
+                "",
+            ]
+        )
+    if report.judges:
+        lines.extend(
+            [
+                "## Judges (recorded, not gating)",
+                "",
+                "| judge | judged | yes |",
+                "|---|---|---|",
+                *(f"| {j.judge} | {j.judged} | {j.yes} |" for j in report.judges),
                 "",
             ]
         )
@@ -347,9 +408,6 @@ def _rows(suite: SuiteReport) -> list[tuple[str, str, int]]:
     if suite.generation is not None:
         g = suite.generation
         rows += [
-            ("mean_groundedness", _optional(g.mean_groundedness), g.judged),
-            ("mean_relevance", _optional(g.mean_relevance), g.judged),
-            ("mean_correctness", _optional(g.mean_correctness), g.judged),
             ("substring_pass_rate", f"{g.substring_pass_rate:.2f}", g.n),
         ]
 

@@ -61,16 +61,6 @@ class Settings(BaseSettings):
     # model call. Raise it in small fractions.
     sentry_traces_sample_rate: float = 0.0
 
-    # --- Tracing (Langfuse) ---
-    # Unset means the app runs on `NullTracer` and nothing leaves the process.
-    langfuse_public_key: SecretStr | None = None
-    langfuse_secret_key: SecretStr | None = None
-    langfuse_host: str = "https://cloud.langfuse.com"
-    # Safe because the input guardrail redacts before any span is opened.
-    langfuse_capture_content: bool = True
-    # Bounded: a tracing host that has gone away must not hang a deploy.
-    langfuse_flush_timeout_seconds: float = 2.0
-
     # --- Guardrails ---
     # Redact secrets and personal data before the model, the checkpointer or
     # the trace ever see the message.

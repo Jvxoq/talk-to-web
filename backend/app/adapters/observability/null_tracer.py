@@ -1,11 +1,10 @@
-"""Tracer used when Langfuse keys are unset.
+"""Tracer that records nothing.
 
-Mirrors `configure_sentry` returning `False` with no DSN
-(`app/observability/sentry.py`): with no Langfuse keys, composition wires this
-in instead of `LangfuseTracer`, so a local run and the whole test suite build
-the chat use cases exactly as they run in production - same collaborator
-count, same call shape - and send nothing anywhere and need no key. There is
-nothing to buffer, so `flush()` has nothing to wait for.
+Composition always wires this in. Tracing is a no-op for now: the eval suite
+uses LangSmith, and production tracing is not decided yet. The chat use cases
+are built the same way as before, so the call shape and the collaborator count
+do not change. Nothing is sent anywhere and no key is needed. There is nothing
+to buffer, so `flush()` has nothing to wait for.
 
 Every span is a no-op async context manager yielding a no-op `Span`. Both
 satisfy `app.application.chat.ports.Tracer` and `Span` structurally - this
@@ -35,9 +34,7 @@ _NULL_SPAN = NullSpan()
 
 
 class NullTracer:
-    """No-op `Tracer`. Wired in whenever Langfuse credentials are absent or
-    fail the startup `auth_check` in `LangfuseTracer.credentials_valid`.
-    """
+    """No-op `Tracer`. Composition always builds this one."""
 
     @asynccontextmanager
     async def span(

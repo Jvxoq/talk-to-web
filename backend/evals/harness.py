@@ -49,7 +49,6 @@ from tavily import AsyncTavilyClient  # type: ignore[import-untyped]
 from app.adapters.embedding.gemini_embedder import GeminiEmbedder
 from app.adapters.llm.approximate_token_counter import ApproximateTokenCounter
 from app.adapters.llm.langchain_chat_model import LangChainChatModel
-from app.adapters.observability.langfuse_tracer import LangfuseTracer
 from app.adapters.observability.null_tracer import NullTracer
 from app.adapters.vector.knowledge_retriever import EmbeddedKnowledgeRetriever
 from app.adapters.vector.qdrant_index import QdrantVectorIndex
@@ -80,6 +79,7 @@ from app.settings import Settings
 from evals.cases import EvalCase, Owner, expanded_history
 from evals.judge import Judge
 from evals.recorded_web import RecordedSearchClient, RecordedWeb, RecordedWebContentFetcher
+from evals.tracing import LangSmithSettings, TrialTracer
 
 EVAL_OWNER_ID = 999_999_001
 """The account every fixture is indexed under, and the one almost every case
@@ -163,6 +163,44 @@ class AlwaysAllowRateLimiter:
         return None
 
 
+TOOL_RESULT_CAP = 8_000
+"""Characters of one tool result kept for the judge and the results file.
+
+The agent already condenses a long tool output to its token budget, so this
+cap only stops one runaway page from filling the results file.
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class ToolResult:
+    """One tool's answer to one call, as the model received it."""
+
+    tool: str
+    text: str
+
+
+def tool_results_since_last_user(messages: Sequence[ChatMessage]) -> list[ToolResult]:
+    """The tool results of the final turn, each paired with its tool's name.
+
+    Only after the last user message, so a seeded history's earlier turns never
+    count as sources for this answer. The name comes from the assistant turn
+    that asked for the call, matched by call id.
+    """
+    start = 0
+    for index, message in enumerate(messages):
+        if message.role == "user":
+            start = index
+    names: dict[str, str] = {}
+    results: list[ToolResult] = []
+    for message in messages[start:]:
+        for call in message.tool_calls:
+            names[call.id] = call.name
+        if message.role == "tool":
+            tool = names.get(message.tool_call_id or "", "unknown")
+            results.append(ToolResult(tool=tool, text=message.content[:TOOL_RESULT_CAP]))
+    return results
+
+
 @dataclass(slots=True)
 class CaseRun:
     """What one case produced, ready for `evals.metrics` to score."""
@@ -190,6 +228,12 @@ class CaseRun:
     # How many history turns were seeded into this trial's thread before the
     # final `input` ran. 0 for a one-turn task.
     seeded_turns: int = 0
+    # What each tool handed back to the model this trial, in call order. Read
+    # from the thread after the reply, so a grader and a person labeling the
+    # trial see the text the answer was supposed to be drawn from.
+    tool_results: list[ToolResult] = field(default_factory=list)
+    # The LangSmith trace of this trial, or `None` with tracing off.
+    trace_id: str | None = None
 
     @property
     def summarized(self) -> bool:
@@ -392,6 +436,9 @@ class EvalHarness:
     # Which web tools this run used. Stored in the results file, because a run
     # on saved pages and a run on the live web are not comparable.
     web_mode: WebMode = "recorded"
+    # One LangSmith trace per trial when `LANGSMITH_API_KEY` is set, for hand
+    # labeling. A no-op otherwise.
+    trial_tracer: TrialTracer = field(default_factory=lambda: TrialTracer(None, ""))
 
     async def index_fixtures(self) -> int:
         """Chunk, embed and upsert every file in `evals/fixtures/`, then record
@@ -501,28 +548,52 @@ class EvalHarness:
         # documents and the rag suite would then have nothing to retrieve. Drawn
         # per attempt, so a retried trial is seeded into a thread of its own.
         conversation_id = next(_case_threads)
-        try:
-            await self._seed_history(case, owner_id, conversation_id)
-            run.seeded_turns = len(case.history)
-            events = await self.generate_reply(
-                GenerateReplyInput(
-                    model=self.model,
-                    user_input=case.input,
-                    owner_id=owner_id,
-                    temperature=temperature,
-                    conversation_id=conversation_id,
+        async with self.trial_tracer.trial(
+            "eval.trial",
+            inputs={"question": case.input},
+            metadata={"task_id": case.id, "suite": case.suite, "model": self.model},
+        ) as trace:
+            run.trace_id = trace.trace_id
+            try:
+                await self._seed_history(case, owner_id, conversation_id)
+                run.seeded_turns = len(case.history)
+                events = await self.generate_reply(
+                    GenerateReplyInput(
+                        model=self.model,
+                        user_input=case.input,
+                        owner_id=owner_id,
+                        temperature=temperature,
+                        conversation_id=conversation_id,
+                    )
                 )
-            )
-            async for event in events:
-                run.events.append(event)
-                if isinstance(event, ReplyUsage):
-                    run.usage = event
-                elif isinstance(event, ReplyFailed):
-                    run.failed = event
-        except Exception as error:
-            run.error = str(error)
+                async for event in events:
+                    run.events.append(event)
+                    if isinstance(event, ReplyUsage):
+                        run.usage = event
+                    elif isinstance(event, ReplyFailed):
+                        run.failed = event
+            except Exception as error:
+                run.error = str(error)
+            run.tool_results = await self._tool_results(owner_id, conversation_id)
+            trace.outputs.update(answer=run.answer, error=run.error or "")
         run.latency_ms = (time.perf_counter() - started) * 1000
         return run
+
+    async def _tool_results(self, owner_id: int, conversation_id: int) -> list[ToolResult]:
+        """Read the final turn's tool results back from the thread. Never raises.
+
+        A trial that broke before the graph ran has no thread, and reading one
+        must not turn a modelled failure into an exception.
+        """
+        try:
+            snapshot = await self.graph.aget_state(
+                {"configurable": {"thread_id": f"{owner_id}:{conversation_id}"}}
+            )
+            messages = snapshot.values.get("messages", []) if snapshot.values else []
+            return tool_results_since_last_user(messages)
+        except Exception as error:  # noqa: BLE001 - a missing thread costs sources, not the trial
+            logger.warning(f"Could not read tool results for thread {conversation_id}: {error}")
+            return []
 
 
 def compute_prompt_version(
@@ -643,20 +714,15 @@ async def build_harness(
         timeout=aiohttp.ClientTimeout(total=settings.request_timeout_seconds)
     )
 
-    # Unset Langfuse keys, same as production, is the normal case: no key held
-    # locally, nothing sent, `NullTracer` everywhere.
+    # The app's own spans go nowhere. Tracing for labeling is LangSmith's,
+    # one trace per trial, and only with a key set - see `evals.tracing`.
     tracer: Tracer = NullTracer()
-    if settings.langfuse_public_key and settings.langfuse_secret_key:
-        candidate = LangfuseTracer(
-            public_key=settings.langfuse_public_key.get_secret_value(),
-            secret_key=settings.langfuse_secret_key.get_secret_value(),
-            host=settings.langfuse_host,
-            capture_content=settings.langfuse_capture_content,
-            flush_timeout_seconds=settings.langfuse_flush_timeout_seconds,
+    langsmith_settings = LangSmithSettings()
+    trial_tracer = TrialTracer(langsmith_settings.client(), langsmith_settings.langsmith_project)
+    if trial_tracer.enabled:
+        logger.info(
+            f"LangSmith tracing on: one trace per trial in {langsmith_settings.langsmith_project!r}"
         )
-        if await candidate.credentials_valid():
-            tracer = candidate
-            logger.info("Langfuse tracing enabled for this eval run")
 
     chat_model = LangChainChatModel(
         provider=settings.llm_provider,
@@ -786,6 +852,7 @@ async def build_harness(
             ),
         ),
         web_mode=web_mode,
+        trial_tracer=trial_tracer,
     )
 
     try:
@@ -800,6 +867,7 @@ async def build_harness(
         except Exception as error:
             logger.warning(f"Could not drop scratch collection {collection!r}: {error}")
         await tracer.flush()
+        await trial_tracer.flush()
         await chat_model.aclose()
         await vector_index.aclose()
         await web.aclose()

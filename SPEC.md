@@ -214,8 +214,9 @@ Each choice names the problem it solves.
   dependency. `/ready` checks Postgres and Qdrant and answers 503 when one is
   down. Tracing is never part of `/ready`.
 - **Observability costs nothing when off.** Every request gets an id that shows
-  in logs, error bodies and Sentry. Sentry and Langfuse run only when their
-  keys are set.
+  in logs, error bodies and Sentry. Sentry runs only when its key is set.
+  Production tracing is a no-op for now (`NullTracer`). LangSmith is used for
+  local eval tracing.
 
 ---
 

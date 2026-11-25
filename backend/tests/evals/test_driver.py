@@ -36,7 +36,7 @@ from evals import cases as cases_module
 from evals.__main__ import _select_cases, _verdicts, dataset_version
 from evals.cases import EvalCase, Expectation, behavior_of, expanded_history, load_cases
 from evals.harness import CaseRun, EvalHarness, compute_prompt_version
-from evals.judge import JudgeScore
+from evals.judge import JudgeName, JudgeVerdict
 from evals.report import (
     BehaviorRecord,
     RunReport,
@@ -295,13 +295,13 @@ class _CountingJudge:
     completion_tokens = 0
 
     def __init__(self) -> None:
-        self.calls = 0
+        self.calls: list[JudgeName] = []
 
-    async def score(self, **_: object) -> JudgeScore | None:
-        self.calls += 1
+    async def verdict(self, judge: JudgeName, **_: object) -> JudgeVerdict | None:
+        self.calls.append(judge)
         self.prompt_tokens += 200
         self.completion_tokens += 20
-        return None
+        return JudgeVerdict(judge=judge, verdict=True, reason="fake")
 
 
 @pytest.fixture
@@ -309,11 +309,18 @@ def drive(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Any]:
     """Run the CLI against a scripted harness. Returns `(exit_code, results, harness)`."""
 
     def _drive(
-        argv: list[str], script: dict[str, list[str]], *, suite: str = "tools", tasks: int = 2
+        argv: list[str],
+        script: dict[str, list[str]],
+        *,
+        suite: str = "tools",
+        tasks: int = 2,
+        tags: tuple[str, ...] = (),
     ) -> tuple[int, dict[str, Any], _ScriptedHarness]:
         harness = _ScriptedHarness(script)
         cases = [
-            _case(id=f"t{n}", suite=suite, expect=Expectation(must_contain=["ok"]))
+            _case(
+                id=f"t{n}", suite=suite, tags=list(tags), expect=Expectation(must_contain=["ok"])
+            )
             for n in range(1, tasks + 1)
         ]
 
@@ -371,18 +378,26 @@ def test_gate_does_not_rerun_errored(drive: Any) -> None:
 
 
 def test_gate_makes_no_judge_calls(drive: Any) -> None:
-    _, results, harness = drive(["--mode", "gate"], {}, suite="rag")
+    _, results, harness = drive(["--mode", "gate"], {}, suite="rag", tags=("b1",))
 
-    assert harness.judge.calls == 0
+    assert harness.judge.calls == []
     assert results["cost"]["judge_tokens_in"] == 0
 
 
 def test_release_runs_ten_trials_with_judge(drive: Any) -> None:
-    code, results, harness = drive(["--mode", "release"], {}, suite="rag")
+    code, results, harness = drive(["--mode", "release"], {}, suite="rag", tags=("b1",))
 
     assert code == 0
     assert harness.calls.count("t1") == 10
-    assert harness.judge.calls == 20
+    # b1 reads two judges, so 20 trials make 40 calls.
+    assert sorted(set(harness.judge.calls)) == ["eligible", "grounded"]
+    assert len(harness.judge.calls) == 40
+    first = results["trials"][0]
+    assert {j["judge"] for j in first["judges"]} == {"grounded", "eligible"}
+    assert {(j["judge"], j["judged"], j["yes"]) for j in results["judges"]} == {
+        ("grounded", 20, 20),
+        ("eligible", 20, 20),
+    }
     assert results["totals"]["passed"] == 20
 
 
@@ -479,7 +494,11 @@ def test_json_keeps_transcript(drive: Any) -> None:
         "error": None,
         "seeded_turns": 0,
         "summarized": False,
+        "tool_results": [],
     }
+    assert first["question"] == "q"
+    assert first["trace_id"] is None
+    assert first["judges"] == []
     assert (first["tokens_in"], first["tokens_out"]) == (1000, 100)
 
 
@@ -494,13 +513,17 @@ def test_json_keeps_error_text(drive: Any) -> None:
 
 def test_json_has_run_versions_and_cost(drive: Any) -> None:
     _, results, _ = drive(
-        ["--mode", "release", "--price-in", "1", "--price-out", "2"], {}, suite="rag", tasks=1
+        ["--mode", "release", "--price-in", "1", "--price-out", "2"],
+        {},
+        suite="rag",
+        tasks=1,
+        tags=("b6",),
     )
 
     assert results["model"] == "fake-model"
     assert results["prompt_version"] == "pv-test"
     assert len(results["dataset_version"]) == 12
-    # 10 trials x (1000 in, 100 out) plus the judge's 10 x (200 in, 20 out).
+    # 10 trials x (1000 in, 100 out) plus one b6 judge call each, 10 x (200 in, 20 out).
     assert results["cost"]["tokens_in"] == 10_000
     assert results["cost"]["judge_tokens_in"] == 2_000
     assert results["cost"]["usd"] == pytest.approx((12_000 * 1 + 1_200 * 2) / 1_000_000)
