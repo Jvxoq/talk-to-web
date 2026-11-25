@@ -82,8 +82,13 @@ jobs:
     # Runs on a manual start (`changes` skipped), on a PR that touches the
     # agent, and when the diff step itself broke: a broken diff spends 2 cents
     # rather than waving the PR through. `!cancelled()` is needed because a
-    # skipped `needs` job would otherwise skip this one too.
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent == 'true') }}
+    # skipped `needs` job would otherwise skip this one too. A PR from a fork
+    # gets no secrets, so it is skipped rather than failed on a missing key.
+    # Run `release` by hand on that branch before merging it.
+    if: >-
+      ${{ !cancelled()
+      && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+      && (needs.changes.result != 'success' || needs.changes.outputs.agent == 'true') }}
     runs-on: ubuntu-latest
     # Room for a release run: 280 trials at concurrency 2.
     timeout-minutes: 60

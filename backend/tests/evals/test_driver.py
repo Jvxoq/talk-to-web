@@ -33,6 +33,7 @@ from app.application.chat.models import Source
 from app.application.chat.tools.base import ToolSpec
 from evals import __main__ as driver
 from evals import cases as cases_module
+from evals import harness as harness_module
 from evals.__main__ import _select_cases, _verdicts, dataset_version
 from evals.cases import EvalCase, Expectation, behavior_of, expanded_history, load_cases
 from evals.harness import CaseRun, EvalHarness, compute_prompt_version
@@ -786,3 +787,124 @@ def test_dataset_version_moves_when_history_filler_changes(monkeypatch: pytest.M
 
     assert expanded_history(task.history) != before_text
     assert dataset_version(evals_dir / "datasets", evals_dir / "fixtures", ["tools"]) != before
+
+
+# --- tool scores, judges, retried tokens and hidden fixture files -----------------
+
+
+def test_tools_report_counts_only_tasks_that_declare_tools() -> None:
+    """A task with no `tools` field has no expected list. Scored against an
+    empty one, its correct retrieval would read as over-calling."""
+    declared = _case(id="a", expect=Expectation(tools=["retrieve_documents"]))
+    undeclared = _case(id="b", expect=Expectation(must_contain=["ok"]))
+    runs = [
+        _run(declared, [_finished("retrieve_documents"), *_answer("ok")]),
+        _run(undeclared, [_finished("retrieve_documents"), *_answer("ok")]),
+    ]
+
+    report = driver._score_suite("tools", runs, _HARNESS)
+
+    assert report.tools is not None
+    assert (report.tools.n, report.tools.over_calling_rate) == (1, 0.0)
+
+
+def test_tools_report_is_none_when_no_task_declares_tools() -> None:
+    case = _case(expect=Expectation(must_contain=["ok"]))
+    run = _run(case, [_finished("retrieve_documents"), *_answer("ok")])
+
+    report = driver._score_suite("tools", [run], _HARNESS)
+
+    assert report.tools is None
+
+
+class _NameRecordingJudge:
+    model_name = "fake-judge"
+
+    def __init__(self) -> None:
+        self.asked: list[JudgeName] = []
+
+    async def verdict(self, judge: JudgeName, **_: object) -> JudgeVerdict | None:
+        self.asked.append(judge)
+        return JudgeVerdict(judge=judge, verdict=True, reason="fake")
+
+
+@pytest.mark.parametrize(
+    ("expect", "asked"),
+    [
+        ({"tools": []}, ["eligible"]),
+        ({"must_contain": ["ok"]}, ["grounded", "eligible"]),
+    ],
+    ids=["no-tool task", "tools field omitted"],
+)
+async def test_grounded_judge_skips_no_tool_task(
+    expect: dict[str, object], asked: list[JudgeName]
+) -> None:
+    """A no-tool task has no source text by design, so "grounded" would fail
+    every correct answer."""
+    judge = _NameRecordingJudge()
+    harness = cast(EvalHarness, SimpleNamespace(judge=judge))
+    case = _case(tags=["b1"], expect=Expectation.model_validate(expect))
+
+    await driver._judge_trials([_run(case, _answer("ok"))], harness, concurrency=1)
+
+    assert judge.asked == asked
+
+
+def test_trial_tokens_include_retried_attempts() -> None:
+    """A rate-limited attempt is billed too, so the trial's spend has to count it."""
+    run = _run(_case(), _answer("ok"))
+    run.usage = ReplyUsage(prompt_tokens=100, completion_tokens=10, elapsed_ms=5, model="m")
+    run.retried_tokens_in, run.retried_tokens_out = 40, 4
+
+    trial = driver._trial_record(run, _HARNESS)
+
+    assert (trial.tokens_in, trial.tokens_out) == (140, 14)
+
+
+async def test_run_case_carries_retried_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(harness_module, "_RETRY_BACKOFF_SECONDS", 0.0)
+    case = _case()
+    limited = CaseRun(case=case, failed=ReplyFailed(detail="The model is busy right now"))
+    limited.usage = ReplyUsage(prompt_tokens=40, completion_tokens=4, elapsed_ms=5, model="m")
+    good = CaseRun(case=case, events=_answer("ok"))
+    good.usage = ReplyUsage(prompt_tokens=100, completion_tokens=10, elapsed_ms=5, model="m")
+    attempts = [limited, good]
+
+    async def run_once(case: EvalCase, *, temperature: float) -> CaseRun:
+        return attempts.pop(0)
+
+    harness = cast(EvalHarness, SimpleNamespace(_run_once=run_once))
+
+    run = await EvalHarness.run_case(harness, case)
+
+    assert (run.attempts, run.retried_tokens_in, run.retried_tokens_out) == (2, 40, 4)
+
+
+def _fixtures_with_hidden_files(tmp_path: Path) -> tuple[Path, Path]:
+    datasets, fixtures = tmp_path / "datasets", tmp_path / "fixtures"
+    (fixtures / "web").mkdir(parents=True)
+    datasets.mkdir()
+    (datasets / "tools.jsonl").write_text("{}\n")
+    (fixtures / "a.txt").write_text("one")
+    (fixtures / "web" / "p.txt").write_text("page")
+    return datasets, fixtures
+
+
+@pytest.mark.parametrize("where", ["", "web"], ids=["top level", "web dir"])
+def test_dataset_version_ignores_hidden_files(tmp_path: Path, where: str) -> None:
+    """macOS writes `.DS_Store` when a folder is opened in Finder. That is not
+    a fixture, and it must not make two identical datasets differ."""
+    datasets, fixtures = _fixtures_with_hidden_files(tmp_path)
+    before = dataset_version(datasets, fixtures, ["tools"])
+
+    (fixtures / where / ".DS_Store").write_text("junk")
+
+    assert dataset_version(datasets, fixtures, ["tools"]) == before
+
+
+def test_fixture_files_skip_dotfiles(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("one")
+    (tmp_path / ".DS_Store").write_text("junk")
+    monkeypatch.setattr(harness_module, "_FIXTURES_DIR", tmp_path)
+
+    assert [path.name for path in harness_module._fixture_files()] == ["a.txt"]

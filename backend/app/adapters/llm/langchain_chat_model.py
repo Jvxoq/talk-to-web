@@ -91,9 +91,7 @@ class LangChainChatModel:
         # A gateway such as OpenCode Console sends token usage in a stream only
         # when asked, and without it every reply reports zero tokens and costs
         # nothing on paper.
-        gateway: dict[str, Any] = (
-            {"base_url": base_url, "stream_usage": True} if base_url is not None else {}
-        )
+        gateway: dict[str, Any] = {"base_url": base_url, "stream_usage": True} if base_url else {}
         self._models: dict[str, BaseChatModel] = {}
         for name in models:
             built = init_chat_model(

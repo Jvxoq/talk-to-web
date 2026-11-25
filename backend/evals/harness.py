@@ -234,6 +234,10 @@ class CaseRun:
     tool_results: list[ToolResult] = field(default_factory=list)
     # The LangSmith trace of this trial, or `None` with tracing off.
     trace_id: str | None = None
+    # Tokens that earlier, retried attempts of this trial spent. `usage`
+    # covers the attempt that stood, and the bill covers all of them.
+    retried_tokens_in: int = 0
+    retried_tokens_out: int = 0
 
     @property
     def summarized(self) -> bool:
@@ -509,8 +513,12 @@ class EvalHarness:
                 break
             logger.warning(f"Case {case.id!r} failed transiently; attempt {attempt}")
             await asyncio.sleep(_RETRY_BACKOFF_SECONDS * (attempt - 1))
+            retried_in = run.retried_tokens_in + (run.usage.prompt_tokens if run.usage else 0)
+            retried_out = run.retried_tokens_out + (run.usage.completion_tokens if run.usage else 0)
             run = await self._run_once(case, temperature=temperature)
             run.attempts = attempt
+            run.retried_tokens_in = retried_in
+            run.retried_tokens_out = retried_out
         return run
 
     async def _seed_history(self, case: EvalCase, owner_id: int, conversation_id: int) -> None:
@@ -644,7 +652,12 @@ def fixture_text(name: str) -> str | None:
 
 
 def _fixture_files() -> Iterator[Path]:
-    return (path for path in sorted(_FIXTURES_DIR.iterdir()) if path.is_file())
+    """The documents on the shelf. Hidden files such as macOS `.DS_Store` are not documents."""
+    return (
+        path
+        for path in sorted(_FIXTURES_DIR.iterdir())
+        if path.is_file() and not path.name.startswith(".")
+    )
 
 
 def _opening_paragraph(content: str) -> str:
@@ -714,155 +727,162 @@ async def build_harness(
         timeout=aiohttp.ClientTimeout(total=settings.request_timeout_seconds)
     )
 
-    # The app's own spans go nowhere. Tracing for labeling is LangSmith's,
-    # one trace per trial, and only with a key set - see `evals.tracing`.
-    tracer: Tracer = NullTracer()
-    langsmith_settings = LangSmithSettings()
-    trial_tracer = TrialTracer(langsmith_settings.client(), langsmith_settings.langsmith_project)
-    if trial_tracer.enabled:
-        logger.info(
-            f"LangSmith tracing on: one trace per trial in {langsmith_settings.langsmith_project!r}"
+    # Every step below can fail on bad config or a broken web recording.
+    # The clients above are already open, and the `finally` further down
+    # is not reached yet, so close them here before the error leaves.
+    try:
+        # The app's own spans go nowhere. Tracing for labeling is LangSmith's,
+        # one trace per trial, and only with a key set - see `evals.tracing`.
+        tracer: Tracer = NullTracer()
+        langsmith_settings = LangSmithSettings()
+        project = langsmith_settings.langsmith_project
+        trial_tracer = TrialTracer(langsmith_settings.client(), project)
+        if trial_tracer.enabled:
+            logger.info(f"LangSmith tracing on: one trace per trial in {project!r}")
+
+        judge_model = JudgeSettings().eval_judge_model
+        chat_model = LangChainChatModel(
+            provider=settings.llm_provider,
+            # `answering_model` first, and included at all: `--model` names a model
+            # that is very often not in `LLM_MODELS`, which is the entire point of
+            # the flag. Left out, the registry has no client for it and every case
+            # in the run fails on the first call with an unknown-model error.
+            models=list(
+                dict.fromkeys(
+                    [
+                        answering_model,
+                        *settings.llm_models,
+                        settings.agent_condenser_model,
+                        judge_model,
+                    ]
+                )
+            ),
+            api_key=settings.llm_api_key.get_secret_value(),
+            max_tokens=settings.llm_max_tokens,
+            base_url=settings.llm_base_url,
+        )
+        token_counter = ApproximateTokenCounter()
+        condenser = Condenser(
+            model=chat_model,
+            model_name=settings.agent_condenser_model,
+            max_chars=settings.agent_condenser_max_chars,
+            tool_condense_prompt=settings.agent_tool_condense_prompt,
+            summary_prompt=settings.agent_summary_prompt,
+            document_summary_prompt=settings.agent_document_summary_prompt,
+            tracer=tracer,
+        )
+        vector_index = QdrantVectorIndex(client=qdrant_client, collection=collection)
+        embedder = GeminiEmbedder(
+            client=genai_client,
+            model=settings.embedding_model,
+            dimensions=settings.embedding_dimensions,
+        )
+        knowledge = EmbeddedKnowledgeRetriever(
+            embedder=embedder,
+            # Pinned, so a case's own thread id never decides which shelf it reads.
+            index=_PinnedConversationIndex(vector_index, EVAL_CONVERSATION_ID),
+            limit=settings.retrieval_limit,
+            score_threshold=settings.retrieval_score_threshold,
+        )
+        web = build_web_tools(
+            web_mode,
+            http_session=http_session,
+            tavily_api_key=settings.tavily_api_key.get_secret_value(),
+        )
+        tool_output_guard = ToolOutputGuard(
+            strip_instructions=settings.guardrail_strip_tool_instructions,
+            max_scan_chars=settings.guardrail_max_scan_chars,
+        )
+        input_guard = InputGuardPolicy(
+            redact_pii=settings.guardrail_pii_redaction_enabled,
+            block_on_injection=settings.guardrail_block_on_injection,
+            max_scan_chars=settings.guardrail_max_scan_chars,
+        )
+        limiter = AlwaysAllowRateLimiter()
+        checkpointer = InMemorySaver()
+        shelf = _Shelf()
+
+        registry = ToolRegistry(
+            [
+                RetrieveDocuments(knowledge),
+                FetchWebPages(web.fetcher),
+                SearchWeb(web.searcher, max_results=settings.tavily_max_results),
+            ],
+            guard=tool_output_guard,
+            # Without this, a case scores on the model's unassisted tool
+            # choice - a different, easier-to-fail question than the one
+            # production actually answers, where `composition.py` wires this
+            # same gate in front of every request. Mirrored here so `tools`
+            # eval numbers mean what they claim to mean.
+            routing=ToolRoutingPolicy(
+                document_tool=RetrieveDocuments.name,
+                web_search_tool=SearchWeb.name,
+            ),
         )
 
-    judge_model = JudgeSettings().eval_judge_model
-    chat_model = LangChainChatModel(
-        provider=settings.llm_provider,
-        # `answering_model` first, and included at all: `--model` names a model
-        # that is very often not in `LLM_MODELS`, which is the entire point of
-        # the flag. Left out, the registry has no client for it and every case
-        # in the run fails on the first call with an unknown-model error.
-        models=list(
-            dict.fromkeys(
-                [
-                    answering_model,
-                    *settings.llm_models,
-                    settings.agent_condenser_model,
-                    judge_model,
-                ]
-            )
-        ),
-        api_key=settings.llm_api_key.get_secret_value(),
-        max_tokens=settings.llm_max_tokens,
-        base_url=settings.llm_base_url,
-    )
-    token_counter = ApproximateTokenCounter()
-    condenser = Condenser(
-        model=chat_model,
-        model_name=settings.agent_condenser_model,
-        max_chars=settings.agent_condenser_max_chars,
-        tool_condense_prompt=settings.agent_tool_condense_prompt,
-        summary_prompt=settings.agent_summary_prompt,
-        document_summary_prompt=settings.agent_document_summary_prompt,
-        tracer=tracer,
-    )
-    vector_index = QdrantVectorIndex(client=qdrant_client, collection=collection)
-    embedder = GeminiEmbedder(
-        client=genai_client,
-        model=settings.embedding_model,
-        dimensions=settings.embedding_dimensions,
-    )
-    knowledge = EmbeddedKnowledgeRetriever(
-        embedder=embedder,
-        # Pinned, so a case's own thread id never decides which shelf it reads.
-        index=_PinnedConversationIndex(vector_index, EVAL_CONVERSATION_ID),
-        limit=settings.retrieval_limit,
-        score_threshold=settings.retrieval_score_threshold,
-    )
-    web = build_web_tools(
-        web_mode,
-        http_session=http_session,
-        tavily_api_key=settings.tavily_api_key.get_secret_value(),
-    )
-    tool_output_guard = ToolOutputGuard(
-        strip_instructions=settings.guardrail_strip_tool_instructions,
-        max_scan_chars=settings.guardrail_max_scan_chars,
-    )
-    input_guard = InputGuardPolicy(
-        redact_pii=settings.guardrail_pii_redaction_enabled,
-        block_on_injection=settings.guardrail_block_on_injection,
-        max_scan_chars=settings.guardrail_max_scan_chars,
-    )
-    limiter = AlwaysAllowRateLimiter()
-    checkpointer = InMemorySaver()
-    shelf = _Shelf()
+        graph = build_agent_graph(
+            model=chat_model,
+            tools=registry,
+            max_iterations=settings.agent_max_tool_iterations,
+            checkpointer=checkpointer,
+            condenser=condenser,
+            counter=token_counter,
+            history_token_budget=settings.agent_history_token_budget,
+            recent_token_budget=settings.agent_recent_token_budget,
+            tool_output_token_budget=settings.agent_tool_output_token_budget,
+            max_request_tokens=settings.agent_max_request_tokens,
+            tracer=tracer,
+        )
 
-    registry = ToolRegistry(
-        [
-            RetrieveDocuments(knowledge),
-            FetchWebPages(web.fetcher),
-            SearchWeb(web.searcher, max_results=settings.tavily_max_results),
-        ],
-        guard=tool_output_guard,
-        # Without this, a case scores on the model's unassisted tool
-        # choice - a different, easier-to-fail question than the one
-        # production actually answers, where `composition.py` wires this
-        # same gate in front of every request. Mirrored here so `tools`
-        # eval numbers mean what they claim to mean.
-        routing=ToolRoutingPolicy(
-            document_tool=RetrieveDocuments.name,
-            web_search_tool=SearchWeb.name,
-        ),
-    )
+        generate_reply = GenerateReply(
+            graph=graph,
+            system_prompt=settings.llm_system_prompt,
+            max_iterations=settings.agent_max_tool_iterations,
+            limiter=limiter,
+            daily_budget=limiter,
+            guards=input_guard,
+            tracer=tracer,
+            # Serves the same list `index_fixtures` wrote, per owner. Typed through
+            # `cast` because the real port is a SQLAlchemy-backed unit of work and
+            # this satisfies only the slice of it a reply touches - see
+            # `_ShelfUnitOfWork`.
+            uow_factory=cast(Any, lambda: _ShelfUnitOfWork(shelf)),
+            tool_output_guard=tool_output_guard,
+            max_digest_documents=settings.chat_digest_max_documents,
+            max_digest_summary_chars=settings.chat_digest_max_summary_chars,
+        )
+        judge = Judge(model=chat_model, model_name=judge_model, tracer=tracer)
 
-    graph = build_agent_graph(
-        model=chat_model,
-        tools=registry,
-        max_iterations=settings.agent_max_tool_iterations,
-        checkpointer=checkpointer,
-        condenser=condenser,
-        counter=token_counter,
-        history_token_budget=settings.agent_history_token_budget,
-        recent_token_budget=settings.agent_recent_token_budget,
-        tool_output_token_budget=settings.agent_tool_output_token_budget,
-        max_request_tokens=settings.agent_max_request_tokens,
-        tracer=tracer,
-    )
-
-    generate_reply = GenerateReply(
-        graph=graph,
-        system_prompt=settings.llm_system_prompt,
-        max_iterations=settings.agent_max_tool_iterations,
-        limiter=limiter,
-        daily_budget=limiter,
-        guards=input_guard,
-        tracer=tracer,
-        # Serves the same list `index_fixtures` wrote, per owner. Typed through
-        # `cast` because the real port is a SQLAlchemy-backed unit of work and
-        # this satisfies only the slice of it a reply touches - see
-        # `_ShelfUnitOfWork`.
-        uow_factory=cast(Any, lambda: _ShelfUnitOfWork(shelf)),
-        tool_output_guard=tool_output_guard,
-        max_digest_documents=settings.chat_digest_max_documents,
-        max_digest_summary_chars=settings.chat_digest_max_summary_chars,
-    )
-    judge = Judge(model=chat_model, model_name=judge_model, tracer=tracer)
-
-    harness = EvalHarness(
-        generate_reply=generate_reply,
-        judge=judge,
-        embedder=embedder,
-        vector_index=vector_index,
-        model=answering_model,
-        retrieval_k=3,
-        chunk_size=settings.chunk_size,
-        chunk_overlap=settings.chunk_overlap,
-        embedding_dimensions=settings.embedding_dimensions,
-        _shelf=shelf,
-        graph=graph,
-        system_prompt=settings.llm_system_prompt,
-        prompt_version=compute_prompt_version(
-            settings.llm_system_prompt,
-            registry.specs(),
-            condenser_model=settings.agent_condenser_model,
-            condenser_prompts=(
-                settings.agent_summary_prompt,
-                settings.agent_tool_condense_prompt,
-                settings.agent_document_summary_prompt,
+        harness = EvalHarness(
+            generate_reply=generate_reply,
+            judge=judge,
+            embedder=embedder,
+            vector_index=vector_index,
+            model=answering_model,
+            retrieval_k=3,
+            chunk_size=settings.chunk_size,
+            chunk_overlap=settings.chunk_overlap,
+            embedding_dimensions=settings.embedding_dimensions,
+            _shelf=shelf,
+            graph=graph,
+            system_prompt=settings.llm_system_prompt,
+            prompt_version=compute_prompt_version(
+                settings.llm_system_prompt,
+                registry.specs(),
+                condenser_model=settings.agent_condenser_model,
+                condenser_prompts=(
+                    settings.agent_summary_prompt,
+                    settings.agent_tool_condense_prompt,
+                    settings.agent_document_summary_prompt,
+                ),
             ),
-        ),
-        web_mode=web_mode,
-        trial_tracer=trial_tracer,
-    )
+            web_mode=web_mode,
+            trial_tracer=trial_tracer,
+        )
+    except BaseException:
+        await http_session.close()
+        await qdrant_client.close()
+        raise
 
     try:
         yield harness

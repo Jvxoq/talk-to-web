@@ -297,9 +297,13 @@ def _score_suite(suite_name: str, runs: list[CaseRun], harness: EvalHarness) -> 
 
     budgets = summarize_budgets([run.latency_ms for run in graded], [run.usage for run in graded])
 
+    # Only tasks that state their tools: a task with no `tools` field has no
+    # expected call list, and scoring it against an empty one reads every
+    # correct call as over-calling.
+    tool_runs = [run for run in graded if run.case.expect.checks_tools]
     tools_report = None
-    if any(run.case.expect.checks_tools for run in graded):
-        tools_report = summarize_tool_scores([_tool_score(run) for run in graded])
+    if tool_runs:
+        tools_report = summarize_tool_scores([_tool_score(run) for run in tool_runs])
 
     substring_checks = [_substring_check(run) for run in graded]
 
@@ -470,6 +474,11 @@ async def _judge_trials(
 
     async def judge_one(run: CaseRun) -> tuple[JudgeRecord, ...]:
         names = JUDGES_BY_BEHAVIOR.get(behavior_of(run.case) or "", ())
+        if run.case.expect.checks_tools and not run.case.expect.tools:
+            # A task that must answer from the model's own knowledge has no
+            # source text by design, and "grounded" would fail every correct
+            # answer for it.
+            names = tuple(name for name in names if name != "grounded")
         if run.broke or not names:
             return ()
         sources = _sources_text(run.tool_results)
@@ -524,8 +533,8 @@ def _trial_record(
         outcome=_outcome(run, failures),
         failure_reasons=tuple(failures),
         transcript=_transcript(run),
-        tokens_in=run.usage.prompt_tokens if run.usage else 0,
-        tokens_out=run.usage.completion_tokens if run.usage else 0,
+        tokens_in=(run.usage.prompt_tokens if run.usage else 0) + run.retried_tokens_in,
+        tokens_out=(run.usage.completion_tokens if run.usage else 0) + run.retried_tokens_out,
         latency_ms=run.latency_ms,
         question=run.case.input,
         trace_id=run.trace_id,
@@ -549,7 +558,13 @@ def dataset_version(datasets_dir: Path, fixtures_dir: Path, suites: Sequence[str
     digest = hashlib.sha256(filler_fingerprint().encode("utf-8"))
     files = [datasets_dir / f"{suite}.jsonl" for suite in sorted(suites)]
     if fixtures_dir.is_dir():
-        files.extend(sorted(path for path in fixtures_dir.rglob("*") if path.is_file()))
+        files.extend(
+            sorted(
+                path
+                for path in fixtures_dir.rglob("*")
+                if path.is_file() and not path.name.startswith(".")
+            )
+        )
     for path in files:
         name = path.relative_to(fixtures_dir) if path.is_relative_to(fixtures_dir) else path.name
         digest.update(str(name).encode("utf-8"))

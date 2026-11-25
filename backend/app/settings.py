@@ -66,8 +66,8 @@ class Settings(BaseSettings):
     # the trace ever see the message.
     guardrail_pii_redaction_enabled: bool = True
     # Off deliberately. "Ignore the previous paragraph" is a sentence real users
-    # type at real PDFs. Read the false-positive rate off
-    # the security eval suite's benign set before turning it on.
+    # type at real PDFs. Read the false-positive rate off the security eval
+    # suite's benign set (kept local in `security-evals/`) before turning it on.
     guardrail_block_on_injection: bool = False
     guardrail_strip_tool_instructions: bool = True
     # A concurrency limit wearing a size limit's clothes. Regex is synchronous
@@ -104,7 +104,8 @@ class Settings(BaseSettings):
     # `llm_base_url`, the OpenCode Console gateway, which serves many vendors'
     # models behind one OpenAI-compatible endpoint.
     llm_provider: str = "openai"
-    # `None` sends requests to the provider's own endpoint.
+    # `None` sends requests to the provider's own endpoint. Another
+    # `llm_provider` with no URL set gets `None`, not this default.
     llm_base_url: str | None = "https://opencode.ai/inference/openai/v1"
     # Every entry must support tool calling reliably. Run the evals against any
     # model added here. The first entry is what a new chat opens with.
@@ -292,6 +293,19 @@ class Settings(BaseSettings):
         """Fall back to the CORS list, so one variable configures both."""
         if not self.allowed_websocket_origins:
             self.allowed_websocket_origins = list(self.cors_origins)
+        return self
+
+    @model_validator(mode="after")
+    def _gateway_url_only_for_the_gateway(self) -> "Settings":
+        """Keep a provider switch from sending its key to the OpenCode gateway.
+
+        The default base URL belongs to the default provider. Switching
+        `LLM_PROVIDER` without naming a URL means the provider's own endpoint,
+        and an empty `LLM_BASE_URL` means the same.
+        """
+        switched = self.llm_provider != "openai" and "llm_base_url" not in self.model_fields_set
+        if not self.llm_base_url or switched:
+            self.llm_base_url = None
         return self
 
     @model_validator(mode="after")
