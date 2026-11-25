@@ -14,6 +14,7 @@ dependencies = [
     "fastapi[standard]>=0.138.2",
     "google-genai>=2.10.0",
     "langchain>=1.0.0",
+    "langchain-openai>=1.0.0",
     "langchain-together>=0.3.0",
     "langgraph>=1.0.0",
     "langgraph-checkpoint-postgres>=3.0.0",
@@ -211,6 +212,7 @@ forbidden_modules = [
     "langchain",
     "langchain_core",
     "langchain_together",
+    "langchain_openai",
     "tavily",
     # Cryptography is infrastructure like any other. The use cases hash and sign
     # through `PasswordHasher` / `AccessTokenCodec`, so a token format or a KDF

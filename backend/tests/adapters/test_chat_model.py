@@ -523,6 +523,21 @@ class TestConstruction:
 
         assert sorted(model._models) == ["llama-3.1-8b-instant", MODEL]
 
+    def test_a_gateway_url_reaches_the_client_and_asks_for_stream_usage(self) -> None:
+        # Without `stream_usage` an OpenAI-compatible gateway streams no token
+        # counts, and every reply would report zero tokens and zero cost.
+        model = LangChainChatModel(
+            provider="openai",
+            models=["deepseek-v4.1-flash"],
+            api_key="not-a-real-key",
+            max_tokens=1024,
+            base_url="https://gateway.example/v1",
+        )
+
+        client = model._models["deepseek-v4.1-flash"]
+        assert str(getattr(client, "openai_api_base", "")) == "https://gateway.example/v1"
+        assert getattr(client, "stream_usage", None) is True
+
     def test_a_configuration_with_no_models_is_refused(self) -> None:
         # Otherwise every request would fail with "unknown model" and the real
         # fault - an empty setting - would never be named.

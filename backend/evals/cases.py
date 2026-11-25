@@ -152,6 +152,10 @@ class Expectation(BaseModel):
     # for", which is the actual rule, without also pinning down calls the rule
     # says nothing about.
     tool_order: list[str] = Field(default_factory=list)
+    # Tools that may also complete without failing the task. For a follow-up
+    # call the routing rule allows but does not require, for example opening a
+    # link a search returned. Never a way to skip an expected tool.
+    allowed_tools: list[str] = Field(default_factory=list)
     # Fixture filenames (or URLs) the answer should be able to cite, for the
     # `rag` suite's retrieval metrics.
     expected_sources: list[str] = Field(default_factory=list)
@@ -176,6 +180,18 @@ class Expectation(BaseModel):
         unknown = sorted(set(self.tool_order) - set(self.tools))
         if unknown:
             raise ValueError(f"tool_order names tools not in tools: {unknown}")
+        return self
+
+    @model_validator(mode="after")
+    def _allowed_tools_are_not_expected_tools(self) -> "Expectation":
+        """A tool is either required (`tools`) or optional (`allowed_tools`).
+
+        Listing it in both says two opposite things, and the scorer would
+        quietly pick one.
+        """
+        both = sorted(set(self.tools) & set(self.allowed_tools))
+        if both:
+            raise ValueError(f"tools named in both tools and allowed_tools: {both}")
         return self
 
     @property

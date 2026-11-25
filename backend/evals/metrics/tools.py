@@ -91,8 +91,12 @@ def score_tool_call(
     *,
     refused: Sequence[str] = (),
     required_order: Sequence[str] = (),
+    allowed: Sequence[str] = (),
 ) -> ToolCallScore:
     """Score one case.
+
+    `allowed` tools may also complete: they neither fail the exact match nor
+    count as over-calling, and precision ignores them (neither right nor wrong).
 
     Membership is compared as sets - the question is "which tools", not "how
     many times" - while ordering is checked separately and only when a case
@@ -100,18 +104,19 @@ def score_tool_call(
     """
     completed_set = set(completed)
     expected_set = set(expected)
-    over_called = tuple(sorted(completed_set - expected_set))
+    allowed_set = set(allowed)
+    over_called = tuple(sorted(completed_set - expected_set - allowed_set))
     missing = tuple(sorted(expected_set - completed_set))
     intersection = len(completed_set & expected_set)
     return ToolCallScore(
         completed=tuple(completed),
         expected=tuple(expected),
         refused=tuple(refused),
-        exact_match=completed_set == expected_set,
+        exact_match=expected_set <= completed_set <= expected_set | allowed_set,
         order_ok=order_satisfied(completed, required_order),
         # An empty "completed" set with nothing expected is perfect precision,
         # not undefined - the agent correctly called nothing.
-        precision=_safe_div(intersection, len(completed_set)),
+        precision=_safe_div(intersection, len(completed_set - allowed_set)),
         recall=_safe_div(intersection, len(expected_set)),
         over_called=over_called,
         missing=missing,

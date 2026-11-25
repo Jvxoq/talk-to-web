@@ -207,15 +207,15 @@ and needs real Postgres/Qdrant — see Commands above.
   fixing before there's production data to migrate.
 - No metrics/OpenTelemetry yet — deliberately deferred, since they need
   somewhere to send data (infrastructure decision, not a code change).
-- **The default chat model routes tools poorly.**
-  `deepseek-ai/DeepSeek-V4-Flash-0731` measured 0.36 exact-match on
+- **The default chat model is not measured yet.** It is `deepseek-v4.1-flash`
+  through the OpenCode Console gateway, since Together retired the old one.
+  The old `deepseek-ai/DeepSeek-V4-Flash-0731` measured 0.36 exact-match on
   `--suite tools` (n=11), mostly by reaching for `search_web` on
-  document-scoped questions. Kept as the default by explicit choice; the
-  routing policy is what makes that survivable. Re-run `evals --suite tools`
-  before adding any model to `llm_models`.
+  document-scoped questions. Re-run the evals before adding any model to
+  `llm_models`.
 - **`agent_max_request_tokens` has not been confirmed against a real 400.**
   The previous value was Groq's measured 8,000-token limit. The current one is
-  a provisional read of Together's larger window — tighten it if a 400 appears.
+  a provisional read of a larger window — tighten it if a 400 appears.
 - **A replaced attachment can be left behind.** `UploadDocument` swallows a
   failure while removing the thread's previous document, so the new file still
   works and the old row, file and vectors stay. The log line is
@@ -310,7 +310,8 @@ and needs real Postgres/Qdrant — see Commands above.
   `/ws/transcribe/` checks `Origin` against `websocket_origins` itself and
   closes with 1008 before `accept()`; a missing `Origin` is refused too.
 - **Provider-agnostic LLM config.** `llm_provider` is a plain string
-  resolved through LangChain's `init_chat_model` (`together`, `groq`,
+  resolved through LangChain's `init_chat_model` (`openai` with
+  `llm_base_url` for the OpenCode Console gateway, `together`, `groq`,
   `openai`, `anthropic`, `google_genai`, `ollama`, ...). Model choice matters more
   than it looks: `llm_models` only lists models measured to reliably emit
   well-formed tool calls against this app's tool schemas — several

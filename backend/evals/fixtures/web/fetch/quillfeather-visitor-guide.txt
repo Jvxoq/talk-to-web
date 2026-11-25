@@ -4,4 +4,4 @@ Quillfeather Observatory is an invented hilltop observatory above the made-up to
 
 Public viewing nights run from Thursday to Sunday. Doors open at 19:30 and the first viewing slot starts at 20:00. Visitors wait in the Linnet Room, where volunteers hand out red torches so that nobody loses their night vision.
 
-Children under eight must be with an adult. The observatory has no car park, so visitors take the funicular from Dunmarrow Ridge station. For the list of upcoming eclipses and comet visits, see the Night Sky Calendar at https://quillfeather-observatory.example/night-sky-calendar
+Children under eight must be with an adult. The observatory has no car park, so visitors take the funicular from Dunmarrow Ridge station. For the list of upcoming eclipses and comet visits, see the Night Sky Calendar at https://quillfeather-observatory.org/night-sky-calendar

@@ -77,7 +77,7 @@ from app.domain.ingestion.entities import Document, UploadedDocument
 from app.domain.ingestion.value_objects import Chunk, DocumentName
 from app.settings import Settings
 from evals.cases import EvalCase, Owner, expanded_history
-from evals.judge import Judge
+from evals.judge import Judge, JudgeSettings
 from evals.recorded_web import RecordedSearchClient, RecordedWeb, RecordedWebContentFetcher
 from evals.tracing import LangSmithSettings, TrialTracer
 
@@ -724,6 +724,7 @@ async def build_harness(
             f"LangSmith tracing on: one trace per trial in {langsmith_settings.langsmith_project!r}"
         )
 
+    judge_model = JudgeSettings().eval_judge_model
     chat_model = LangChainChatModel(
         provider=settings.llm_provider,
         # `answering_model` first, and included at all: `--model` names a model
@@ -731,10 +732,18 @@ async def build_harness(
         # the flag. Left out, the registry has no client for it and every case
         # in the run fails on the first call with an unknown-model error.
         models=list(
-            dict.fromkeys([answering_model, *settings.llm_models, settings.agent_condenser_model])
+            dict.fromkeys(
+                [
+                    answering_model,
+                    *settings.llm_models,
+                    settings.agent_condenser_model,
+                    judge_model,
+                ]
+            )
         ),
         api_key=settings.llm_api_key.get_secret_value(),
         max_tokens=settings.llm_max_tokens,
+        base_url=settings.llm_base_url,
     )
     token_counter = ApproximateTokenCounter()
     condenser = Condenser(
@@ -826,7 +835,7 @@ async def build_harness(
         max_digest_documents=settings.chat_digest_max_documents,
         max_digest_summary_chars=settings.chat_digest_max_summary_chars,
     )
-    judge = Judge(model=chat_model, model_name=settings.agent_condenser_model, tracer=tracer)
+    judge = Judge(model=chat_model, model_name=judge_model, tracer=tracer)
 
     harness = EvalHarness(
         generate_reply=generate_reply,

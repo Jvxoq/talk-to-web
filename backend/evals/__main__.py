@@ -164,14 +164,29 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--price-in",
         type=float,
-        default=0.30,
-        help="USD per million input tokens, for the cost estimate (Together DeepSeek V4.1 Flash).",
+        default=0.12,
+        help=(
+            "USD per million input tokens, for the cost estimate "
+            "(DeepSeek V4.1 Flash on OpenCode Console, 60%% off list)."
+        ),
     )
     parser.add_argument(
         "--price-out",
         type=float,
-        default=1.20,
+        default=0.48,
         help="USD per million output tokens, for the cost estimate.",
+    )
+    parser.add_argument(
+        "--judge-price-in",
+        type=float,
+        default=0.15,
+        help="USD per million judge input tokens (GLM 5.3 Flash on OpenCode Console).",
+    )
+    parser.add_argument(
+        "--judge-price-out",
+        type=float,
+        default=0.50,
+        help="USD per million judge output tokens.",
     )
     parser.add_argument(
         "--out",
@@ -266,6 +281,7 @@ def _tool_score(run: CaseRun) -> ToolCallScore:
         run.case.expect.tools,
         refused=tools_refused(run.events),
         required_order=run.case.expect.tool_order,
+        allowed=run.case.expect.allowed_tools,
     )
 
 
@@ -619,6 +635,7 @@ async def _main(argv: list[str] | None = None) -> int:
         report = RunReport(
             run_id=run_id,
             model=harness.model,
+            judge_model=harness.judge.model_name,
             tags=tuple(args.tag),
             suites=tuple(suite_reports),
             case_ids=tuple(case.id for case in cases),
@@ -646,6 +663,8 @@ async def _main(argv: list[str] | None = None) -> int:
                 judge_tokens_out=harness.judge.completion_tokens,
                 price_in_per_million=args.price_in,
                 price_out_per_million=args.price_out,
+                judge_price_in_per_million=args.judge_price_in,
+                judge_price_out_per_million=args.judge_price_out,
             ),
             quality_failed=bar.failed,
             verdict=bar.reasons,

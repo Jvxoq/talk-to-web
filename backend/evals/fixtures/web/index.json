@@ -1,9 +1,10 @@
 {
   "pages": {
-    "https://quillfeather-observatory.example/visitor-guide": "fetch/quillfeather-visitor-guide.txt"
+    "https://quillfeather-observatory.org/visitor-guide": "fetch/quillfeather-visitor-guide.txt",
+    "https://tessaly-courier.com/news/brindlewick-tram-extension": "fetch/tessaly-courier-tram-extension.txt"
   },
   "unreachable": [
-    "https://harbourlight-festival.example/tickets"
+    "https://harbourlight-festival.com/tickets"
   ],
   "searches": [
     {

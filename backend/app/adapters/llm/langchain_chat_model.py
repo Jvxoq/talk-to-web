@@ -81,18 +81,26 @@ class LangChainChatModel:
         models: Sequence[str],
         api_key: str,
         max_tokens: int,
+        base_url: str | None = None,
         retry_attempts: int = 3,
         retry_wait: wait_base = _DEFAULT_RETRY_WAIT,
     ) -> None:
         if not models:
             raise ValueError("At least one model name must be configured")
 
+        # A gateway such as OpenCode Console sends token usage in a stream only
+        # when asked, and without it every reply reports zero tokens and costs
+        # nothing on paper.
+        gateway: dict[str, Any] = (
+            {"base_url": base_url, "stream_usage": True} if base_url is not None else {}
+        )
         self._models: dict[str, BaseChatModel] = {}
         for name in models:
             built = init_chat_model(
                 f"{provider}:{name}",
                 api_key=api_key,
                 max_tokens=max_tokens,
+                **gateway,
             )
             if not isinstance(built, BaseChatModel):
                 # `init_chat_model` returns a late-bound configurable wrapper when

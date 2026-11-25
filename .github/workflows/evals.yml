@@ -3,17 +3,26 @@
 # secrets none of those jobs need, and it fails for reasons none of them fail
 # for.
 #
-# Started by hand only. There is no `pull_request` trigger: a run costs money
-# and a model's answers vary, so a person decides when it is worth running.
-# Pick a mode when you start it:
+# Two ways in:
+#   pull_request  Runs `gate` mode, but only when the PR touches the agent (see
+#                 `changes` below). A frontend or docs PR skips the paid job.
+#   by hand       Pick a mode. Use `release` before the agent goes out, and
+#                 after a model or prompt change.
+# Modes:
 #   gate     1 trial per task, no judge. A failed task gets 2 more trials, and
-#            the run fails if one of those fails too. Cheap. Run it before merge.
+#            the run fails if one of those fails too. About 2 cents.
 #   release  10 trials per task, judges on. Fails if the suite misses more than
-#            3% of trials or any task fails 3 times. Run it before the agent
-#            goes out, and after a model or prompt change.
-# Because nothing runs on its own, this must not be marked required in branch
-# protection.
+#            3% of trials or any task fails 3 times. About 35 cents.
+#
+# Mark the `evals` job required in branch protection, not this workflow. The
+# workflow always starts on a PR, so it never sits "Pending". When the agent is
+# untouched, `evals` is skipped by its `if`, and GitHub counts a job skipped by
+# a conditional as a success. A `paths:` filter on the trigger would instead
+# leave the required check pending forever and block the merge:
+# https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/collaborating-on-repositories-with-code-quality-features/troubleshooting-required-status-checks
 on:
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       mode:
@@ -29,7 +38,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Never cancel: a second manual start must wait, not kill a paid run.
+  # Never cancel: a second start must wait, not kill a paid run.
   cancel-in-progress: false
 
 defaults:
@@ -37,7 +46,44 @@ defaults:
     working-directory: backend
 
 jobs:
+  # Does this PR touch the agent? Plain `git diff`, no third-party action.
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      agent: ${{ steps.diff.outputs.agent }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # The agent is the chat code, the adapters it calls (model, web tools,
+      # vector store, embeddings), the wiring and settings that pick the model,
+      # the eval harness and tasks, the locked library versions (a LangChain
+      # bump can change answers), and this file. Markdown never counts.
+      - id: diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          AGENT_PATHS: >-
+            ^backend/app/(application/chat|domain/chat|adapters/(llm|web|vector|embedding))/|^backend/app/(composition|settings)\.py$|^backend/evals/|^backend/(pyproject\.toml|uv\.lock)$|^\.github/workflows/evals\.yml$
+        run: |
+          set -o pipefail
+          agent_files=$(git diff --name-only "$BASE_SHA"...HEAD | { grep -v '\.md$' || true; } | { grep -E "$AGENT_PATHS" || true; })
+          if [ -n "$agent_files" ]; then
+            echo "agent=true" >> "$GITHUB_OUTPUT"
+            printf 'Agent files changed:\n%s\n' "$agent_files"
+          else
+            echo "agent=false" >> "$GITHUB_OUTPUT"
+            echo "No agent files changed. The eval job will be skipped."
+          fi
+
   evals:
+    needs: changes
+    # Runs on a manual start (`changes` skipped), on a PR that touches the
+    # agent, and when the diff step itself broke: a broken diff spends 2 cents
+    # rather than waving the PR through. `!cancelled()` is needed because a
+    # skipped `needs` job would otherwise skip this one too.
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent == 'true') }}
     runs-on: ubuntu-latest
     # Room for a release run: 280 trials at concurrency 2.
     timeout-minutes: 60
@@ -95,8 +141,10 @@ jobs:
       # `--mode` sets the trial count and the pass bar, so `--repeat` is not
       # passed. The exit code is 1 for a missed bar and 2 for a broken run.
       #
-      # Concurrency 2, not 4: Groq's free tier throttles, and the harness only
-      # retries a 429 once per case.
+      # Concurrency 2, not 4: it keeps the run under the provider's rate limit,
+      # and the harness only retries a 429 once per task.
+      #
+      # A PR has no `inputs`, so it falls back to `gate`.
       #
       # loguru writes to stderr, so stdout carries nothing but the markdown
       # report — which makes it safe to tee straight into the job summary.
@@ -112,12 +160,13 @@ jobs:
           TAVILY_API_KEY: unused
           DEEPGRAM_API_KEY: unused
           JWT_SECRET: unused
+          MODE: ${{ inputs.mode || 'gate' }}
         run: |
           set -o pipefail
           uv run python -m evals \
             --suite all \
             --tag ci \
-            --mode "${{ inputs.mode }}" \
+            --mode "$MODE" \
             --concurrency 2 \
             --out evals/results/ci.json \
             | tee -a "$GITHUB_STEP_SUMMARY"

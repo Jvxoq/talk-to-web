@@ -14,14 +14,13 @@ suite rather than under `tests/integration/`.
 import json
 import re
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import pytest
 
 from app.adapters.llm.approximate_token_counter import ApproximateTokenCounter
 from app.application.chat.models import ChatMessage
 from app.settings import Settings
-from evals.cases import BEHAVIORS, EvalCase, expanded_history, load_cases
+from evals.cases import BEHAVIORS, EvalCase, Expectation, expanded_history, load_cases
 from evals.recorded_web import INDEX_NAME, RecordedWeb, normalize_url
 
 _EVALS_DIR = Path(__file__).parents[2] / "evals"
@@ -162,41 +161,39 @@ def test_recordings_load_and_every_file_in_web_is_indexed() -> None:
     assert on_disk == listed
 
 
-def test_recorded_urls_use_the_reserved_example_tld() -> None:
-    """`.example` can never resolve. A recording for a real host would look
-    live, and the model could answer from memory of the real page."""
+def _recorded_urls() -> set[str]:
     index = json.loads((_WEB_DIR / INDEX_NAME).read_text())
-    urls = [*index["pages"], *index["unreachable"]]
+    return {normalize_url(url) for url in [*index["pages"], *index["unreachable"]]}
 
-    assert [url for url in urls if not (urlsplit(url).hostname or "").endswith(".example")] == []
+
+_LIVE_WEB_TASKS = {"tools-003-fetch-explicit-url"}
+"""Tasks that name a real URL on purpose, and run only under `--web live`.
+Untagged `ci`, so the next test still keeps them out of CI."""
 
 
 @pytest.mark.parametrize("name", _DATASETS)
-def test_every_example_url_a_task_names_has_a_recording(name: str) -> None:
-    """A task that pastes a `.example` URL with no recording would fetch
-    nothing, and a model that cannot read the page fails for a reason that
-    looks like a regression."""
-    web = RecordedWeb.load(_WEB_DIR)
-    index = json.loads((_WEB_DIR / INDEX_NAME).read_text())
-    known = {normalize_url(url) for url in index["unreachable"]}
+def test_every_url_a_task_names_is_recorded(name: str) -> None:
+    """A task that pastes a URL with no recording would fetch nothing, and a
+    model that cannot read the page fails for a reason that looks like a
+    regression. Every URL is a recorded page or listed as unreachable."""
+    recorded = _recorded_urls()
     missing = [
         (case.id, url)
         for case in _load(name)
+        if case.id not in _LIVE_WEB_TASKS
         for url in _URL.findall(case.input)
-        if (urlsplit(url).hostname or "").endswith(".example")
-        and not web.page(url)
-        and normalize_url(url) not in known
+        if normalize_url(url) not in recorded
     ]
     assert not missing
 
 
 @pytest.mark.parametrize("name", _DATASETS)
 def test_web_tasks_in_ci_do_not_need_the_live_web(name: str) -> None:
-    """`ci` rule 1: recorded pages make a B2 task offline, but a task that
-    names a real host would still reach for the internet under `--web live`
-    only. Keep every `ci` fetch task on a recorded URL, and every `ci` search
-    task on a recorded search."""
+    """`ci` rule 1: a `ci` fetch task must name only recorded URLs (page or
+    unreachable), so it never reaches for the internet. Every `ci` search
+    task must match a recorded search."""
     web = RecordedWeb.load(_WEB_DIR)
+    recorded = _recorded_urls()
     offenders = [
         case.id
         for case in _load(name)
@@ -204,15 +201,21 @@ def test_web_tasks_in_ci_do_not_need_the_live_web(name: str) -> None:
         and (
             (
                 "fetch_web_pages" in case.expect.tools
-                and any(
-                    not (urlsplit(url).hostname or "").endswith(".example")
-                    for url in _URL.findall(case.input)
-                )
+                and any(normalize_url(url) not in recorded for url in _URL.findall(case.input))
             )
             or ("search_web" in case.expect.tools and web.search(case.input) is None)
         )
     ]
     assert not offenders
+
+
+def test_a_tool_cannot_be_both_expected_and_allowed() -> None:
+    """A tool listed in `tools` and `allowed_tools` says "required" and
+    "optional" at once. Reject it at load, so the typo is not read as a
+    scoring rule."""
+    with pytest.raises(ValueError, match="both tools and allowed_tools"):
+        Expectation(tools=["search_web"], allowed_tools=["search_web", "fetch_web_pages"])
+    assert Expectation(tools=["search_web"], allowed_tools=["fetch_web_pages"])
 
 
 def test_fetch_task_needle_is_not_copied_from_the_input() -> None:

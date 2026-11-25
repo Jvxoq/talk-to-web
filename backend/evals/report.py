@@ -194,9 +194,8 @@ class Totals:
 class CostEstimate:
     """What the run cost, worked out from tokens and a price per million.
 
-    An estimate, not a bill: it prices every token at the two rates given, and
-    it counts only tokens the provider reported. Judge tokens are priced at the
-    same rates, though the judge answers through the cheaper condenser model.
+    An estimate, not a bill: it counts only tokens the provider reported. The
+    agent's tokens and the judge's are priced at their own model's rates.
     """
 
     tokens_in: int
@@ -206,6 +205,8 @@ class CostEstimate:
     price_in_per_million: float
     price_out_per_million: float
     usd: float
+    judge_price_in_per_million: float = 0.0
+    judge_price_out_per_million: float = 0.0
 
 
 def estimate_cost(
@@ -216,11 +217,26 @@ def estimate_cost(
     judge_tokens_out: int,
     price_in_per_million: float,
     price_out_per_million: float,
+    judge_price_in_per_million: float | None = None,
+    judge_price_out_per_million: float | None = None,
 ) -> CostEstimate:
-    """USD cost of the trial tokens plus the judge tokens."""
+    """USD cost of the trial tokens plus the judge tokens.
+
+    With no judge prices given, judge tokens are priced at the agent's rates.
+    """
+    judge_in = (
+        price_in_per_million if judge_price_in_per_million is None else judge_price_in_per_million
+    )
+    judge_out = (
+        price_out_per_million
+        if judge_price_out_per_million is None
+        else judge_price_out_per_million
+    )
     usd = (
-        (tokens_in + judge_tokens_in) * price_in_per_million
-        + (tokens_out + judge_tokens_out) * price_out_per_million
+        tokens_in * price_in_per_million
+        + tokens_out * price_out_per_million
+        + judge_tokens_in * judge_in
+        + judge_tokens_out * judge_out
     ) / 1_000_000
     return CostEstimate(
         tokens_in=tokens_in,
@@ -230,6 +246,8 @@ def estimate_cost(
         price_in_per_million=price_in_per_million,
         price_out_per_million=price_out_per_million,
         usd=usd,
+        judge_price_in_per_million=judge_in,
+        judge_price_out_per_million=judge_out,
     )
 
 
@@ -265,6 +283,9 @@ class RunReport:
     web_mode: str = ""
     trials: tuple[TrialRecord, ...] = ()
     tasks: tuple[TaskRecord, ...] = ()
+    # The judge's model, so two runs with different judges are never compared
+    # as if their verdicts meant the same thing.
+    judge_model: str = ""
     # The same trial counts, added up per behavior (b1 to b6).
     behaviors: tuple[BehaviorRecord, ...] = ()
     totals: Totals = Totals(passed=0, failed=0, errored=0)

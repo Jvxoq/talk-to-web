@@ -28,6 +28,12 @@ Recordings live in `evals/fixtures/web/`. `index.json` lists them:
 
 All content is invented. A task about a real page would let the model answer
 from memory, and would make the recording go stale.
+
+Hosts are invented names under ordinary domains, not `.example`. The agent
+recognises `.example` as reserved and tells the user so, a claim the source
+never made. The names were checked not to resolve on 2026-11-26. Under
+`--web live` a made-up host could be registered later, so trust live-mode
+fetch tasks less.
 """
 
 import json

@@ -29,8 +29,8 @@ from evals.recorded_web import (
 )
 
 CONTEXT = ToolContext(owner_id=1)
-PAGE_URL = "https://quillfeather-observatory.example/visitor-guide"
-GONE_URL = "https://harbourlight-festival.example/tickets"
+PAGE_URL = "https://quillfeather-observatory.org/visitor-guide"
+GONE_URL = "https://harbourlight-festival.com/tickets"
 
 
 @pytest.fixture
@@ -109,13 +109,10 @@ class TestRecordedSearch:
         assert outcome.ok
         assert outcome.content.startswith("Answer: Tessaly Regional Council voted")
         assert "Title: Council backs Brindlewick tram extension to Verrin Quay" in outcome.content
-        assert (
-            "URL: https://tessaly-courier.example/news/brindlewick-tram-extension"
-            in outcome.content
-        )
+        assert "URL: https://tessaly-courier.com/news/brindlewick-tram-extension" in outcome.content
         assert [source.url for source in outcome.sources] == [
-            "https://tessaly-courier.example/news/brindlewick-tram-extension",
-            "https://tessaly-courier.example/news/brindlewick-riders-react",
+            "https://tessaly-courier.com/news/brindlewick-tram-extension",
+            "https://tessaly-courier.com/news/brindlewick-riders-react",
         ]
 
     async def test_matching_ignores_case_and_word_order(self, search_tool: SearchWeb) -> None:

@@ -291,6 +291,7 @@ class _ScriptedHarness:
 
 
 class _CountingJudge:
+    model_name = "fake-judge"
     prompt_tokens = 0
     completion_tokens = 0
 
@@ -318,9 +319,7 @@ def drive(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Any]:
     ) -> tuple[int, dict[str, Any], _ScriptedHarness]:
         harness = _ScriptedHarness(script)
         cases = [
-            _case(
-                id=f"t{n}", suite=suite, tags=list(tags), expect=Expectation(must_contain=["ok"])
-            )
+            _case(id=f"t{n}", suite=suite, tags=list(tags), expect=Expectation(must_contain=["ok"]))
             for n in range(1, tasks + 1)
         ]
 
@@ -513,7 +512,18 @@ def test_json_keeps_error_text(drive: Any) -> None:
 
 def test_json_has_run_versions_and_cost(drive: Any) -> None:
     _, results, _ = drive(
-        ["--mode", "release", "--price-in", "1", "--price-out", "2"],
+        [
+            "--mode",
+            "release",
+            "--price-in",
+            "1",
+            "--price-out",
+            "2",
+            "--judge-price-in",
+            "3",
+            "--judge-price-out",
+            "4",
+        ],
         {},
         suite="rag",
         tasks=1,
@@ -526,7 +536,10 @@ def test_json_has_run_versions_and_cost(drive: Any) -> None:
     # 10 trials x (1000 in, 100 out) plus one b6 judge call each, 10 x (200 in, 20 out).
     assert results["cost"]["tokens_in"] == 10_000
     assert results["cost"]["judge_tokens_in"] == 2_000
-    assert results["cost"]["usd"] == pytest.approx((12_000 * 1 + 1_200 * 2) / 1_000_000)
+    assert results["judge_model"] == "fake-judge"
+    # Each model's tokens at its own rates.
+    expected = 10_000 * 1 + 1_000 * 2 + 2_000 * 3 + 200 * 4
+    assert results["cost"]["usd"] == pytest.approx(expected / 1_000_000)
 
 
 def test_markdown_has_task_line(drive: Any, capsys: pytest.CaptureFixture[str]) -> None:

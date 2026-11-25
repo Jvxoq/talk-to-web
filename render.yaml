@@ -137,6 +137,8 @@ services:
         value: none
 
       # --- Provider keys ---------------------------------------------------
+      # An OpenCode Console key: the chat model runs through that gateway by
+      # default (see `llm_base_url` in app/settings.py).
       - key: LLM_API_KEY
         sync: false
       - key: TAVILY_API_KEY

@@ -100,14 +100,20 @@ class Settings(BaseSettings):
 
     # --- LLM (provider-agnostic) ---
     # Resolved through `init_chat_model`, so switching provider is an env change.
-    llm_provider: str = "together"
-    # Every entry must support tool calling reliably. Run `evals --suite tools`
-    # against any model added here.
+    # "openai" names the OpenAI wire format, not the company: requests go to
+    # `llm_base_url`, the OpenCode Console gateway, which serves many vendors'
+    # models behind one OpenAI-compatible endpoint.
+    llm_provider: str = "openai"
+    # `None` sends requests to the provider's own endpoint.
+    llm_base_url: str | None = "https://opencode.ai/inference/openai/v1"
+    # Every entry must support tool calling reliably. Run the evals against any
+    # model added here. The first entry is what a new chat opens with.
     #
-    # The default measured 0.36 exact_match_rate on that suite (n=11): it calls
-    # `search_web` instead of `retrieve_documents` on document-scoped questions.
-    # A known, accepted gap. The first entry is what a new chat opens with.
-    llm_models: list[str] = Field(default_factory=lambda: ["deepseek-ai/DeepSeek-V4-Flash-0731"])
+    # The previous default, DeepSeek V4 Flash 0731 on Together, was retired by
+    # the provider. It measured 0.36 exact_match_rate on the tools suite
+    # (n=11), calling `search_web` instead of `retrieve_documents` on
+    # document-scoped questions. Its successor below is not measured yet.
+    llm_models: list[str] = Field(default_factory=lambda: ["deepseek-v4.1-flash"])
     llm_api_key: SecretStr
     llm_max_tokens: int = 2048
     llm_system_prompt: str = (
@@ -145,7 +151,7 @@ class Settings(BaseSettings):
     # Its own model, because a provider's rate limit is usually per model.
     # Condenser calls are allowed to fail silently, so a retired model shows up
     # as threads losing their past, and `Condenser failed on ...` in the log.
-    agent_condenser_model: str = "openai/gpt-oss-20b"
+    agent_condenser_model: str = "glm-5.3-flash"
     # A safety ceiling on the condenser's own input, not a tuning knob.
     agent_condenser_max_chars: int = 40_000
     # Summarize the thread past this many tokens.
@@ -157,8 +163,8 @@ class Settings(BaseSettings):
     agent_tool_output_token_budget: int = 3_000
     # The provider's own per-request ceiling, checked on every lap.
     # `llm_max_tokens` is subtracted here; the tool schemas are subtracted by
-    # `build_agent_graph`, which measures them once at startup. Provisional for
-    # Together, not yet confirmed against a real 400.
+    # `build_agent_graph`, which measures them once at startup. Provisional, and
+    # well under the model's own window. Not yet confirmed against a real 400.
     agent_max_request_tokens: int = 32_000 - 2_048
     agent_summary_prompt: str = (
         "Summarize the conversation so far into a concise summary that preserves "

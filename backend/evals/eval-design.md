@@ -188,18 +188,20 @@ and Anthropic [1]. The real-chat loop is out of scope until the agent is live.
    - **Target: the whole regression suite passes 97% of its trials, and no
      task is broken.** Not 97% per task. Proving 97% for one task takes about
      100 trials (the 3/n rule above). For 28 tasks that is 2,800 trials, about
-     $5.30, the whole budget. A number for the whole suite needs 280.
-   - **CI gate, before merge, started by hand.** Each task gets 1 trial, graded
+     $1.80 of agent tokens on every release, even at today's discounted
+     price. A number for the whole suite needs 280.
+   - **CI gate, on every PR that touches the agent.** Each task gets 1 trial, graded
      by code graders only. Hamel favors assertions over judges in CI [15]. A
      task that fails gets 2 more trials. Block only if one of those fails too.
-     About $0.05 per run. A healthy agent, missing 3 answers in 100, gets
+     About $0.02 per run. A healthy agent, missing 3 answers in 100, gets
      blocked by bad luck about 1 run in 20. A task that breaks fully is always
      caught. A task that fails half its trials is caught about 4 runs in 10.
      Run the same gate locally before you start CI.
    - **Release check, before the agent goes out, and after any model or
      prompt change.** Each task gets 10 trials, 280 in all, with judges on.
      Ship when the suite fails 8 or fewer of 280 (that is 97%) and no task
-     fails 3 or more of its 10. About $0.53. An agent that misses 2 answers in
+     fails 3 or more of its 10. About $0.35: $0.18 of agent tokens and about
+     as much again for the judges. An agent that misses 2 answers in
      100 passes about 9 times in 10. One that misses 5 in 100 almost never
      passes. An agent right at 97% passes about half the time, because it sits
      on the line. Never rerun the check until it passes.
@@ -207,11 +209,21 @@ and Anthropic [1]. The real-chat loop is out of scope until the agent is live.
      `evals` skill).
    - Errored trials (rate limit, provider outage) count for nothing. They are
      neither passes nor failures. Rerun them.
-   - **Budget:** 10 CI runs plus one release check is about $1. Costs use the
-     measured 4,200 input and 300 output tokens per trial, at Together's
-     DeepSeek V4.1 Flash price ($0.30 / $1.20 per million) [16]. Together no
-     longer lists the configured V4 Flash 0731 for pay-per-use, so recheck the
-     price when the model changes.
+   - **Budget:** 10 CI runs plus one release check is about $0.55. Costs use
+     the measured 4,200 input and 300 output tokens per trial (measured on the
+     old model, so recheck after the first run).
+   - **Models (changed 2026-11-26).** Together retired the old agent model,
+     DeepSeek V4 Flash 0731, and the first smoke trial failed on it. The app
+     and the evals now call OpenCode Console, an OpenAI-compatible gateway
+     [16]. The agent runs on `deepseek-v4.1-flash` at $0.12 / $0.48 per
+     million, 60% off its $0.30 / $1.20 list price, with no end date stated.
+     Recheck the price if the discount ends. The judge runs on
+     `glm-5.3-flash` at $0.15 / $0.50 (`EVAL_JUDGE_MODEL`). It is a different
+     model family from the agent, so the judge is not grading its own kind
+     of answer. The condenser moved to `glm-5.3-flash` too, because the old
+     one, gpt-oss-20b, is not on the gateway. The judges' agreement rates
+     belong to this judge model: a new judge model needs a new check against
+     the same labels.
 7. **Per-task counts in the results file.** Today `report.py` only lists tasks
    that failed every trial (`regressions`) or some trials (`flaky`), as text.
    Add one record per task with its passed, failed and errored trial counts,
@@ -222,9 +234,15 @@ and Anthropic [1]. The real-chat loop is out of scope until the agent is live.
    calls, a failed task gets 2 more trials, exit 1 if any of those fail.
    `release`: 10 trials per task, judges on, exit 1 unless the suite fails 8
    or fewer and no task fails 3 or more. Both print one line per task.
-9. **Manual-only CI.** Change `.github/workflows/evals.yml`: remove the
-   `pull_request` trigger, keep `workflow_dispatch`, and add a `mode` input
-   (`gate` or `release`, default `gate`). Keep the results file upload.
+9. **CI gate on agent PRs, release by hand.** Changed 2026-11-26.
+   `.github/workflows/evals.yml` starts on every PR to main. A `changes` job
+   checks whether the PR touches the agent: chat code, the model, web, vector
+   and embedding adapters, `composition.py`, `settings.py`, `evals/`, the lock
+   file, or the workflow. Markdown never counts. Only then does the `evals` job
+   run `gate` mode. Otherwise it is skipped, and GitHub counts a job skipped by
+   a conditional as a success, so `evals` can be a required check. A `paths:`
+   filter would leave a required check pending forever [22]. `release` stays a
+   manual start with the `mode` input. Keep the results file upload.
 10. **Hand labels live in LangSmith, for development only.** Decided
     2026-11-25. LangGraph already traces to LangSmith through LangChain, with
     no tracing code in `app/`. Labeling uses the free Developer plan: 1 seat,
@@ -276,12 +294,13 @@ suite, kept local in `security-evals/` (gitignored).
 13. Yao et al., "tau-bench", 2024. https://arxiv.org/abs/2406.12045
 14. Zheng et al., "Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena", 2023. https://arxiv.org/abs/2306.05685
 15. Hamel Husain, "LLM Evals FAQ". https://hamel.dev/blog/posts/evals-faq/
-16. Together AI pricing, read 2026-11-24. https://www.together.ai/pricing
+16. OpenCode Console models and prices, read 2026-11-26. https://opencode.ai/zen and the model list at https://opencode.ai/inference/openai/v1/models
 17. GitHub, "How to evaluate LLMs before production", 2026. https://github.blog/2026-08-25-how-to-evaluate-llms-before-production/
 18. LangSmith pricing, read 2026-11-25. https://www.langchain.com/pricing
 19. LangSmith, "Annotation queues", read 2026-11-25. https://docs.langchain.com/langsmith/annotation-queues
 20. LangSmith, "Annotation queues with the SDK", read 2026-11-25. https://docs.langchain.com/langsmith/annotation-queues-sdk
 21. LangSmith, "Trace with LangGraph", read 2026-11-25. https://docs.langchain.com/langsmith/trace-with-langgraph
+22. GitHub Docs, "Troubleshooting required status checks", section "Handling skipped but required checks", read 2026-11-26. https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/collaborating-on-repositories-with-code-quality-features/troubleshooting-required-status-checks
 
 Not used: two OpenAI pages (hallucination scoring, SimpleQA) blocked the fetch.
 Nothing here leans on them.

@@ -3,9 +3,11 @@
 Lives here, in `evals/`, rather than in `app/`, so production carries no code
 it never calls. Its posture is copied from
 `app.application.chat.agent.condenser.Condenser` on purpose: never raises,
-returns `None` on any failure, calls the model with `tools=()` so a judge can
-never become a second agent, and answers through the cheap
-`agent_condenser_model` rather than the model under test.
+returns `None` on any failure, and calls the model with `tools=()` so a judge
+can never become a second agent. It answers through its own model,
+`EVAL_JUDGE_MODEL` (GLM 5.3 Flash by default), from a different family than
+the DeepSeek model under test, so the judge is not grading its own kind of
+answer.
 
 Yes/no, not a 0.0 to 1.0 score (eval-design.md, item 3). A yes/no verdict can
 be checked against a person's yes/no label for the same trial, which is how
@@ -25,9 +27,20 @@ from dataclasses import dataclass
 from typing import Literal, get_args
 
 from loguru import logger
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.application.chat.models import ChatMessage
 from app.application.chat.ports import ChatModel, Tracer
+
+
+class JudgeSettings(BaseSettings):
+    """The judge's model. Read from `.env`, by the evals only, never the app."""
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    # Served by the same OpenCode Console gateway as the agent's model.
+    eval_judge_model: str = "glm-5.3-flash"
+
 
 JudgeName = Literal["grounded", "eligible", "abstained"]
 JUDGES: tuple[JudgeName, ...] = get_args(JudgeName)
@@ -107,6 +120,10 @@ class Judge:
         # invent tokens.
         self._prompt_tokens = 0
         self._completion_tokens = 0
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
 
     @property
     def prompt_tokens(self) -> int:
