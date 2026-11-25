@@ -170,6 +170,13 @@ and Anthropic [1]. The real-chat loop is out of scope until the agent is live.
    every commit.
 3. **Judge rewrite.** Split into three binary judges: grounded, eligible,
    abstained. Each one gets a labeled set and its two rates in the repo.
+   These three cover every judge metric in the tables above:
+   - **grounded**: B1 faithfulness, B2 goal accuracy (the source is the
+     fetched page or search result), B4 no invented file fact.
+   - **eligible**: B1 eligibility, B6 answer at the cap.
+   - **abstained**: B4 abstention recall and over-abstention, B2 failed tool
+     reported.
+   Code graders need no labels. Only these three judges do.
 4. **Recorded web fixtures for B2.** A fake `fetch_web_pages` and `search_web`
    return saved pages. B2 tasks then run in CI with no live internet. Live web
    tasks stay untagged and run locally only, with a real `TAVILY_API_KEY`.
@@ -218,6 +225,30 @@ and Anthropic [1]. The real-chat loop is out of scope until the agent is live.
 9. **Manual-only CI.** Change `.github/workflows/evals.yml`: remove the
    `pull_request` trigger, keep `workflow_dispatch`, and add a `mode` input
    (`gate` or `release`, default `gate`). Keep the results file upload.
+10. **Hand labels live in Langfuse, for development only.** Decided
+    2026-11-25. The app already traces to Langfuse Cloud, so labeling uses the
+    free Hobby plan: 50k units a month, 2 users, 1 annotation queue, 30 days
+    of data [18]. Production tracing and labeling are decided later.
+    - **One trace per trial.** Today the evaluation harness opens no span per
+      trial, and the judge's span lands in a trace of its own. Open one root
+      span per trial, run the judge inside it, and save the trace id in the
+      results file.
+    - **The judge writes scores.** Each verdict (grounded, eligible,
+      abstained) goes onto the trial's trace as a boolean score, through the
+      SDK's `create_score` [19]. The `Tracer` port gets a score method.
+      `NullTracer` ignores it.
+    - **The labeler can see the source.** Tool spans record arguments but not
+      the result text. Grounded cannot be labeled without the file chunk or
+      page the agent read, so record that text on the tool span, capped.
+    - **Labeling.** Create one human score config per judge and one annotation
+      queue. Add about 100 trial traces with a mix of passes and failures.
+      Label each one without looking at the judge's score first. Finish
+      within 30 days of the run, before the data leaves the plan's window.
+    - **Agreement.** Langfuse Score Analytics compares a human score with an
+      automated one on the same traces, with a confusion matrix and Cohen's
+      kappa [20]. It is in beta, and its plan is not stated. If the Hobby plan
+      lacks it, a small script pulls both scores through the API and reports
+      the true positive and true negative rates.
 
 Moved out: `injection.jsonl`, `benign.jsonl`, `redteam.jsonl`, the planted
 attack memo, and the guardrail golden-file test go to the separate security
@@ -242,6 +273,9 @@ suite, kept local in `security-evals/` (gitignored).
 15. Hamel Husain, "LLM Evals FAQ". https://hamel.dev/blog/posts/evals-faq/
 16. Together AI pricing, read 2026-11-24. https://www.together.ai/pricing
 17. GitHub, "How to evaluate LLMs before production", 2026. https://github.blog/2026-08-25-how-to-evaluate-llms-before-production/
+18. Langfuse pricing, read 2026-11-25. https://langfuse.com/pricing
+19. Langfuse, "Custom scores", read 2026-11-25. https://langfuse.com/docs/evaluation/evaluation-methods/custom-scores
+20. Langfuse, "Score Analytics", read 2026-11-25. https://langfuse.com/docs/evaluation/evaluation-methods/score-analytics
 
 Not used: two OpenAI pages (hallucination scoring, SimpleQA) blocked the fetch.
 Nothing here leans on them.
