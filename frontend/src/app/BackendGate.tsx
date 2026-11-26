@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { motion } from 'motion/react'
-import { buttonClass, PulseBlocks } from '../components/ui'
-import { easeStandard, springs, timing } from '../lib/motion'
+import { CircleAlert } from 'lucide-react'
+import { buttonClass, Mark, PulseBlocks, WordReveal } from '../components/ui'
+import { easings, timing } from '../lib/motion'
 import { waitForBackend } from '../lib/wake'
 
 /**
@@ -31,8 +32,9 @@ export function BackendGate({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const controller = new AbortController()
+    // `revealed` is not reset here: on a retry the screen is already showing,
+    // and hiding it for the reveal delay would blank the page.
     setStatus('checking')
-    setRevealed(false)
     setElapsed(0)
 
     const reveal = setTimeout(() => setRevealed(true), REVEAL_DELAY_MS)
@@ -66,41 +68,70 @@ export function BackendGate({ children }: { children: ReactNode }) {
       className="backend-gate"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      transition={{ duration: timing.standard, ease: easeStandard }}
+      transition={{ duration: timing.fast, ease: easings.outQuart }}
       // `role="alert"` is already assertive, and a stated `aria-live` would
       // demote the failure to polite.
       role={failed ? 'alert' : undefined}
       aria-live={failed ? undefined : 'polite'}
       aria-busy={!failed}
     >
-      {/* Hidden once the wait has failed: nothing is loading any more. */}
-      {!failed && <PulseBlocks />}
+      <div className="backend-gate__inner">
+        <Mark className="backend-gate__mark" />
+        <p className="eyebrow">Talk to web</p>
 
-      <h2 className="backend-gate__title">
-        {failed ? 'The backend did not answer' : 'Waking the backend'}
-      </h2>
+        {/* The word reveal plays once, on arrival. The failure, and every
+            retry after it (`run > 0`), swaps the text in place rather than
+            replaying the entrance on a screen that is already showing. */}
+        {failed || run > 0 ? (
+          <h1 className="backend-gate__title">
+            {failed ? 'The backend did not answer' : 'Waking the backend'}
+          </h1>
+        ) : (
+          <WordReveal as="h1" className="backend-gate__title" text="Waking the backend" />
+        )}
 
-      <p className="backend-gate__body">
-        {failed
-          ? 'It may still be starting, or it may be down. Try again.'
-          : 'This runs on a free plan and goes to sleep. It takes about 30-60 seconds.'}
-      </p>
+        <p className="backend-gate__body">
+          {failed
+            ? 'It may still be starting, or it may be down. Try again in a moment.'
+            : 'The server runs on a free plan and sleeps when nobody uses it. Your visit is waking it up.'}
+        </p>
 
-      {failed ? (
-        <motion.button
-          type="button"
-          className={buttonClass('primary')}
-          onClick={retry}
-          whileHover={{ x: -2, y: -2 }}
-          whileTap={{ x: 0, y: 0 }}
-          transition={springs.press}
-        >
-          Try again
-        </motion.button>
-      ) : (
-        // A counter, not a bar: the wait has no progress to report.
-        <p className="backend-gate__elapsed">{elapsed}s</p>
-      )}
+        {/* A dotted-leader ledger, not a progress bar: the wait has no
+            progress to report, only how long it has run. `aria-live="off"`
+            keeps the per-second counter from being read out every tick. */}
+        <dl className="backend-gate__ledger" aria-live="off">
+          <div className="backend-gate__row">
+            <dt>Status</dt>
+            <dd className={failed ? 'backend-gate__status is-failed' : 'backend-gate__status'}>
+              {failed ? (
+                <>
+                  <CircleAlert size={14} strokeWidth={1.5} aria-hidden="true" />
+                  No answer
+                </>
+              ) : (
+                <>
+                  <PulseBlocks size="sm" />
+                  Waking
+                </>
+              )}
+            </dd>
+          </div>
+          <div className="backend-gate__row">
+            <dt>Elapsed</dt>
+            <dd className="backend-gate__num">{elapsed}s</dd>
+          </div>
+          <div className="backend-gate__row">
+            <dt>Usually takes</dt>
+            <dd className="backend-gate__num">30–60s</dd>
+          </div>
+        </dl>
+
+        {failed && (
+          <button type="button" className={buttonClass('primary')} onClick={retry}>
+            Try again
+          </button>
+        )}
+      </div>
     </motion.div>
   )
 }

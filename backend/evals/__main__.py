@@ -299,7 +299,7 @@ def _errors(runs: list[CaseRun]) -> list[str]:
             errors.append(f"{_label(run)}: raised after {run.attempts} attempt(s): {run.error}")
         elif run.failed is not None:
             errors.append(
-                f"{_label(run)}: failed after {run.attempts} attempt(s): {run.failed.detail}"
+                f"{_label(run)}: failed after {run.attempts} attempt(s): {run.failed.code}"
             )
     return errors
 

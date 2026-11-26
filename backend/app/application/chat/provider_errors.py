@@ -1,10 +1,21 @@
-"""Recognising a provider's auth failure from its message text.
+"""Provider failures the adapter and `GenerateReply` must agree on.
 
-The adapter and `GenerateReply` both need this answer and must not disagree, so
-it lives in neither. There is no exception class to catch: `init_chat_model`
-resolves whichever provider the deployment named, and each SDK raises its own
-type. The markers are what every OpenAI-compatible API sends for this case.
+They live in neither, because both need the same answer. An auth failure is
+recognised from its message text: there is no exception class to catch, since
+`init_chat_model` resolves whichever provider the deployment named and each SDK
+raises its own type. The markers are what every OpenAI-compatible API sends for
+this case. A timeout is recognised by type in the adapter, which raises
+`ProviderTimeoutError`.
 """
+
+
+class ProviderTimeoutError(Exception):
+    """The model provider did not answer within the per-call timeout.
+
+    A type, so the use case never guesses from text: a provider's 400 body that
+    quotes a `timeout` parameter is not a timeout.
+    """
+
 
 _AUTH_MARKERS = (
     "invalid_api_key",

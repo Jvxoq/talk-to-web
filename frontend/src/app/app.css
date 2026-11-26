@@ -4,36 +4,131 @@
 .backend-gate {
   display: flex;
   flex: 1;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--space-2);
-  padding: var(--space-4) var(--space-2);
+  min-height: 100svh;
+  padding: var(--sp-64) var(--page-margin);
+}
+
+/* One centred editorial stack: mark, eyebrow, display title, one line of
+   reasons, then the ledger. Every block shares the same narrow measure. */
+.backend-gate__inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-16);
+  width: 100%;
+  max-width: 480px;
   text-align: center;
+}
+
+.backend-gate__mark {
+  width: 24px;
+  height: 24px;
+  color: var(--ink);
 }
 
 .backend-gate__title {
   margin: 0;
-  font-family: var(--font-display);
-  font-size: 1rem;
-  letter-spacing: var(--tracking-ui);
-  text-transform: uppercase;
+  font-family: var(--font-serif);
+  font-size: var(--fs-display-2);
+  font-optical-sizing: auto;
+  line-height: 1.08;
+  font-weight: 400;
+  letter-spacing: -0.015em;
+  text-wrap: balance;
 }
 
 .backend-gate__body {
-  max-width: 42ch;
+  max-width: 40ch;
   margin: 0;
-  color: var(--color-muted);
-  font-size: 0.875rem;
-  line-height: 1.6;
+  color: var(--muted);
+  font-family: var(--font-serif);
+  font-size: var(--fs-body);
+  line-height: 1.53;
+  text-wrap: pretty;
+}
+
+/* The dotted-leader ledger: label left, value right, a dotted rule between. */
+.backend-gate__ledger {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  width: 100%;
+  max-width: 280px;
+  margin: var(--sp-16) 0 var(--sp-8);
+  font-family: var(--font-sans);
+  font-size: var(--fs-caption);
+  line-height: 1.4;
+}
+
+.backend-gate__row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.backend-gate__row dt {
+  display: flex;
+  flex: 1;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--muted);
+}
+
+/* The leader is drawn by the label itself, so the list holds only dt/dd. */
+.backend-gate__row dt::after {
+  content: '';
+  flex: 1;
+  border-bottom: var(--bw-sm) dotted currentColor;
+  opacity: 0.5;
+  translate: 0 -3px;
+}
+
+.backend-gate__row dd {
+  margin: 0;
+  color: var(--ink);
+}
+
+.backend-gate__status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-8);
+  align-self: center;
+}
+
+.backend-gate__status.is-failed {
+  color: var(--error);
 }
 
 /* Tabular figures so the number does not shift the layout as it climbs. */
-.backend-gate__elapsed {
-  margin: 0;
+.backend-gate__num {
   font-family: var(--font-mono);
-  font-size: 0.875rem;
   font-variant-numeric: tabular-nums;
-  letter-spacing: var(--tracking-tab);
-  color: var(--color-muted);
+}
+
+/* --- Corner actions --------------------------------------------------------
+   Theme and sign out, pinned top-right on every screen. 16px in from the
+   corner centres the 32px buttons on the 64px header line. z-index 20 is the
+   nav level of the system's z-index scale. */
+.corner {
+  position: fixed;
+  top: var(--sp-16);
+  right: var(--sp-16);
+  z-index: 20;
+  display: flex;
+  gap: var(--sp-8);
+}
+
+/* The portal target. `contents` makes sign out a direct flex child, so the
+   gap applies to it like any other button. */
+.corner__slot {
+  display: contents;
+}
+
+/* On a phone the sidebar's 48px header runs along the top; centre on it. */
+@media (max-width: 720px) {
+  .corner {
+    top: var(--sp-8);
+  }
 }

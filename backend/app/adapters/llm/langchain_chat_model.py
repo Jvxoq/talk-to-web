@@ -10,6 +10,7 @@ import uuid
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
+import httpx
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import (
@@ -27,11 +28,25 @@ from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait
 from tenacity.wait import wait_base
 
 from app.application.chat.models import ChatMessage, ModelChunk, TokenUsage, ToolCall
-from app.application.chat.provider_errors import is_auth_failure
+from app.application.chat.provider_errors import ProviderTimeoutError, is_auth_failure
 from app.application.chat.tools.base import ToolSpec
 
 _DEFAULT_RETRY_WAIT = wait_exponential_jitter(initial=1, max=8)
 """Module-level singleton so it isn't rebuilt on every call to the default."""
+
+
+def _timed_out(error: BaseException) -> bool:
+    """True when the call ran out of time, wherever the SDK wrapped it.
+
+    OpenAI-compatible SDKs send through httpx and keep its timeout as the cause
+    of their own error class, so the chain is walked rather than the top type.
+    """
+    current: BaseException | None = error
+    while current is not None:
+        if isinstance(current, httpx.TimeoutException | TimeoutError):
+            return True
+        current = current.__cause__
+    return False
 
 
 def _to_langchain_message(message: ChatMessage) -> BaseMessage:
@@ -81,6 +96,7 @@ class LangChainChatModel:
         models: Sequence[str],
         api_key: str,
         max_tokens: int,
+        request_timeout_seconds: float,
         retry_attempts: int = 3,
         retry_wait: wait_base = _DEFAULT_RETRY_WAIT,
     ) -> None:
@@ -93,6 +109,13 @@ class LangChainChatModel:
                 f"{provider}:{name}",
                 api_key=api_key,
                 max_tokens=max_tokens,
+                # Required, not defaulted: left out, the OpenAI client waits
+                # 600 s, which is how a stalled provider held a slot for ten
+                # minutes.
+                timeout=request_timeout_seconds,
+                # `stream` below owns retries. The client's own two would run
+                # inside each of ours, so one call could wait nine timeouts.
+                max_retries=0,
             )
             if not isinstance(built, BaseChatModel):
                 # `init_chat_model` returns a late-bound configurable wrapper when
@@ -163,6 +186,8 @@ class LangChainChatModel:
                             yield ModelChunk.model_construct(text=text)
         except Exception as error:
             logger.warning(f"Chat stream failed for model {model}: {error}")
+            if _timed_out(error):
+                raise ProviderTimeoutError(f"Model {model} did not answer in time") from error
             raise RuntimeError(f"Completion provider failed: {error}") from error
 
         requested = self._tool_calls(accumulated)

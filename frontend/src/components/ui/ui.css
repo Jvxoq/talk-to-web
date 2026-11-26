@@ -5,94 +5,127 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: var(--space-1);
-  font-family: var(--font-body);
-  font-size: 0.8125rem;
-  font-weight: 700;
-  line-height: 1;
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-ui);
-  border-radius: var(--radius-md);
+  gap: var(--sp-8);
+  font-family: var(--font-sans);
+  font-size: var(--fs-button);
+  font-weight: 400;
+  line-height: 1.54;
+  letter-spacing: 0.01em;
+  /* Pills for actions. */
+  border-radius: var(--r-full);
+  padding: 8px 16px;
+  min-height: 32px;
   cursor: pointer;
   flex-shrink: 0;
-  /* Transform is owned by Motion (whileHover / whileTap); animating it here
-     too would be overridden by Motion's inline style. */
+  border: none;
+  /* Hover is colour/background only — no lift, no shadow. */
   transition:
-    box-shadow var(--duration-base) var(--easing),
-    background-color var(--duration-fast) var(--easing),
-    color var(--duration-fast) var(--easing),
-    border-color var(--duration-fast) var(--easing);
+    background-color var(--dur-base) ease-in-out,
+    color var(--dur-base) ease-in-out,
+    border-color var(--dur-base) ease-in-out,
+    transform 100ms var(--ease-out-quart);
+}
+
+.btn:active:not(:disabled) {
+  transform: scale(0.98);
 }
 
 .btn:disabled {
   opacity: 0.4;
-  filter: grayscale(0.4);
-  cursor: not-allowed;
+  pointer-events: none;
 }
 
 .btn--primary {
-  background: var(--color-primary);
-  color: var(--color-neutral);
-  border: var(--border);
-  padding: 12px 24px;
+  background: var(--ink);
+  color: var(--canvas);
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: var(--ink-soft);
 }
 
 .btn--secondary {
-  background: var(--color-surface);
-  color: var(--color-primary);
-  border: var(--border);
-  padding: 12px 24px;
+  background: var(--surface);
+  color: var(--ink);
+  border: var(--bw-sm) solid var(--hairline);
 }
 
-.btn--outline {
-  background: transparent;
-  color: var(--color-primary);
-  border: var(--border-width) dashed var(--color-primary);
-  padding: 12px 24px;
+.btn--secondary:hover:not(:disabled) {
+  background: var(--surface-strong);
+}
+
+.btn--on-dark {
+  background: var(--night-raised);
+  color: var(--night-ink);
+  padding-right: 12px;
+}
+
+.btn--on-dark:hover:not(:disabled) {
+  background: var(--night-hover);
 }
 
 .btn--ghost {
   background: transparent;
-  color: var(--color-primary);
+  color: var(--ink);
   border: none;
-  padding: 10px 0;
-}
-
-.btn--primary:hover:not(:disabled),
-.btn--secondary:hover:not(:disabled) {
-  box-shadow: var(--level-2);
-}
-
-.btn--primary:active:not(:disabled),
-.btn--secondary:active:not(:disabled) {
-  box-shadow: var(--level-0);
+  padding: 0;
+  font-weight: 500;
+  transition: color var(--dur-base) ease-out;
 }
 
 .btn--ghost:hover:not(:disabled) {
+  color: inherit;
   text-decoration: underline;
-  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
 }
 
-/* Selected — the filled state shared by toggles and the active tab. */
+/* Selected — the filled state shared by toggles. */
 .btn.is-selected,
 .btn.is-selected:hover:not(:disabled) {
-  background: var(--color-primary);
-  color: var(--color-neutral);
-  border-color: var(--color-primary);
+  background: var(--ink);
+  color: var(--canvas);
 }
 
-/* Icon-only. Square, never scaled below the 44px touch floor — pad, don't
-   shrink. Pairs with a required aria-label on IconButton. */
+/* Icon-only. A 32px visual inside an expanded 44px hit area — padding the
+   element itself would bloat header and control rows. Pairs with a required
+   aria-label on IconButton. */
 .btn--icon {
-  width: 44px;
-  height: 44px;
-  padding: 0;
+  position: relative;
+  width: 32px;
+  height: 32px;
+  padding: 8px;
+  border-radius: var(--r-sm);
+}
+
+.btn--icon::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
 }
 
 .btn--icon svg {
-  width: 20px;
-  height: 20px;
+  width: 16px;
+  height: 16px;
   flex-shrink: 0;
+}
+
+/* A filled action that happens to be icon-only — the send arrow — stays a
+   full-radius pill rather than a small square. */
+.btn--icon.btn--primary {
+  border-radius: var(--r-full);
+}
+
+/* Ghost + icon (row-level quiet actions) hover on the fill, not a line. */
+.btn--ghost.btn--icon {
+  padding: 8px;
+  transition: background-color var(--dur-base) ease-in-out;
+}
+
+.btn--ghost.btn--icon:hover:not(:disabled) {
+  background: var(--surface-strong);
+  color: var(--ink);
+  text-decoration: none;
 }
 
 /* ---------------------------------------------------------------------------
@@ -105,72 +138,79 @@
 .crash {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--sp-16);
   align-items: flex-start;
   max-width: 52ch;
-  margin: var(--space-10) auto;
-  padding: var(--space-3);
-  border: var(--border-width) solid var(--color-danger);
-  box-shadow: var(--level-error);
-  background: var(--color-surface);
-  color: var(--color-primary);
+  margin: var(--sp-96) auto;
+  padding: var(--sp-24);
+  background: var(--surface);
+  border: var(--bw-sm) solid var(--error);
+  border-radius: var(--r-lg);
+  color: var(--ink);
 }
 
 .crash__title {
   margin: 0;
-  color: var(--color-danger);
-  font-family: var(--font-display);
-  font-size: 1.25rem;
-  letter-spacing: var(--tracking-ui);
-  text-transform: uppercase;
+  font-family: var(--font-serif);
+  font-size: var(--fs-h3);
+  line-height: 1.25;
+  font-weight: 600;
+  color: var(--error);
 }
 
 .crash__body {
   margin: 0;
-  font-size: 0.875rem;
-  line-height: 1.6;
+  font-family: var(--font-sans);
+  font-size: var(--fs-ui);
+  line-height: 1.55;
 }
 
-/* Three ink blocks cycling on a hard cut — `steps(1)` so each square switches
-   rather than fades. The stagger is a third of the cycle, which makes the fill
-   read as marching left to right. */
+/* ---------------------------------------------------------------------------
+   Wait indicator — three dots whose opacity cycles out of phase. The one
+   loading signal both waiting screens share.
+   --------------------------------------------------------------------------- */
 .pulse-blocks {
   display: flex;
-  gap: var(--space-1);
+  gap: var(--sp-4);
 }
 
 .pulse-blocks i {
-  width: 12px;
-  height: 12px;
-  border: var(--border);
-  background: var(--color-surface);
-  animation: pulse-block 900ms steps(1, end) infinite;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--r-full);
+  background: var(--ink);
+  animation: pulse-block 1.2s ease-in-out infinite;
+}
+
+.pulse-blocks--sm i {
+  width: 6px;
+  height: 6px;
 }
 
 .pulse-blocks i:nth-child(2) {
-  animation-delay: 300ms;
+  animation-delay: 200ms;
 }
 
 .pulse-blocks i:nth-child(3) {
-  animation-delay: 600ms;
+  animation-delay: 400ms;
 }
 
 @keyframes pulse-block {
   0%,
-  33% {
-    background: var(--color-primary);
+  100% {
+    opacity: 0.3;
   }
 
-  34%,
-  100% {
-    background: var(--color-surface);
+  50% {
+    opacity: 1;
   }
 }
 
-/* The global reduce rule clamps duration and stops the loop; without a resting
-   fill the indicator would vanish, so pin the blocks filled instead. */
+/* The global reduce rule stops the loop; without a resting state the dots
+   would freeze at whatever opacity they held, so pin them half-visible. */
 @media (prefers-reduced-motion: reduce) {
   .pulse-blocks i {
-    background: var(--color-primary);
+    animation: none;
+    opacity: 0.6;
   }
 }

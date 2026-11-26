@@ -17,20 +17,20 @@
   height: 100svh;
   max-width: 760px;
   margin: 0 auto;
-  background: var(--color-surface);
+  background: var(--canvas);
   overflow: hidden;
 }
 
 /* --- Sidebar ----------------------------------------------------------- */
 
 .sidebar {
-  width: 240px;
+  width: 264px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   height: 100%;
-  border-right: var(--border);
-  background: var(--color-surface);
+  border-right: var(--bw-sm) solid var(--hairline);
+  background: var(--surface);
   overflow: hidden;
 }
 
@@ -38,56 +38,74 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-1);
-  padding: 0 var(--space-2);
+  gap: var(--sp-8);
+  padding: 0 var(--sp-16);
   height: 64px;
   flex-shrink: 0;
-  border-bottom: var(--border);
+  border-bottom: var(--bw-sm) solid var(--hairline);
 }
 
+/* Uppercase + tracking — an eyebrow, the one label style that may be. */
 .sidebar-title {
-  font-size: 0.6875rem;
-  font-weight: 800;
+  font-size: var(--fs-sub-label);
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: var(--tracking-tab);
-  color: var(--color-muted);
+  letter-spacing: var(--tracking-eyebrow);
+  color: var(--muted);
 }
 
 .sidebar-list {
   list-style: none;
   margin: 0;
-  padding: 0;
+  padding: var(--sp-8);
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
+  gap: var(--sp-4);
+  /* Anchor for rows that AnimatePresence pops out of the flow on delete. */
+  position: relative;
 }
 
 .sidebar-empty {
-  padding: var(--space-2);
-  font-size: 0.75rem;
-  color: var(--color-muted);
+  padding: var(--sp-16) var(--sp-8);
+  font-size: var(--fs-caption);
+  line-height: 1.4;
+  color: var(--muted);
   text-align: center;
 }
 
-/* Why the last "new chat" did nothing. Same danger rule as the composer's
-   inline error, so both failures read the same way. */
+/* The signed-in address, under the list. A long one truncates rather than
+   widening the sidebar. */
+.sidebar-account {
+  margin: 0;
+  padding: var(--sp-12) var(--sp-16);
+  flex-shrink: 0;
+  border-top: var(--bw-sm) solid var(--hairline);
+  font-size: var(--fs-caption);
+  line-height: 1.4;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Why the last "new chat" did nothing. Same error treatment as the composer's
+   inline status, so both failures read the same way. */
 .sidebar-error {
-  margin: 0 var(--space-2) var(--space-2);
-  padding-left: var(--space-1);
-  border-left: 4px solid var(--color-danger);
-  font-size: 0.75rem;
-  color: var(--color-primary);
+  margin: var(--sp-8) var(--sp-16) 0;
+  padding: var(--sp-8);
+  border: var(--bw-sm) solid var(--error);
+  border-radius: var(--r-md);
+  font-size: var(--fs-caption);
+  line-height: 1.4;
+  color: var(--error);
 }
 
 .sidebar-item {
   display: flex;
   align-items: stretch;
-}
-
-.sidebar-item:not(:last-child) {
-  border-bottom: var(--border);
 }
 
 .sidebar-item-select {
@@ -96,19 +114,34 @@
   display: flex;
   align-items: center;
   min-height: 44px;
-  padding: 0 var(--space-1) 0 var(--space-2);
+  padding: 0 var(--sp-12);
   background: transparent;
   border: none;
-  color: var(--color-primary);
+  border-radius: var(--r-md);
+  color: var(--ink);
   cursor: pointer;
   text-align: left;
-  font-family: var(--font-body);
-  font-size: 0.8125rem;
-  transition: background-color var(--duration-fast) var(--easing);
+  font-family: var(--font-sans);
+  font-size: var(--fs-caption);
+  line-height: 1.4;
+  transition: background-color var(--dur-fast) ease-in-out;
 }
 
-.sidebar-item-select:hover {
-  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+.sidebar-item-select:hover:not(:disabled) {
+  background: var(--surface-strong);
+}
+
+/* The open conversation takes the same dark on-dark fill as the user's own
+   bubble. accent-tint inverts to pure white in Mono and glares off the dark
+   sidebar. */
+.sidebar-item.is-selected .sidebar-item-select {
+  background: var(--night-raised);
+  color: var(--night-ink);
+  font-weight: 600;
+}
+
+.sidebar-item.is-selected .sidebar-item-select:hover:not(:disabled) {
+  background: var(--night-hover);
 }
 
 .sidebar-item-title {
@@ -117,37 +150,16 @@
   white-space: nowrap;
 }
 
-.sidebar-item.is-selected .sidebar-item-select {
-  background: var(--color-primary);
-  color: var(--color-neutral);
-}
-
-.sidebar-item.is-selected .sidebar-item-select:hover {
-  background: var(--color-primary);
-}
-
-.sidebar-item-delete.btn--icon {
-  width: 44px;
-  height: 44px;
-}
-
-.sidebar-item-delete svg {
-  width: 16px;
-  height: 16px;
-}
-
-.sidebar-item-delete:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
-  color: var(--color-danger);
-}
-
-.sidebar-item.is-selected .sidebar-item-delete {
-  color: var(--color-neutral);
+.sidebar-item-delete.btn--icon,
+.sidebar-item-delete {
+  width: 32px;
+  height: 32px;
+  align-self: center;
 }
 
 .sidebar-item.is-selected .sidebar-item-delete:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--color-neutral) 20%, transparent);
-  color: var(--color-danger);
+  background: var(--surface-strong);
+  color: var(--error);
 }
 
 @media (max-width: 720px) {
@@ -167,33 +179,34 @@
     height: auto;
     max-height: 25svh;
     border-right: none;
-    border-bottom: var(--border);
+    border-bottom: var(--bw-sm) solid var(--hairline);
   }
 
   .sidebar-header {
     height: 48px;
+    /* Room for the corner buttons that float over this strip. */
+    padding-right: calc(var(--sp-16) + var(--corner-w));
+  }
+
+  /* The strip is one row of chats; the address moves to sign out's label. */
+  .sidebar-account {
+    display: none;
   }
 
   .sidebar-list {
     flex-direction: row;
     overflow-x: auto;
     overflow-y: hidden;
-    padding: 6px;
-    gap: 6px;
+    gap: var(--sp-8);
   }
 
   .sidebar-item {
     flex-shrink: 0;
-    border: var(--border);
-  }
-
-  .sidebar-item:not(:last-child) {
-    border-bottom: var(--border);
   }
 
   .sidebar-item-select {
     max-width: 40vw;
-    padding: 0 var(--space-1);
+    padding: 0 var(--sp-12);
   }
 }
 
@@ -202,39 +215,26 @@
 .header {
   display: flex;
   align-items: center;
-  gap: var(--space-1);
-  padding: 0 var(--space-2);
-  height: 64px;
+  gap: var(--sp-12);
+  padding: 0 var(--sp-16);
+  height: var(--header-h);
   flex-shrink: 0;
+  border-bottom: var(--bw-sm) solid var(--hairline);
 }
 
 .header .mark {
   width: 18px;
   height: 18px;
-  color: var(--color-primary);
+  color: var(--accent-strong);
   flex-shrink: 0;
 }
 
 .header h1 {
-  flex: 1;
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 800;
-  line-height: 1;
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-ui);
-}
-
-/* Filled ink chip — the system's badge treatment is a rectangle, not a pill. */
-.eyebrow {
-  background: var(--color-primary);
-  color: var(--color-neutral);
-  padding: 5px var(--space-1);
-  font-size: 0.5625rem;
-  font-weight: 700;
-  line-height: 1;
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-tab);
+  font-family: var(--font-serif);
+  font-size: var(--fs-h3);
+  line-height: 1.25;
+  font-weight: 600;
+  letter-spacing: normal;
 }
 
 /* --- Chat log -------------------------------------------------------------- */
@@ -252,10 +252,20 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--space-3) var(--space-2);
+  padding: var(--sp-24) var(--sp-16);
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--sp-24);
+}
+
+/* The corner buttons float over this column only in the middle band: wide
+   enough for the sidebar beside it (above 720px), too narrow to leave
+   --corner-w (88px) free right of the centred 760px column (264 + 760 + 2 * 88).
+   On a phone they sit over the sidebar strip instead. */
+@media (min-width: 721px) and (max-width: 1199px) {
+  .chat {
+    padding-top: var(--sp-64);
+  }
 }
 
 /* Overlay scrollbar: the track always reserves its width so the transcript
@@ -264,12 +274,12 @@
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
   scrollbar-gutter: stable;
-  transition: scrollbar-color var(--duration-base) var(--easing);
+  transition: scrollbar-color var(--dur-base) ease-in-out;
 }
 
 .chat:hover,
 .chat:focus-within {
-  scrollbar-color: var(--color-primary) transparent;
+  scrollbar-color: var(--hairline) transparent;
 }
 
 .chat::-webkit-scrollbar {
@@ -290,48 +300,43 @@
 
 .chat:hover::-webkit-scrollbar-thumb,
 .chat:focus-within::-webkit-scrollbar-thumb {
-  background: var(--color-primary);
+  background: var(--hairline);
   background-clip: content-box;
 }
 
 .empty-state {
   margin: auto;
   text-align: center;
-  max-width: 30rem;
-  padding: 0 var(--space-2);
+  max-width: var(--measure);
+  padding: 0 var(--sp-16);
 }
 
 .empty-state .mark {
-  color: var(--color-primary);
-  width: 32px;
-  height: 32px;
-  margin: 0 auto var(--space-3);
+  color: var(--accent-strong);
+  width: 28px;
+  height: 28px;
+  margin: 0 auto var(--sp-24);
   display: block;
 }
 
 .empty-state h2 {
-  font-size: 1.5rem;
-  font-weight: 800;
-  line-height: 1.3;
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-ui);
-  margin: 0 0 var(--space-2);
+  font-size: var(--fs-display-2);
+  line-height: 1.08;
+  font-weight: 400;
+  letter-spacing: -0.015em;
+  margin: 0 0 var(--sp-12);
 }
 
-/* Emphasis by inversion rather than italics — weight and fill do the work. */
+/* The one clay word sits large so the 3.9:1 large-text rule holds. */
 .empty-state h2 em {
-  font-style: normal;
-  background: var(--color-primary);
-  color: var(--color-neutral);
-  padding: 0 6px;
-  box-decoration-break: clone;
-  -webkit-box-decoration-break: clone;
+  font-style: italic;
+  color: var(--accent-strong);
 }
 
 .empty-state p {
-  font-size: 0.8125rem;
-  line-height: 1.6;
-  color: var(--color-muted);
+  font-size: var(--fs-lede);
+  line-height: 1.29;
+  color: var(--muted);
   margin: 0;
 }
 
@@ -350,11 +355,9 @@
 }
 
 .message-role {
-  font-size: 0.5625rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-tab);
-  color: var(--color-muted);
+  font-size: var(--fs-sub-label);
+  line-height: 1;
+  color: var(--muted);
 }
 
 /* --- Tool activity chips ---------------------------------------------------- */
@@ -368,30 +371,25 @@
 .tool-chip {
   display: inline-flex;
   align-items: center;
-  padding: 4px var(--space-1);
-  border: 2px solid var(--color-primary);
-  font-size: 0.625rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-tab);
-  color: var(--color-primary);
-  background: var(--color-surface);
+  padding: 4px 8px;
+  border: var(--bw-sm) solid var(--hairline);
+  border-radius: var(--r-xs);
+  font-size: var(--fs-sub-label);
+  line-height: 1.4;
+  color: var(--ink);
+  background: var(--canvas);
 }
 
-/* Running: a dashed border is this system's existing vocabulary for
-   "tentative" (see the outline button) — no spinner, no colour-only signal. */
+/* Running: a dashed border is the vocabulary for "tentative" — no spinner,
+   no colour-only signal. */
 .tool-chip.is-start {
   border-style: dashed;
-  color: var(--color-muted);
-}
-
-.tool-chip.is-ok {
-  border-style: solid;
+  color: var(--muted);
 }
 
 .tool-chip.is-failed {
-  border-color: var(--color-danger);
-  color: var(--color-danger);
+  border-color: var(--error);
+  color: var(--error);
 }
 
 /* --- Sources ----------------------------------------------------------- */
@@ -411,22 +409,22 @@
   align-items: center;
   gap: 4px;
   max-width: 14rem;
-  padding: 4px var(--space-1);
-  border: 2px solid var(--color-primary);
-  font-size: 0.625rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-tab);
-  color: var(--color-muted);
-  background: var(--color-surface);
+  padding: 4px 8px;
+  border: var(--bw-sm) solid var(--hairline);
+  border-radius: var(--r-xs);
+  font-size: var(--fs-sub-label);
+  line-height: 1.4;
+  color: var(--muted);
+  background: var(--canvas);
   text-decoration: none;
-  transition: color var(--duration-fast) var(--easing);
+  transition: color var(--dur-fast) ease-out;
 }
 
 a.source-chip:hover {
-  color: var(--color-primary);
+  color: var(--accent-strong);
   text-decoration: underline;
-  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
 }
 
 .source-chip-label {
@@ -444,43 +442,45 @@ a.source-chip:hover {
 /* --- Usage note ---------------------------------------------------------- */
 
 .usage-note {
-  font-size: 0.5625rem;
-  font-weight: 600;
-  letter-spacing: var(--tracking-tab);
-  color: var(--color-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-label);
+  line-height: 1;
+  color: var(--muted);
 }
 
 .bubble {
   max-width: 84%;
-  padding: var(--space-1) 14px;
-  border: var(--border);
-  border-radius: var(--radius-md);
-  line-height: 1.6;
+  padding: var(--sp-12) var(--sp-16);
+  border-radius: var(--r-lg);
+  line-height: 1.53;
   white-space: pre-wrap;
   word-wrap: break-word;
   overflow-wrap: anywhere;
-  font-size: 0.875rem;
+  font-family: var(--font-serif);
+  font-size: var(--fs-body);
 }
 
+/* The user turn is a dark on-dark fill in both themes, the reply holds
+   surface. A plain ink fill turns near-white in Mono and glares off the black
+   page. No shadows — fills carry the difference. */
 .message.user .bubble {
-  background: var(--color-primary);
-  color: var(--color-neutral);
+  background: var(--night-raised);
+  color: var(--night-ink);
 }
 
 .message.assistant .bubble {
-  background: var(--color-surface);
-  color: var(--color-primary);
-  box-shadow: var(--level-1);
+  background: var(--surface);
+  color: var(--ink);
 }
 
-.bubble.error {
-  background: var(--color-surface);
-  color: var(--color-primary);
-  border-color: var(--color-danger);
-  box-shadow: var(--level-error);
+.message.assistant .bubble.error {
+  background: var(--surface);
+  color: var(--error);
+  border: var(--bw-sm) solid var(--error);
 }
 
-/* Three ink squares. Motion drives the rise-and-fade; this is only the shape. */
+/* Three ink dots, rising and fading in sequence. Motion drives the loop; this
+   is only the shape. */
 .typing {
   display: inline-flex;
   align-items: center;
@@ -491,7 +491,13 @@ a.source-chip:hover {
 .typing span {
   width: 8px;
   height: 8px;
-  background: var(--color-primary);
+  border-radius: var(--r-full);
+  background: var(--ink);
+}
+
+/* In the dark user turn the dots take the bubble's text colour. */
+.message.user .typing span {
+  background: var(--night-ink);
 }
 
 /* --- Transcript skeleton ----------------------------------------------------
@@ -505,11 +511,11 @@ a.source-chip:hover {
   width: 100%;
   /* Derived, not declared: a tint of ink on paper. Keeps dark mode honest
      without introducing a second grey the token contract doesn't carry. */
-  --skeleton-fill: color-mix(in srgb, var(--color-primary) 14%, var(--color-surface));
+  --skeleton-fill: color-mix(in srgb, var(--ink) 12%, var(--canvas));
 }
 
 /* The bubble is a stack of bars now, so drop the text metrics it carries for
-   content. Padding, border, fill and shadow are inherited untouched. */
+   content. Padding, radius and fill are inherited untouched. */
 .skeleton-bubble {
   display: flex;
   flex-direction: column;
@@ -521,7 +527,7 @@ a.source-chip:hover {
   display: block;
   height: 11px;
   background: var(--skeleton-fill);
-  animation: skeleton-breathe 1.4s var(--easing) infinite;
+  animation: skeleton-breathe 1.4s ease-in-out infinite;
 }
 
 /* Line widths are the only thing that varies - a real paragraph's rag is what
@@ -556,13 +562,13 @@ a.source-chip:hover {
   width: 54px;
   height: 7px;
   background: var(--skeleton-fill);
-  animation: skeleton-breathe 1.4s var(--easing) infinite;
+  animation: skeleton-breathe 1.4s ease-in-out infinite;
 }
 
-/* Inverted along with its bubble: a user turn is ink-filled, so its bars have
-   to be paper to stay inside the contrast the real bubble already holds. */
+/* Bars inside the dark user turn read as pale lines on it. */
 .message.user .skeleton-bubble .skeleton-line {
-  background: var(--color-neutral);
+  background: var(--night-ink);
+  opacity: 0.4;
 }
 
 @keyframes skeleton-breathe {
@@ -572,7 +578,7 @@ a.source-chip:hover {
   }
 
   50% {
-    opacity: 0.45;
+    opacity: 0.5;
   }
 }
 
@@ -584,15 +590,16 @@ a.source-chip:hover {
   .skeleton-line,
   .skeleton-role {
     animation: none;
-    opacity: 1;
+    opacity: 0.5;
   }
 }
 
 /* --- Markdown -------------------------------------------------------------- */
 
+/* Assistant replies are prose: serif, one measure, generous rhythm. */
 .markdown {
   white-space: normal;
-  max-width: 64ch;
+  max-width: var(--measure);
 }
 
 .markdown > *:first-child {
@@ -621,113 +628,126 @@ a.source-chip:hover {
   margin: 0.5em 0;
 }
 
+/* Headings inside a reply are section type: serif, sentence case. */
 .markdown h1,
 .markdown h2,
 .markdown h3,
 .markdown h4 {
-  font-weight: 800;
-  line-height: 1.3;
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-ui);
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.015em;
   margin: 1.2em 0 0.5em;
 }
 
 .markdown h1 {
-  font-size: 1.15rem;
+  font-size: var(--fs-h3);
 }
 
 .markdown h2 {
-  font-size: 1.05rem;
+  font-size: var(--fs-body);
 }
 
-.markdown h3 {
-  font-size: 0.95rem;
-}
-
+.markdown h3,
 .markdown h4 {
-  font-size: 0.875rem;
+  font-size: var(--fs-ui);
 }
 
 .markdown a {
   color: inherit;
   text-decoration: underline;
-  text-decoration-thickness: 2px;
-  text-underline-offset: 3px;
+  text-decoration-thickness: 0.08em;
+  text-underline-offset: 0.18em;
+  transition: color var(--dur-base) ease-out;
+}
+
+.markdown a:hover {
+  color: var(--accent-strong);
 }
 
 .markdown strong {
-  font-weight: 800;
+  font-weight: 600;
 }
 
+/* A pull quote framed by whitespace, not a border bar. */
 .markdown blockquote {
   margin: 1.2em 0;
-  padding: 0.8em 1em;
-  border-left: 4px solid currentcolor;
+  padding: 0 1em;
+  color: var(--muted);
+  font-style: italic;
 }
 
 .markdown code {
   font-family: var(--font-mono);
-  font-size: 0.85em;
-  background: var(--color-primary);
-  color: var(--color-neutral);
+  font-size: 0.88em;
+  background: var(--canvas);
+  border: var(--bw-sm) solid var(--hairline);
+  border-radius: var(--r-xs);
   padding: 0.1em 0.35em;
+  color: var(--ink);
 }
 
 .markdown pre {
-  background: var(--color-primary);
-  color: var(--color-neutral);
-  border: var(--border);
-  padding: var(--space-1) 12px;
+  background: var(--canvas);
+  border: var(--bw-sm) solid var(--hairline);
+  border-radius: var(--r-md);
+  padding: var(--sp-12);
   margin: 1.2em 0;
   overflow-x: auto;
 }
 
 .markdown pre code {
   background: none;
+  border: none;
   padding: 0;
   color: inherit;
 }
 
 .markdown hr {
   border: none;
-  border-top: var(--border);
+  border-top: var(--bw-sm) solid var(--hairline);
   margin: 1.2em 0;
 }
 
+/* Tables keep their square, ruled data-block form wherever they appear. */
 .markdown table {
   border-collapse: collapse;
   margin: 1.2em 0;
-  font-size: 0.9em;
+  font-family: var(--font-sans);
+  font-size: var(--fs-caption);
+  line-height: 1.4;
   display: block;
   overflow-x: auto;
 }
 
 .markdown th,
 .markdown td {
-  border: var(--border);
-  padding: 6px 10px;
+  border: var(--bw-sm) solid var(--ink);
+  padding: 10px 12px;
   text-align: left;
+  font-variant-numeric: tabular-nums;
 }
 
 .markdown th {
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-ui);
+  font-weight: 600;
 }
 
-/* Code inside a filled user bubble inverts, or it would vanish into the fill. */
+.markdown blockquote p {
+  margin: 0.5em 0;
+}
+
+/* Code inside the dark user bubble sits in a darker well. */
 .message.user .bubble .markdown code,
 .message.user .bubble .markdown pre {
-  background: var(--color-neutral);
-  color: var(--color-primary);
-  border-color: var(--color-neutral);
+  background: var(--night);
+  border-color: var(--night);
+  color: var(--night-ink);
 }
 
 /* --- Composer -------------------------------------------------------------- */
 
 .composer-wrap {
   flex-shrink: 0;
-  padding: var(--space-2);
+  padding: var(--sp-16);
 }
 
 /* The frame is the input. Everything inside — strips, textarea, controls —
@@ -735,46 +755,47 @@ a.source-chip:hover {
 .composer {
   display: flex;
   flex-direction: column;
-  background: var(--color-surface);
-  border: var(--border);
-  border-radius: var(--radius-md);
-  transition: box-shadow var(--duration-base) var(--easing);
+  background: var(--surface);
+  border: var(--bw-sm) solid var(--hairline);
+  border-radius: var(--r-lg);
+  transition: border-color var(--dur-base) ease-out;
 }
 
 .composer:focus-within {
-  box-shadow: var(--level-1);
+  border-color: var(--ink);
 }
 
 .composer-strip {
   display: flex;
   align-items: center;
-  gap: var(--space-1);
-  padding: 6px 10px;
-  font-size: 0.6875rem;
+  gap: var(--sp-8);
+  padding: 8px var(--sp-12);
+  font-size: var(--fs-caption);
   min-height: 36px;
 }
 
 .status-label {
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-tab);
-  color: var(--color-muted);
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--muted);
 }
 
 .status-label.is-error {
-  color: var(--color-primary);
-  border-left: 4px solid var(--color-danger);
-  padding-left: var(--space-1);
+  color: var(--error);
 }
 
 .attachment-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 4px 4px var(--space-1);
-  border: var(--border);
-  font-size: 0.6875rem;
+  padding: 4px 8px;
+  border: var(--bw-sm) solid var(--hairline);
+  border-radius: var(--r-xs);
+  background: var(--canvas);
+  font-size: var(--fs-sub-label);
+  line-height: 1.4;
   max-width: 100%;
+  color: var(--ink);
 }
 
 .attachment-name {
@@ -785,27 +806,25 @@ a.source-chip:hover {
 
 .attachment-status {
   flex-shrink: 0;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-tab);
-  color: var(--color-muted);
+  color: var(--muted);
 }
 
 /* The right padding is sized for the remove button, which only a ready chip has. */
 .attachment-chip:not(.is-ready) {
-  padding-right: var(--space-1);
+  padding-right: var(--sp-12);
 }
 
 .attachment-chip.is-failed {
-  border-left: 4px solid var(--color-danger);
+  border-color: var(--error);
+  color: var(--error);
 }
 
 .attachment-chip.is-failed .attachment-status {
-  color: var(--color-primary);
+  color: var(--error);
 }
 
 .attachment-reason {
-  color: var(--color-muted);
+  color: var(--muted);
 }
 
 /* 24px of visual chrome, 44px of touch target via the expanded pseudo-element —
@@ -819,10 +838,12 @@ a.source-chip:hover {
   height: 24px;
   padding: 0;
   border: none;
-  background: var(--color-primary);
-  color: var(--color-neutral);
+  border-radius: var(--r-full);
+  background: var(--ink);
+  color: var(--canvas);
   cursor: pointer;
   flex-shrink: 0;
+  transition: background-color var(--dur-fast) ease-in-out;
 }
 
 .attachment-remove::after {
@@ -831,22 +852,28 @@ a.source-chip:hover {
   inset: -10px;
 }
 
+.attachment-remove:hover:not(:disabled) {
+  background: var(--ink-soft);
+}
+
 .attachment-remove svg {
   width: 14px;
   height: 14px;
 }
 
 .voice-interim {
-  color: var(--color-muted);
+  color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* The listening dot is the one live accent in the chrome while a turn runs. */
 .voice-dot {
   width: 8px;
   height: 8px;
-  background: var(--color-primary);
+  border-radius: var(--r-full);
+  background: var(--accent-strong);
   flex-shrink: 0;
 }
 
@@ -855,42 +882,39 @@ a.source-chip:hover {
   resize: none;
   border: none;
   background: transparent;
-  padding: 12px;
-  font-family: var(--font-body);
-  font-size: 0.875rem;
-  line-height: 1.6;
+  padding: var(--sp-12);
+  font-family: var(--font-sans);
+  font-size: var(--fs-ui);
+  line-height: 1.55;
   min-height: 44px;
   max-height: 9rem;
-  color: var(--color-primary);
+  color: var(--ink);
 }
 
 /* The frame carries the focus indicator (see .composer:focus-within) — an
-   outline here would sit on top of that border and read as a double line. */
+   outline here would sit on top of that border. */
 .composer textarea:focus,
 .composer textarea:focus-visible {
   outline: none;
 }
 
 .composer textarea::placeholder {
-  color: var(--color-muted);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-ui);
-  font-size: 0.8125rem;
+  color: var(--muted);
 }
 
 .composer-controls {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-1);
-  padding: var(--space-1);
+  gap: var(--sp-8);
+  padding: var(--sp-8);
 }
 
 .controls-left,
 .controls-right {
   display: flex;
   align-items: center;
-  gap: var(--space-1);
+  gap: var(--sp-8);
 }
 
 .mic-wrap {
@@ -899,42 +923,51 @@ a.source-chip:hover {
   flex-shrink: 0;
 }
 
-/* Square ripple radiating from the mic while it listens — no radius, ever. */
+/* A quiet clay ring radiating from the mic while it listens. */
 .mic-ring {
   position: absolute;
   inset: 0;
-  border: var(--border);
+  border: var(--bw-sm) solid var(--accent);
+  border-radius: var(--r-full);
   pointer-events: none;
 }
 
-/* Doubled specificity so the override doesn't depend on ui.css load order. */
+/* The mic toggle is a pill with a label, not a square. */
 .btn.talk-btn {
-  height: 44px;
-  padding: 0 14px;
+  min-height: 32px;
+  padding: 0 12px;
 }
 
 .talk-btn svg {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   flex-shrink: 0;
 }
 
 .model-select {
-  height: 44px;
+  min-height: 32px;
   max-width: 11rem;
-  padding: 0 var(--space-1);
-  border: var(--border);
-  border-radius: var(--radius-md);
-  background: var(--color-surface);
-  color: var(--color-primary);
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
+  padding: 4px 12px;
+  border: var(--bw-sm) solid var(--hairline);
+  border-radius: var(--r-full);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--fs-button);
+  letter-spacing: 0.01em;
   cursor: pointer;
-  transition: box-shadow var(--duration-base) var(--easing);
+  transition:
+    background-color var(--dur-base) ease-in-out,
+    border-color var(--dur-base) ease-in-out;
 }
 
 .model-select:hover:not(:disabled) {
-  box-shadow: var(--level-1);
+  background: var(--surface-strong);
+}
+
+.model-select:focus {
+  outline: none;
+  border-color: var(--ink);
 }
 
 .model-select:disabled {
@@ -943,12 +976,12 @@ a.source-chip:hover {
 }
 
 /* The seconds shown in the send button while a rate limit is running down.
-   Sized to sit in the same square the arrow icon occupies, so the control does
+   Sized to sit in the same circle the arrow icon occupies, so the control does
    not change shape when the number replaces the glyph. */
 .send-countdown {
   font-family: var(--font-mono);
-  font-size: 13px;
-  font-weight: 600;
+  font-size: var(--fs-mono-label);
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
   line-height: 1;
 }

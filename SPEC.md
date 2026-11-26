@@ -245,14 +245,14 @@ These are the project's invariants. Breaking one is a bug, even if tests pass.
 
 ## 6. Rules the code does not meet yet
 
-The rules above are the target. Two of them are not in the code yet:
+The rules above are the target. One of them is not in the code yet:
 
 | Rule | Where the code falls short |
 |---|---|
 | 10. No schema error becomes a 200 | `_owned_documents` in `generate_reply.py` catches every exception and returns `None`. |
-| 12. No provider text to the user | `_friendly_error` rewrites two cases. Every other error passes through as the provider wrote it. |
 
-Rules 9 and 11 are met. `verify_schema` in `adapters/persistence/schema_version.py`
+Rules 9, 11 and 12 are met. A failed reply carries a code, never text, and an
+unrecognised error is `internal`. `verify_schema` in `adapters/persistence/schema_version.py`
 stops startup when `alembic_version` is not at the code's head. A `Settings`
 validator refuses a `DATABASE_MIGRATION_URL` that names a different database
 from `DATABASE_URL`.

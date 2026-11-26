@@ -86,7 +86,7 @@ def test_broken_run_is_not_a_regression() -> None:
     """A rate limit produces an empty answer and no tool calls. It belongs in
     `errors`, and counting it here would read as the model calling nothing."""
     case = _case(expect=Expectation(tools=["retrieve_documents"], must_contain=["2019"]))
-    run = CaseRun(case=case, failed=ReplyFailed(detail="busy right now"))
+    run = CaseRun(case=case, failed=ReplyFailed(code="overloaded"))
 
     assert _verdicts([run], _HARNESS, None) == _verdicts([], _HARNESS, None)
 
@@ -165,7 +165,7 @@ def test_broken_sample_does_not_make_a_case_flaky() -> None:
     case = _case(expect=Expectation(must_contain=["2019"]))
     runs = [
         _run(case, _answer("founded in 2019"), 1),
-        CaseRun(case=case, sample=2, failed=ReplyFailed(detail="busy right now")),
+        CaseRun(case=case, sample=2, failed=ReplyFailed(code="overloaded")),
         _run(case, _answer("founded in 2019"), 3),
     ]
 
