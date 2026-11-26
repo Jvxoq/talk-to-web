@@ -209,7 +209,7 @@ and needs real Postgres/Qdrant — see Commands above.
   somewhere to send data (infrastructure decision, not a code change).
 - **The default chat model routes tools poorly.**
   `deepseek-ai/DeepSeek-V4-Flash-0731` measured 0.36 exact-match on
-  `--suite tools` (n=11), mostly by reaching for `search_web` on
+  `--suite tools` (11 tasks), mostly by reaching for `search_web` on
   document-scoped questions. Kept as the default by explicit choice; the
   routing policy is what makes that survivable. Re-run `evals --suite tools`
   before adding any model to `llm_models`.
