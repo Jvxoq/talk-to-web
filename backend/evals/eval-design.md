@@ -190,7 +190,7 @@ and Anthropic [1]. The real-chat loop is out of scope until the agent is live.
      100 trials (the 3/n rule above). For 28 tasks that is 2,800 trials, about
      $1.80 of agent tokens on every release, even at today's discounted
      price. A number for the whole suite needs 280.
-   - **CI gate, on every PR that touches the agent.** Each task gets 1 trial, graded
+   - **CI gate, on every PR that touches the agent, after approval.** Each task gets 1 trial, graded
      by code graders only. Hamel favors assertions over judges in CI [15]. A
      task that fails gets 2 more trials. Block only if one of those fails too.
      About $0.02 per run. A healthy agent, missing 3 answers in 100, gets
@@ -209,7 +209,9 @@ and Anthropic [1]. The real-chat loop is out of scope until the agent is live.
      `evals` skill).
    - Errored trials (rate limit, provider outage) count for nothing. They are
      neither passes nor failures. Rerun them.
-   - **Budget:** 10 CI runs plus one release check is about $0.55. Costs use
+   - **Budget:** 10 CI runs plus one release check is about $0.55. No run
+     spends until the owner approves it (item 9), so this stays a choice, not
+     a bill that grows with the number of PRs. Costs use
      the measured 4,200 input and 300 output tokens per trial (measured on the
      old model, so recheck after the first run).
    - **Models (changed 2026-11-26).** Together retired the old agent model,
@@ -243,6 +245,17 @@ and Anthropic [1]. The real-chat loop is out of scope until the agent is live.
    a conditional as a success, so `evals` can be a required check. A `paths:`
    filter would leave a required check pending forever [22]. `release` stays a
    manual start with the `mode` input. Keep the results file upload.
+   **Approval before spend.** Changed 2026-11-26. Coding agents open most PRs
+   in this repo. One agent pushing ten fixes to one PR would start ten paid
+   runs. So the `evals` job uses a GitHub environment, `evals`, with the repo
+   owner as a required reviewer. The job waits until the owner approves it.
+   While it waits, the required check stays pending and the PR cannot merge,
+   so nothing merges unchecked. Manual starts wait for approval too, so an
+   agent with `gh` access cannot spend by starting the workflow itself. On a
+   PR, a new push cancels the older run, even one already waiting, because
+   only the newest commit can satisfy the check. A manual start is never
+   cancelled. The cost of this choice: an agent PR sits until the owner looks
+   at it. Approve once the PR is ready to merge, not on every push.
 10. **Hand labels live in LangSmith, for development only.** Decided
     2026-11-25. LangGraph already traces to LangSmith through LangChain, with
     no tracing code in `app/`. Labeling uses the free Developer plan: 1 seat,

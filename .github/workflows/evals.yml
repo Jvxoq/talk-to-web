@@ -8,6 +8,8 @@
 #                 `changes` below). A frontend or docs PR skips the paid job.
 #   by hand       Pick a mode. Use `release` before the agent goes out, and
 #                 after a model or prompt change.
+# Either way, the paid job waits for a person to approve it. See `environment`
+# on the `evals` job.
 # Modes:
 #   gate     1 trial per task, no judge. A failed task gets 2 more trials, and
 #            the run fails if one of those fails too. About 2 cents.
@@ -38,8 +40,11 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Never cancel: a second start must wait, not kill a paid run.
-  cancel-in-progress: false
+  # On a PR, a new push cancels the older run, even one waiting for approval.
+  # Only the newest commit's result can satisfy the required check, so an older
+  # run is money spent on an answer nobody reads. A manual start is never
+  # cancelled: a second one waits rather than killing a paid release run.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:
@@ -89,6 +94,14 @@ jobs:
       ${{ !cancelled()
       && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
       && (needs.changes.result != 'success' || needs.changes.outputs.agent == 'true') }}
+    # Approval before any money is spent. Coding agents open most PRs here, and
+    # each push that touches the agent would otherwise start a paid run. The
+    # `evals` environment has the repo owner as a required reviewer, so the job
+    # waits until they click "Approve and deploy". While it waits, the required
+    # check stays pending and the PR cannot merge. A manual start waits too, so
+    # an agent with `gh` access cannot spend by starting the workflow itself.
+    # Set up once in the repo settings, under Environments.
+    environment: evals
     runs-on: ubuntu-latest
     # Room for a release run: 280 trials at concurrency 2.
     timeout-minutes: 60
