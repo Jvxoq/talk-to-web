@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type ChangeEvent,
@@ -59,6 +60,17 @@ export function Composer({
 }: ComposerProps) {
   const [input, setInput] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // Grow the box with its text, up to the CSS max-height, then scroll.
+  // Runs on every change to `input`, so typed, dictated and restored text
+  // all resize it, and clearing it after a send shrinks it back to one line.
+  useLayoutEffect(() => {
+    const el = textareaRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
+  }, [input])
   const reduce = useReducedMotion()
 
   const { models, defaultModel } = useModels()
@@ -206,6 +218,7 @@ export function Composer({
           Message
         </label>
         <textarea
+          ref={textareaRef}
           id="composer-input"
           value={input}
           onChange={(e) => setInput(e.target.value)}
