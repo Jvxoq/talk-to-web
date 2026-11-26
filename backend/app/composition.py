@@ -220,6 +220,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         models=list(dict.fromkeys([*settings.llm_models, settings.agent_condenser_model])),
         api_key=settings.llm_api_key.get_secret_value(),
         max_tokens=settings.llm_max_tokens,
+        first_chunk_timeout_seconds=settings.llm_stream_first_chunk_timeout_seconds,
+        idle_timeout_seconds=settings.llm_stream_idle_timeout_seconds,
     )
     token_counter = ApproximateTokenCounter()
     condenser = Condenser(
