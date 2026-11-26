@@ -242,7 +242,13 @@ export function Composer({
                     aria-hidden="true"
                     initial={{ scale: 1, opacity: 0.5 }}
                     animate={{ scale: 1.3, opacity: 0 }}
-                    exit={{ opacity: 0 }}
+                    // Own exit transition: without it the exit inherits the
+                    // infinite repeat below, never finishes, and the ring
+                    // stays on screen after the user clicks Stop.
+                    exit={{
+                      opacity: 0,
+                      transition: { duration: timing.base, ease: easings.inQuart },
+                    }}
                     transition={{ duration: 1.6, repeat: Infinity, ease: 'easeOut' }}
                   />
                 )}
