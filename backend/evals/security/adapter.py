@@ -328,4 +328,4 @@ class SecurityAdapter:
 def _error_text(run: TurnRun) -> str:
     if run.error is not None:
         return run.error
-    return run.failed.detail if run.failed is not None else ""
+    return run.failed.code if run.failed is not None else ""

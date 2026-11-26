@@ -135,7 +135,7 @@ async def test_retry_runs_a_fresh_attempt_and_carries_the_tokens(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(harness_module, "_RETRY_BACKOFF_SECONDS", 0.0)
-    limited = TurnRun(failed=ReplyFailed(detail="The model is busy right now"))
+    limited = TurnRun(failed=ReplyFailed(code="overloaded"))
     limited.usage = ReplyUsage(prompt_tokens=40, completion_tokens=4, elapsed_ms=5, model="m")
     good = TurnRun()
     attempts = [limited, good]

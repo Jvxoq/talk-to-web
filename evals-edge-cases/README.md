@@ -1,4 +1,4 @@
-# Edge-case eval dataset
+# Edge eval tasks
 
 Tasks the chat agent must survive, not the happy path. One `EvalCase` line is
 one task, and `--repeat N` gives N trials of it. Every task is tagged `edge` and

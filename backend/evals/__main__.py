@@ -343,7 +343,7 @@ def _errors(runs: list[CaseRun]) -> list[str]:
             errors.append(f"{_label(run)}: raised after {run.attempts} attempt(s): {run.error}")
         elif run.failed is not None:
             errors.append(
-                f"{_label(run)}: failed after {run.attempts} attempt(s): {run.failed.detail}"
+                f"{_label(run)}: failed after {run.attempts} attempt(s): {run.failed.code}"
             )
     return errors
 
@@ -501,7 +501,7 @@ async def _judge_trials(
 def _transcript(run: CaseRun) -> Transcript:
     error = run.error
     if error is None and run.failed is not None:
-        error = run.failed.detail
+        error = run.failed.code
     return Transcript(
         answer=run.answer,
         tool_calls=tuple(

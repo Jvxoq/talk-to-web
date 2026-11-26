@@ -1,5 +1,7 @@
 """`DATABASE_URL` and `DATABASE_MIGRATION_URL` must name one database."""
 
+from typing import Any
+
 import pytest
 from pydantic import SecretStr, ValidationError
 
@@ -9,7 +11,7 @@ POOLED = "postgresql+psycopg://app:app-secret@ep-cool-123-pooler.eu-west-2.aws.n
 DIRECT = "postgresql+psycopg://app:app-secret@ep-cool-123.eu-west-2.aws.neon.tech/neondb"
 
 
-def build(database_url: str, migration_url: str | None) -> Settings:
+def build(database_url: str, migration_url: str | None, **overrides: Any) -> Settings:
     """Explicit dummies and no .env, so a developer's machine cannot change a result."""
     return Settings(
         _env_file=None,
@@ -21,6 +23,7 @@ def build(database_url: str, migration_url: str | None) -> Settings:
         gemini_api_key=SecretStr("test"),
         deepgram_api_key=SecretStr("test"),
         jwt_secret=SecretStr("test"),
+        **overrides,
     )
 
 
@@ -123,7 +126,7 @@ def test_unparseable_url_error_never_prints_password() -> None:
     assert "migration-secret" not in str(caught.value)
 
 
-def build_llm(**llm: str) -> Settings:
+def build_llm(**llm: Any) -> Settings:
     """`build`, with only the LLM variables under test given."""
     return Settings(
         _env_file=None,
@@ -154,3 +157,10 @@ def test_switched_provider_keeps_an_explicit_url() -> None:
 
 def test_empty_base_url_means_the_providers_own_endpoint() -> None:
     assert build_llm(llm_base_url="").llm_base_url is None
+
+
+@pytest.mark.parametrize("field", ["llm_request_timeout_seconds", "chat_reply_timeout_seconds"])
+def test_zero_timeout_is_refused(field: str) -> None:
+    """Zero reads as "no timeout" to some clients and fires at once in asyncio."""
+    with pytest.raises(ValidationError, match="greater than 0"):
+        build(DIRECT, None, **{field: 0})

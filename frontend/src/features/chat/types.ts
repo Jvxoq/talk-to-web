@@ -42,6 +42,9 @@ export interface Usage {
   model: string
 }
 
+/** Why a reply failed. The server sends one of these, never the error's text. */
+export type FailureCode = 'timeout' | 'overloaded' | 'unavailable' | 'internal'
+
 export interface Message {
   /** Stable across re-renders so AnimatePresence keys off identity, not order. */
   id: string

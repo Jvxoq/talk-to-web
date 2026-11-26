@@ -8,9 +8,10 @@ import {
 } from '../../../lib/conversation'
 import { ApiError, isAbort } from '../../../lib/http'
 import { streamChat } from '../api'
+import { failureMessage } from '../failure'
 import type { Message, Model, ToolActivity } from '../types'
 
-const GENERIC_FAILURE = 'Something went wrong. Please try again.'
+const GENERIC_FAILURE = failureMessage('internal')
 
 /**
  * A stored turn is one prompt/response row; the transcript renders it as the
@@ -85,6 +86,10 @@ export function useChat(model: Model, conversationId: number, preloaded?: Conver
   // and fall through to a duplicate `getConversation`. Storing the id, not a
   // boolean, keeps a genuine switch back free to refetch.
   const loadStartedForRef = useRef<number | null>(null)
+  // Bumped once per real load. The id alone cannot tell two loads of the same
+  // thread apart: after A -> B -> A, the first A fetch can land last and would
+  // overwrite the newer one, wiping a message sent since.
+  const loadSeqRef = useRef(0)
 
   useEffect(() => {
     // Checked first, before any state reset: StrictMode's immediate
@@ -92,6 +97,7 @@ export function useChat(model: Model, conversationId: number, preloaded?: Conver
     // bail out below without ever repopulating it.
     if (loadStartedForRef.current === conversationId) return
     loadStartedForRef.current = conversationId
+    const seq = ++loadSeqRef.current
 
     // A reply mid-flight belongs to the thread the user is leaving, not the
     // one they are about to see - cut it off rather than let it keep filling
@@ -113,26 +119,26 @@ export function useChat(model: Model, conversationId: number, preloaded?: Conver
       return
     }
 
-    let cancelled = false
     getConversation(conversationId)
       .then((conversation) => {
-        if (!cancelled) setMessages(toMessages(conversation.messages))
+        // Guarded by the load counter, not a closure flag: StrictMode's
+        // remount bails on the guard above without starting a load, so a
+        // cancelled closure here would strand the only fetch this run made.
+        // Any later load, even of this same thread, has moved the counter on.
+        if (loadSeqRef.current === seq) {
+          setMessages(toMessages(conversation.messages))
+        }
       })
       .catch(() => {
         // Swallowed: a history that failed to load still leaves a usable,
         // empty composer, which beats blocking the switch entirely.
       })
       .finally(() => {
-        // Deliberately not guarded by `cancelled`, unlike the write above: the
-        // skeleton has to clear even when StrictMode's remount has already
-        // stranded this fetch, or the log would sit on it forever. The id check
-        // keeps a late arrival from clearing a newer load's flag.
-        setLoadingId((current) => (current === conversationId ? null : current))
+        // The skeleton has to clear even when StrictMode's remount has already
+        // stranded this fetch, or the log would sit on it forever. The
+        // counter keeps a late arrival from clearing a newer load's flag.
+        if (loadSeqRef.current === seq) setLoadingId(null)
       })
-
-    return () => {
-      cancelled = true
-    }
   }, [conversationId])
 
   const persist = useCallback(
@@ -217,7 +223,7 @@ export function useChat(model: Model, conversationId: number, preloaded?: Conver
           signal: controller.signal,
         })) {
           if (event.type === 'error') {
-            const detail = event.message || GENERIC_FAILURE
+            const detail = failureMessage(event.code)
             failLastMessage(detail)
             void persist({
               prompt_content: text,

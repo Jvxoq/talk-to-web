@@ -144,6 +144,7 @@ def build_use_case(
         tool_output_guard=make_guard(),
         max_digest_documents=settings.chat_digest_max_documents,
         max_digest_summary_chars=settings.chat_digest_max_summary_chars,
+        reply_timeout_seconds=settings.chat_reply_timeout_seconds,
     )
 
 

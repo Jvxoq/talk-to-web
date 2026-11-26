@@ -6,9 +6,12 @@ import './ui.css'
  * No text and no percentage: neither wait it covers has honest progress to
  * report.
  */
-export function PulseBlocks() {
+export function PulseBlocks({ size = 'md' }: { size?: 'sm' | 'md' }) {
   return (
-    <span className="pulse-blocks" aria-hidden="true">
+    <span
+      className={size === 'sm' ? 'pulse-blocks pulse-blocks--sm' : 'pulse-blocks'}
+      aria-hidden="true"
+    >
       <i />
       <i />
       <i />

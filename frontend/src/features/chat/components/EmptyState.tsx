@@ -1,5 +1,5 @@
 import { motion, useReducedMotion } from 'motion/react'
-import { Mark } from '../../../components/ui/Mark'
+import { Mark } from '../../../components/ui'
 import { springs } from '../../../lib/motion'
 
 const rise = (reduce: boolean) => ({
@@ -23,8 +23,8 @@ export function EmptyState() {
       <Mark
         className="mark"
         variants={{
-          hidden: { opacity: 0, scale: 0.6, rotate: reduce ? 0 : -90 },
-          show: { opacity: 1, scale: 1, rotate: 0, transition: springs.card },
+          hidden: { opacity: 0, scale: reduce ? 1 : 0.85 },
+          show: { opacity: 1, scale: 1, transition: springs.card },
         }}
       />
       <motion.h2 variants={rise(reduce)}>

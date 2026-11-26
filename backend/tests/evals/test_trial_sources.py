@@ -134,7 +134,7 @@ async def test_b3_and_broken_runs_are_not_judged() -> None:
     broke = CaseRun(
         case=_case("b1-1", "b1"),
         events=[ReplyDelta(text="partial")],
-        failed=ReplyFailed(detail="x"),
+        failed=ReplyFailed(code="internal"),
     )
 
     judged = await _judge_trials([code_graded, broke], harness, concurrency=2)

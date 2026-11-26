@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type ChangeEvent,
@@ -9,7 +10,7 @@ import {
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { ArrowUp, Mic, Paperclip, X } from 'lucide-react'
 import { buttonClass } from '../../../components/ui'
-import { easeStandard, springs, timing } from '../../../lib/motion'
+import { easings, timing } from '../../../lib/motion'
 import { useFileUpload, type Attachment } from '../hooks/useFileUpload'
 import { useCountdown } from '../hooks/useCountdown'
 import { useModels } from '../hooks/useModels'
@@ -34,7 +35,7 @@ const stripMotion = {
   initial: { opacity: 0, height: 0 },
   animate: { opacity: 1, height: 'auto' },
   exit: { opacity: 0, height: 0 },
-  transition: { duration: timing.standard, ease: easeStandard },
+  transition: { duration: timing.height, ease: easings.standard },
   style: { overflow: 'hidden' as const },
 }
 
@@ -59,6 +60,17 @@ export function Composer({
 }: ComposerProps) {
   const [input, setInput] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // Grow the box with its text, up to the CSS max-height, then scroll.
+  // Runs on every change to `input`, so typed, dictated and restored text
+  // all resize it, and clearing it after a send shrinks it back to one line.
+  useLayoutEffect(() => {
+    const el = textareaRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
+  }, [input])
   const reduce = useReducedMotion()
 
   const { models, defaultModel } = useModels()
@@ -145,7 +157,7 @@ export function Composer({
                       onClick={() => void upload.clear()}
                       aria-label="Remove attached file"
                     >
-                      <X strokeWidth={2} aria-hidden="true" />
+                      <X strokeWidth={1.5} aria-hidden="true" />
                     </button>
                   )}
                 </span>
@@ -206,6 +218,7 @@ export function Composer({
           Message
         </label>
         <textarea
+          ref={textareaRef}
           id="composer-input"
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -217,14 +230,11 @@ export function Composer({
 
         <div className="composer-controls">
           <div className="controls-left">
-            <motion.button
+            <button
               type="button"
               className={buttonClass('secondary', { icon: true })}
               onClick={() => fileInputRef.current?.click()}
               disabled={isStreaming || upload.isUploading || uploadWait > 0}
-              whileHover={uploadWait > 0 ? undefined : { x: -2, y: -2 }}
-              whileTap={{ x: 0, y: 0 }}
-              transition={springs.press}
               aria-label={
                 uploadWait > 0 ? `Upload limit reached, wait ${uploadWait} seconds` : 'Attach a PDF'
               }
@@ -234,8 +244,8 @@ export function Composer({
                   : 'Attach a PDF'
               }
             >
-              <Paperclip strokeWidth={2} aria-hidden="true" />
-            </motion.button>
+              <Paperclip strokeWidth={1.5} aria-hidden="true" />
+            </button>
 
             <span className="mic-wrap">
               <AnimatePresence>
@@ -243,15 +253,24 @@ export function Composer({
                   <motion.span
                     className="mic-ring"
                     aria-hidden="true"
-                    initial={{ scale: 1, opacity: 0.5 }}
-                    animate={{ scale: 1.3, opacity: 0 }}
-                    exit={{ opacity: 0 }}
+                    // Each loop starts and ends at opacity 0, so the restart
+                    // is invisible. Starting at 0.5 made the ring flash back
+                    // in at full strength every 1.6s.
+                    initial={{ scale: 1, opacity: 0 }}
+                    animate={{ scale: [1, 1.15], opacity: [0, 0.45, 0] }}
+                    // Own exit transition: without it the exit inherits the
+                    // infinite repeat below, never finishes, and the ring
+                    // stays on screen after the user clicks Stop.
+                    exit={{
+                      opacity: 0,
+                      transition: { duration: timing.base, ease: easings.inQuart },
+                    }}
                     transition={{ duration: 1.6, repeat: Infinity, ease: 'easeOut' }}
                   />
                 )}
               </AnimatePresence>
 
-              <motion.button
+              <button
                 type="button"
                 className={buttonClass('secondary', {
                   selected: isRecording,
@@ -259,9 +278,6 @@ export function Composer({
                 })}
                 onClick={voice.toggle}
                 disabled={talkDisabled}
-                whileHover={talkDisabled ? undefined : { x: -2, y: -2 }}
-                whileTap={{ x: 0, y: 0 }}
-                transition={springs.press}
                 aria-pressed={isRecording}
                 title={
                   !voiceSupported
@@ -273,9 +289,9 @@ export function Composer({
                         : 'Talk to type'
                 }
               >
-                <Mic strokeWidth={2} aria-hidden="true" />
+                <Mic strokeWidth={1.5} aria-hidden="true" />
                 <span>{isRecording ? 'Stop' : 'Talk'}</span>
-              </motion.button>
+              </button>
             </span>
           </div>
 
@@ -294,28 +310,25 @@ export function Composer({
               ))}
             </select>
 
-            <motion.button
+            <button
               type="button"
               className={buttonClass('primary', { icon: true })}
               onClick={submit}
               disabled={!canSend}
-              whileHover={canSend ? { x: -2, y: -2 } : undefined}
-              whileTap={{ x: 0, y: 0 }}
-              transition={springs.press}
               aria-label={
                 sendWait > 0 ? `Message limit reached, wait ${sendWait} seconds` : 'Send message'
               }
               title={sendWait > 0 ? `Try again in ${sendWait}s` : undefined}
             >
               {/* The seconds replace the arrow rather than sitting beside it:
-                  the button is one square, and the number is the only thing
+                  the button is one circle, and the number is the only thing
                   worth reading while the wait is live. */}
               {sendWait > 0 ? (
                 <span className="send-countdown">{sendWait}</span>
               ) : (
-                <ArrowUp strokeWidth={2.5} aria-hidden="true" />
+                <ArrowUp strokeWidth={1.5} aria-hidden="true" />
               )}
-            </motion.button>
+            </button>
           </div>
         </div>
       </div>

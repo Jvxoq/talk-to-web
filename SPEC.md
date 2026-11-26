@@ -247,14 +247,14 @@ These are the project's invariants. Breaking one is a bug, even if tests pass.
 
 ## 6. Rules the code does not meet yet
 
-The rules above are the target. Two of them are not in the code yet:
+The rules above are the target. One of them is not in the code yet:
 
 | Rule | Where the code falls short |
 |---|---|
 | 10. No schema error becomes a 200 | `_owned_documents` in `generate_reply.py` catches every exception and returns `None`. |
-| 12. No provider text to the user | `_friendly_error` rewrites two cases. Every other error passes through as the provider wrote it. |
 
-Rules 9 and 11 are met. `verify_schema` in `adapters/persistence/schema_version.py`
+Rules 9, 11 and 12 are met. A failed reply carries a code, never text, and an
+unrecognised error is `internal`. `verify_schema` in `adapters/persistence/schema_version.py`
 stops startup when `alembic_version` is not at the code's head. A `Settings`
 validator refuses a `DATABASE_MIGRATION_URL` that names a different database
 from `DATABASE_URL`.
@@ -320,11 +320,11 @@ These are accepted for now. Each has a reason.
 | `pytest` | Domain, use cases and API work, with no infrastructure | CI, on backend changes |
 | `pytest -m integration` | Real Postgres and Qdrant behaviour, and the migration history | CI, separate job |
 | Red-team tests | Guardrails catch known attacks. Zero API calls. | CI, on backend changes, inside `pytest` |
-| Evals, `ci` tag | The real model picks the right tools and cites the right source | CI, on pull requests that touch a prompt, tool, guardrail or dataset |
+| Eval tasks tagged `ci` | The real model picks the right tools and cites the right source | CI, on pull requests that touch a prompt, tool, guardrail or dataset |
 | Vitest | Frontend logic | CI, on frontend changes |
 
-The eval judge's scores are reported but never block a merge. A 0 to 1 score
-from a model is too noisy to gate on.
+The judge is a grader that is a model. Its scores are reported but never block
+a merge. A 0 to 1 score from a model is too noisy to gate on.
 
 ---
 

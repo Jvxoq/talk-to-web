@@ -134,7 +134,7 @@ def test_broken_run_is_not_a_regression() -> None:
     """A rate limit produces an empty answer and no tool calls. It belongs in
     `errors`, and counting it here would read as the model calling nothing."""
     case = _case(expect=Expectation(tools=["retrieve_documents"], must_contain=["2019"]))
-    run = CaseRun(case=case, failed=ReplyFailed(detail="busy right now"))
+    run = CaseRun(case=case, failed=ReplyFailed(code="overloaded"))
 
     assert _verdicts([run], _HARNESS) == _verdicts([], _HARNESS)
 
@@ -211,7 +211,7 @@ def test_broken_sample_does_not_make_a_case_flaky() -> None:
     case = _case(expect=Expectation(must_contain=["2019"]))
     runs = [
         _run(case, _answer("founded in 2019"), 1),
-        CaseRun(case=case, sample=2, failed=ReplyFailed(detail="busy right now")),
+        CaseRun(case=case, sample=2, failed=ReplyFailed(code="overloaded")),
         _run(case, _answer("founded in 2019"), 3),
     ]
 
@@ -279,7 +279,7 @@ class _ScriptedHarness:
         steps = self._script.get(case.id)
         step = steps.pop(0) if steps else "pass"
         if step == "error":
-            return CaseRun(case=case, failed=ReplyFailed(detail="provider down"))
+            return CaseRun(case=case, failed=ReplyFailed(code="internal"))
         events: list[ReplyEvent] = [
             ReplyToolStarted(name="search_web", summary="search_web(query='q')"),
             _finished("search_web"),
@@ -502,13 +502,13 @@ def test_json_keeps_transcript(drive: Any) -> None:
     assert (first["tokens_in"], first["tokens_out"]) == (1000, 100)
 
 
-def test_json_keeps_error_text(drive: Any) -> None:
+def test_json_keeps_the_failure_code(drive: Any) -> None:
     _, results, _ = drive(["--mode", "gate"], {"t1": ["error"]})
 
     errored = results["trials"][0]
     assert errored["outcome"] == "errored"
     assert errored["failure_reasons"] == []
-    assert errored["transcript"]["error"] == "provider down"
+    assert errored["transcript"]["error"] == "internal"
 
 
 def test_json_has_run_versions_and_cost(drive: Any) -> None:
@@ -864,7 +864,7 @@ def test_trial_tokens_include_retried_attempts() -> None:
 async def test_run_case_carries_retried_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(harness_module, "_RETRY_BACKOFF_SECONDS", 0.0)
     case = _case()
-    limited = CaseRun(case=case, failed=ReplyFailed(detail="The model is busy right now"))
+    limited = CaseRun(case=case, failed=ReplyFailed(code="overloaded"))
     limited.usage = ReplyUsage(prompt_tokens=40, completion_tokens=4, elapsed_ms=5, model="m")
     good = CaseRun(case=case, events=_answer("ok"))
     good.usage = ReplyUsage(prompt_tokens=100, completion_tokens=10, elapsed_ms=5, model="m")

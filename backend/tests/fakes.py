@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mappin
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Self
+from typing import Literal, Self
 
 from app.application.chat.models import (
     ChatMessage,
@@ -380,9 +380,14 @@ class FakeChatModel:
         self,
         turns: Sequence[Sequence[ModelChunk]] = (),
         fail_with: Exception | None = None,
+        stall: Literal["hang", "trickle"] | None = None,
     ) -> None:
         self.turns = [list(turn) for turn in turns]
         self.fail_with = fail_with
+        # After its scripted chunks, a stalled provider either goes silent or
+        # keeps sending a token now and then, forever. Only a deadline ends it.
+        self.stall = stall
+        self.cancelled = False
         # What the graph handed us, turn by turn - this is how a test proves a
         # tool result actually made it back into the conversation.
         self.seen_messages: list[list[ChatMessage]] = []
@@ -408,6 +413,16 @@ class FakeChatModel:
 
         for chunk in turn:
             yield chunk
+
+        try:
+            if self.stall == "hang":
+                await asyncio.Event().wait()
+            while self.stall == "trickle":
+                await asyncio.sleep(0.01)
+                yield ModelChunk(text=".")
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
 
         if self.fail_with is not None:
             raise self.fail_with

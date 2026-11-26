@@ -61,6 +61,7 @@ from app.application.chat.dto import (
     ReplyDelta,
     ReplyEvent,
     ReplyFailed,
+    ReplyFailureCode,
     ReplySummarizing,
     ReplyUsage,
 )
@@ -101,12 +102,12 @@ _OWNER_IDS: dict[Owner, int] = {"with_documents": EVAL_OWNER_ID, "empty": EMPTY_
 
 _FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
-_RATE_LIMIT_MARKER = "busy right now"
-"""Substring of `GenerateReply`'s own friendly rate-limit message - see
-`_friendly_error` in `app.application.chat.use_cases.generate_reply`. A
-provider 429 never reaches this harness as a raised exception: `GenerateReply`
-catches it inside the open stream and yields `ReplyFailed` with this text
-instead, so a retry has to recognise the text, not an exception type."""
+_RETRYABLE_FAILURES: frozenset[ReplyFailureCode] = frozenset({"overloaded"})
+"""Failure codes worth another attempt - see `_failure_code` in
+`app.application.chat.use_cases.generate_reply`. A provider 429 never reaches
+this harness as a raised exception: `GenerateReply` catches it inside the open
+stream and yields `ReplyFailed` with a code instead, so a retry has to
+recognise the code, not an exception type."""
 
 _MAX_ATTEMPTS = 3
 _RETRY_BACKOFF_SECONDS = 5.0
@@ -786,7 +787,7 @@ def _opening_paragraph(content: str) -> str:
 def _worth_retrying(run: TurnRun) -> bool:
     if run.error is not None:
         return True
-    return run.failed is not None and _RATE_LIMIT_MARKER in run.failed.detail
+    return run.failed is not None and run.failed.code in _RETRYABLE_FAILURES
 
 
 def _require_local_qdrant(url: str) -> None:
@@ -881,6 +882,7 @@ async def build_harness(
             api_key=settings.llm_api_key.get_secret_value(),
             max_tokens=settings.llm_max_tokens,
             base_url=settings.llm_base_url,
+            request_timeout_seconds=settings.llm_request_timeout_seconds,
         )
         token_counter = ApproximateTokenCounter()
         condenser = Condenser(
@@ -971,6 +973,7 @@ async def build_harness(
             tool_output_guard=tool_output_guard,
             max_digest_documents=settings.chat_digest_max_documents,
             max_digest_summary_chars=settings.chat_digest_max_summary_chars,
+            reply_timeout_seconds=settings.chat_reply_timeout_seconds,
         )
         judge = Judge(model=chat_model, model_name=judge_model, tracer=tracer)
 

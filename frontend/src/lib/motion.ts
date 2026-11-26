@@ -1,32 +1,51 @@
-// Shared Motion presets. Keep every spring here — never hand-roll configs
+// Shared Motion presets. Keep every transition here — never hand-roll configs
 // inline per component (see .claude/skills/frontend-motion).
 //
-// The brand voice is calm, considered, physical: springs are critically or
-// slightly over-damped, timing sits on the slower end of smooth. Use spring
-// physics for anything involving position / scale / size; reserve duration +
-// easeStandard tweens for pure opacity / colour fades.
+// Ivory Editorial moves on durations and named easings, not spring physics:
+// reveals settle fast and long, and UI state changes stay quick and plain.
+// The `springs` name stays so call sites keep working, but each entry is now a
+// tween from the design system's motion table.
+//
+// Reveals are tuned per semantic:
+//   - entrance ("soft arrival"): 400ms ease-out-quart — lands, then settles
+//   - press / hover-class state changes: 150ms ease-out-quart
+//   - color and crossfade tweens: 200ms / 400ms ease-out-quart
+//
+// Exits use ease-in-quart (the one "fast out" curve), which the library applies
+// automatically whenever a transition carries `exit` preferences separately.
 
 import type { Transition } from 'motion/react'
 
-export const springs = {
-  // Default for entrances, layout animations, most UI motion.
-  standard: { type: 'spring', stiffness: 260, damping: 30, mass: 1 },
+export const easings = {
+  // Default for reveals, tab indicators, height changes.
+  outQuart: [0.165, 0.84, 0.44, 1],
+  // Color/background swaps only — the theme and section crossfades.
+  inOutQuart: [0.77, 0, 0.175, 1],
+  // Accordions and any height-driven open/close.
+  standard: [0.4, 0, 0.2, 1],
+  // Strips and carousels sliding.
+  snap: [0.2, 0.8, 0.2, 1],
+  // Exits only.
+  inQuart: [0.895, 0.03, 0.685, 0.22],
+} as const satisfies Record<string, readonly [number, number, number, number]>
 
-  // Buttons, icon-buttons, tab switches — snappier, no overshoot.
-  press: { type: 'spring', stiffness: 400, damping: 35, mass: 0.8 },
-
-  // Cards / bubbles entering & leaving.
-  card: { type: 'spring', stiffness: 220, damping: 26, mass: 1 },
-} satisfies Record<string, Transition>
-
-// ease-out, for opacity / colour-only tweens where a spring is overkill.
-export const easeStandard = [0.22, 1, 0.36, 1] as const
-
-// Timing scale (ms). Nothing not backed by a loading state exceeds ~450ms.
+// Timing scale (ms), straight from the design system's motion table.
 export const timing = {
-  instant: 0.1,
-  fast: 0.18,
-  standard: 0.26,
-  entrance: 0.32,
-  staggerStep: 0.06,
+  fast: 0.15,
+  base: 0.2,
+  slide: 0.25,
+  height: 0.4,
+  reveal: 0.6,
+  staggerStep: 0.04, // 40ms between words/rows in a staggered reveal
 } as const
+
+export const springs = {
+  // Hover/prescale-state changes and icon entrances.
+  standard: { duration: timing.base, ease: easings.outQuart } as Transition,
+
+  // Press feedback — quick, no overshoot.
+  press: { duration: timing.fast, ease: easings.outQuart } as Transition,
+
+  // Rows and bubbles arriving: fade up out of nothing, then settle.
+  card: { duration: timing.height, ease: easings.outQuart } as Transition,
+}

@@ -1,4 +1,4 @@
-export type ButtonVariant = 'primary' | 'secondary' | 'outline' | 'ghost'
+export type ButtonVariant = 'primary' | 'secondary' | 'onDark' | 'ghost'
 
 interface ButtonClassOptions {
   icon?: boolean
@@ -9,10 +9,10 @@ interface ButtonClassOptions {
 /**
  * The single source of truth for button styling.
  *
- * Lives apart from the component because the interactive buttons in this app
- * are Motion components (`motion.button`) so they can carry springs — they take
- * the class from here rather than wrapping `<Button>`, which keeps one variant
- * table for both paths.
+ * Lives apart from the component because interactive buttons can stay plain
+ * elements (hover is a colour change in CSS, not a Motion lift). The four
+ * variants are fixed by the design system; `icon` and `selected` are modifiers
+ * on top of any variant.
  */
 export function buttonClass(
   variant: ButtonVariant = 'primary',

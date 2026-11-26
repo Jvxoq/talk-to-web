@@ -1,94 +1,151 @@
-/* Mono Brutalist — the token contract.
+/* Ivory Editorial — the token contract.
    This is the ONLY file under src/ permitted to contain a literal hex value.
    Everything downstream references these custom properties. */
 
-:root {
-  /* --- Color ---------------------------------------------------------------
-     Pure black on white. `primary` is ink: borders, text, fills. `surface` is
-     paper. `neutral` is whatever sits on top of an ink fill. Dark mode swaps
-     the ink/paper roles — both hexes are declared by the system, so inverting
-     introduces no new value. */
-  --color-primary: #000000;
-  --color-secondary: #555555;
-  --color-tertiary: #000000;
-  --color-neutral: #ffffff;
-  --color-surface: #ffffff;
-
-  /* Error state only, from the Pro token set. Carried on borders and hard
-     shadows — never as body text, so the 4.5:1 text floor doesn't apply. */
-  --color-danger: #b91c1c;
-
-  /* De-emphasised meta only, never body copy. Light mode is the declared
-     #555555 (7.46:1 on white). Dark mode mixes ink into the surface to hold the
-     same contrast rather than inventing a second grey. */
-  --color-muted: var(--color-secondary);
-
-  /* --- Type ---------------------------------------------------------------- */
-  --font-display: 'JetBrains Mono', ui-monospace, monospace;
-  --font-body: 'JetBrains Mono', ui-monospace, monospace;
-  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
-  --tracking-ui: 0.08em;
-  --tracking-tab: 0.1em;
-
-  /* --- Radius — sharp at every level --------------------------------------- */
-  --radius-sm: 0px;
-  --radius-md: 0px;
-  --radius-lg: 0px;
-
-  /* --- Space — 8px grid ---------------------------------------------------- */
-  --space-1: 8px;
-  --space-2: 16px;
-  --space-3: 24px;
-  --space-4: 32px;
-  --space-6: 48px;
-  --space-10: 80px;
-
-  /* --- Border -------------------------------------------------------------- */
-  --border-width: 2px;
-  --border: var(--border-width) solid var(--color-primary);
-
-  /* --- Elevation — hard offsets, zero blur ---------------------------------- */
-  --level-0: none;
-  --level-1: 2px 2px 0 0 var(--color-primary);
-  --level-2: 4px 4px 0 0 var(--color-primary);
-  --level-3: 6px 6px 0 0 var(--color-primary);
-  --level-4: 8px 8px 0 0 var(--color-primary);
-  --level-error: 4px 4px 0 0 var(--color-danger);
-
-  /* --- Motion ---------------------------------------------------------------
-     Deliberate deviation from the system's `transition: none`. The brief is
-     brutalist surfaces carrying the existing smooth choreography, so these
-     mirror the tween timings in lib/motion.ts. Transform is never animated
-     here — Motion owns transform on every interactive element, and an inline
-     style from Motion would silently win over a CSS rule anyway. */
-  --duration-fast: 140ms;
-  --duration-base: 200ms;
-  --easing: cubic-bezier(0.22, 1, 0.36, 1);
-
-  font: 400 16px/1.55 var(--font-body);
+:root,
+[data-theme='ivory'] {
   color-scheme: light;
-  color: var(--color-primary);
-  background: var(--color-surface);
-  font-synthesis: none;
+
+  /* Color. Warm ivory paper, near-black ink, one clay accent. */
+  --ink: #141413;
+  --ink-soft: #3d3d3a;
+  --muted: #5e5d59;
+  --faint: #87867f;
+  --hairline: #d1cfc5;
+  --canvas: #faf9f5;
+  --surface: #f0eee6;
+  --surface-strong: #e8e6dc;
+  --night: #0f0f0e;
+  --night-raised: #262624;
+  --night-hover: #30302e;
+  --night-ink: #faf9f5;
+  --night-eyebrow: #f2ede4;
+  --accent: #d97757;
+  --accent-strong: #c6613f;
+  --accent-tint: #ebc9b7;
+  --on-accent-tint: #141413;
+  --focus: #2c84db;
+  --error: #bf4d43;
+
+  --media-filter: none;
+  --scrim: rgb(20 20 19 / 0.2);
+
+  /* Type. Serif for reading, sans for operating, mono for labelled numbers. */
+  --font-serif: 'Source Serif 4', Georgia, 'Times New Roman', serif;
+  --font-sans: 'DM Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --fs-display-1: clamp(48px, 3.14vw + 35.75px, 96px);
+  --fs-display-2: clamp(36px, 1.31vw + 30.9px, 56px);
+  --fs-lede: clamp(22px, 0.39vw + 20.47px, 28px);
+  --fs-h2: clamp(26px, 0.39vw + 24.47px, 32px);
+  --fs-h3: clamp(19px, 0.13vw + 18.5px, 21px);
+  --fs-body: clamp(16px, 0.065vw + 15.75px, 17px);
+  --fs-ui: 15px;
+  --fs-caption: 14px;
+  --fs-sub-label: 12px;
+  --fs-button: 13px;
+  --fs-mono-label: 11px;
+  --tracking-eyebrow: 0.12em;
+
+  /* Radius. Sharp squares for data, 16px cards, pills for actions. */
+  --r-none: 0;
+  --r-xs: 4px;
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-full: 999px;
+
+  /* Border widths. */
+  --bw-hairline: 0.5px;
+  --bw-sm: 1px;
+  --bw-md: 1.5px;
+  --bw-lg: 2px;
+
+  /* Space — 8px rhythm on a 4px base. */
+  --sp-4: 4px;
+  --sp-8: 8px;
+  --sp-12: 12px;
+  --sp-16: 16px;
+  --sp-24: 24px;
+  --sp-32: 32px;
+  --sp-48: 48px;
+  --sp-64: 64px;
+  --sp-96: 96px;
+  --sp-128: 128px;
+
+  /* Layout. */
+  --page-margin: 32px;
+  --reading-col: 720px;
+  --measure: 640px;
+  --container: 1400px;
+  --header-h: 64px;
+  /* Width the fixed top-right corner covers: two 32px icon buttons, the 8px
+     gap between them, and its 16px inset from the edge. */
+  --corner-w: calc(2 * 32px + var(--sp-8) + var(--sp-16));
+
+  /* Elevation. Flat system: depth comes from fills and 1px rules. */
+  --level-1: 0 0 0 1px var(--hairline);
+  --level-2: 0 1px 2px rgb(20 20 19 / 0.06), 0 4px 16px rgb(20 20 19 / 0.08);
+  --level-3: 0 8px 40px rgb(20 20 19 / 0.16);
+
+  /* Motion — soft arrival. */
+  --ease-out-quart: cubic-bezier(0.165, 0.84, 0.44, 1);
+  --ease-in-out-quart: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-snap: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-in-quart: cubic-bezier(0.895, 0.03, 0.685, 0.22);
+  --dur-fast: 150ms;
+  --dur-base: 200ms;
+  --dur-slide: 250ms;
+  --dur-height: 400ms;
+  --dur-reveal: 600ms;
+  --dur-theme: 320ms;
+
+  font: 400 var(--fs-ui) / 1.55 var(--font-sans);
+  color: var(--ink);
+  background: var(--canvas);
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-@media (max-width: 1024px) {
+@media (max-width: 567px) {
   :root {
-    font-size: 15px;
+    --page-margin: 16px;
   }
 }
 
-:root[data-theme='dark'] {
-  --color-primary: #ffffff;
-  --color-tertiary: #ffffff;
-  --color-neutral: #000000;
-  --color-surface: #000000;
-  --color-muted: color-mix(in srgb, var(--color-primary) 66%, var(--color-surface));
-
+/* Mono — the same system in pure black-and-white dark mode. Only the color
+   layer (and shadow/scrims) change; layout, type and motion stay untouched. */
+[data-theme='mono'] {
   color-scheme: dark;
+
+  --ink: #ededed;
+  --ink-soft: #d4d4d4;
+  --muted: #a3a3a3;
+  --faint: #737373;
+  --hairline: #2e2e2e;
+  --canvas: #0a0a0a;
+  --surface: #141414;
+  --surface-strong: #1f1f1f;
+  --night: #000000;
+  --night-raised: #1f1f1f;
+  --night-hover: #2a2a2a;
+  --night-ink: #fafafa;
+  --night-eyebrow: #e5e5e5;
+  --accent: #fafafa;
+  --accent-strong: #ffffff;
+  --accent-tint: #fafafa;
+  --on-accent-tint: #0a0a0a;
+  --focus: #ffffff;
+  --error: #ef6b5f;
+
+  --media-filter: grayscale(1) contrast(1.08);
+  --scrim: rgb(0 0 0 / 0.6);
+
+  --level-2: 0 0 0 1px var(--hairline), 0 8px 24px rgb(0 0 0 / 0.6);
+  --level-3: 0 0 0 1px var(--hairline), 0 16px 48px rgb(0 0 0 / 0.8);
 }
 
 *,
@@ -100,9 +157,8 @@
 body {
   margin: 0;
   min-height: 100svh;
-  /* Flat. No ambient wash, no gradient — the border carries the separation. */
-  background: var(--color-surface);
-  color: var(--color-primary);
+  background: var(--canvas);
+  color: var(--ink);
 }
 
 #root {
@@ -112,24 +168,38 @@ body {
 }
 
 ::selection {
-  background: var(--color-primary);
-  color: var(--color-neutral);
+  background: var(--ink);
+  color: var(--canvas);
 }
 
-/* The focus ring is part of the design, not an afterthought. Every interactive
-   element inherits it; nothing may set `outline: none` without a replacement. */
+/* The focus ring is the only blue in the UI, and it appears on the keyboard
+   path only. Nothing may set `outline: none` without a replacement. */
 :focus-visible {
-  outline: var(--border-width) solid var(--color-primary);
-  outline-offset: 3px;
+  outline: var(--bw-lg) solid var(--focus);
+  outline-offset: 2px;
 }
 
+/* Anything that is read is serif. Anything clicked is sans, class by class. */
 h1,
 h2,
 h3,
 h4 {
-  font-family: var(--font-display);
-  color: var(--color-primary);
+  font-family: var(--font-serif);
+  font-weight: 400;
+  color: var(--ink);
   margin: 0;
+}
+
+/* The one uppercase label style. Shared by the sign-in form and the wait screen. */
+.eyebrow {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-eyebrow);
+  color: var(--muted);
 }
 
 /* Visually hidden but read by assistive tech — for labels the layout can't show. */
@@ -145,6 +215,55 @@ h4 {
   border: 0;
 }
 
+/* --- Word reveal — the soft-arrival pattern for display headings ---------- */
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes word-rise {
+  from {
+    transform: translateY(0.42em);
+  }
+}
+
+@keyframes unblur {
+  from {
+    filter: blur(4px);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .word {
+    display: inline-block;
+    animation:
+      fade-in 300ms var(--ease-out-quart) var(--delay, 0ms) backwards,
+      word-rise var(--dur-reveal) var(--ease-out-quart) var(--delay, 0ms) backwards,
+      unblur var(--dur-reveal) var(--ease-out-quart) var(--delay, 0ms) backwards;
+  }
+}
+
+/* Theme crossfade when the user flips the toggle: useTheme wraps the swap in a
+   view transition, so the whole page fades as one snapshot. */
+@media (prefers-reduced-motion: no-preference) {
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation-duration: var(--dur-theme);
+    animation-timing-function: var(--ease-in-out-quart);
+  }
+}
+
+.theme-switching,
+.theme-switching *,
+.theme-switching *::before,
+.theme-switching *::after {
+  transition: none !important;
+}
+
+/* Belt-and-braces after the per-pattern gates: under reduce, one-off and
+   looping animations land on their final state instantly. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -152,5 +271,9 @@ h4 {
     transition-duration: 1ms !important;
     animation-duration: 1ms !important;
     animation-iteration-count: 1 !important;
+  }
+
+  .word {
+    animation: none;
   }
 }
