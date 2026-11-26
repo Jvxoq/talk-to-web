@@ -16,12 +16,20 @@ from app.application.chat.agent.condenser import Condenser
 from app.application.chat.agent.nodes import Node
 from app.application.chat.agent.progress import emit_summarizing
 from app.application.chat.agent.state import RESET, AgentState
+from app.application.chat.guardrails.tool_output import fence_untrusted
 from app.application.chat.models import ChatMessage
 from app.application.chat.ports import TokenCounter, Tracer
 
 # The prefix on the summary message, so the model can tell a summary of the past
 # from the live thread it is answering.
 _SUMMARY_PREFIX = "Summary of the earlier conversation:\n\n"
+
+# The summary goes back as a system message, the most trusted slot in the
+# thread. It is written from turns that held fetched pages and files, so an
+# instruction planted in a page can survive into it and read like the app's
+# own rule. The fence marks it as data, the same way a tool result is marked
+# (security eval S13).
+_SUMMARY_SOURCE = "conversation_summary"
 
 
 def make_summarize_node(
@@ -78,7 +86,11 @@ def make_summarize_node(
                 new_messages.append(system)
             if summary_text is not None:
                 new_messages.append(
-                    ChatMessage(role="system", content=_SUMMARY_PREFIX + summary_text)
+                    ChatMessage(
+                        role="system",
+                        content=_SUMMARY_PREFIX
+                        + fence_untrusted(source=_SUMMARY_SOURCE, content=summary_text),
+                    )
                 )
             new_messages.extend(tail)
 

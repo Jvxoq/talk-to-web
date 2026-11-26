@@ -180,7 +180,7 @@ async def test_old_fact_is_summarized_away(rig: Rig) -> None:
     await rig.run(_dataset_task("tools-018-recall-fact-after-summary"))
 
     [seen] = rig.model.seen_messages
-    assert any(m.content.endswith("SUMMARY OF EARLIER CHAT") for m in seen)
+    assert any("SUMMARY OF EARLIER CHAT" in m.content for m in seen)
     assert all("marlowe-7731" not in m.content for m in seen)
 
 

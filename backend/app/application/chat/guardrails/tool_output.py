@@ -47,7 +47,15 @@ class ToolOutputGuard:
         if self._strip_instructions:
             body, findings = strip_instructions(body, max_scan_chars=self._max_scan_chars)
 
-        safe_body = body.replace(_CLOSE_TAG, _ESCAPED_CLOSE_TAG)
+        return fence_untrusted(source=tool, content=body), findings
 
-        fenced = f"{_OPEN_TEMPLATE.format(tool=tool)}{safe_body}{_CLOSE}"
-        return fenced, findings
+
+def fence_untrusted(*, source: str, content: str) -> str:
+    """Wrap `content` in the untrusted-data fence, escaping any closing tag inside.
+
+    Shared by tool results and the chat summary. The summary is model-written
+    text about turns that held tool results, so it can carry the same attacker
+    text and needs the same fence (security eval S13).
+    """
+    safe_body = content.replace(_CLOSE_TAG, _ESCAPED_CLOSE_TAG)
+    return f"{_OPEN_TEMPLATE.format(tool=source)}{safe_body}{_CLOSE}"

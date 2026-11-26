@@ -1,7 +1,7 @@
 import { memo } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { ExternalLink } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { springs } from '../../../lib/motion'
 import { normalizeStreamingMarkdown } from '../markdown'
@@ -14,6 +14,15 @@ interface MessageBubbleProps {
   message: Message
   /** The assistant turn is still filling in — render the thinking state. */
   pending: boolean
+}
+
+/**
+ * An image URL in a reply is attacker-steerable (a page the agent read can make
+ * it write one), and the browser fetches it with no click, carrying whatever
+ * the URL holds. So no image is ever rendered: the alt text shows instead.
+ */
+const markdownComponents: Components = {
+  img: ({ alt }) => (alt ? <span>{alt}</span> : null),
 }
 
 /** `search_web` -> `Search web`. Used to build a label when there's no `summary`. */
@@ -134,7 +143,9 @@ export const MessageBubble = memo(function MessageBubble({
         {message.content ? (
           renderMarkdown ? (
             <div className="markdown">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdownSource}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                {markdownSource}
+              </ReactMarkdown>
             </div>
           ) : (
             message.content
