@@ -53,15 +53,19 @@ services:
       dockerfile: Dockerfile.dev
     # Shared with `backend` below so the image is built once, not twice.
     image: talk-to-web-backend:dev
-    command: ["uv", "run", "alembic", "upgrade", "head"]
+    # Both migrations: the Postgres schema, then the Qdrant collection.
+    command: ["sh", "-c", "uv run alembic upgrade head && uv run python -m app.prepare_vector_index"]
     env_file:
       - ./backend/.env
     environment:
+      QDRANT_URL: http://qdrant:6333
       DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/talk_to_the_web
     volumes:
       - ./backend:/app
       - backend_venv:/app/.venv
     depends_on:
+      qdrant:
+        condition: service_healthy
       postgres:
         condition: service_healthy
     restart: "no"

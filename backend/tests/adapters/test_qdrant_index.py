@@ -20,7 +20,8 @@ from typing import TYPE_CHECKING
 import httpx
 import pytest
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.http.exceptions import ResponseHandlingException
+from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
+from qdrant_client.models import CollectionsResponse
 
 from app.adapters.vector.qdrant_index import QdrantVectorIndex
 from app.domain.ingestion.value_objects import Chunk
@@ -128,6 +129,37 @@ class TestEnsure:
         await index.ensure(DIMENSIONS)
 
         assert await texts(index, NORTH, ALICE) == ["survives"]
+        await index.aclose()
+
+    async def test_losing_the_create_race_to_another_caller_is_fine(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Two processes both list the collections, both see it missing, and
+        # both create it. The second create fails; `ensure` must still succeed.
+        client = AsyncQdrantClient(location=":memory:")
+        index = QdrantVectorIndex(client, COLLECTION)
+        await index.ensure(DIMENSIONS)
+        listed_before_the_other_caller = CollectionsResponse(collections=[])
+
+        async def get_collections() -> CollectionsResponse:
+            return listed_before_the_other_caller
+
+        monkeypatch.setattr(client, "get_collections", get_collections)
+
+        await index.ensure(DIMENSIONS)
+
+        assert await client.collection_exists(COLLECTION)
+        await index.aclose()
+
+    async def test_a_collection_with_a_different_vector_size_is_refused(self) -> None:
+        # EMBEDDING_DIMENSIONS changed after the collection was built. Every
+        # upload would fail later; `ensure` must say so now, by name.
+        client = AsyncQdrantClient(location=":memory:")
+        index = QdrantVectorIndex(client, COLLECTION)
+        await index.ensure(DIMENSIONS)
+
+        with pytest.raises(RuntimeError, match=r"size 4.*produces 8"):
+            await index.ensure(DIMENSIONS * 2)
         await index.aclose()
 
 
@@ -292,6 +324,37 @@ class TestSearchFailure:
 
 
 class TestDeleteDocument:
+    async def test_a_missing_collection_means_nothing_to_delete(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Qdrant Cloud deleted the idle cluster while the app kept running. The
+        # user deletes an old document: there is nothing left to remove, and
+        # that is the outcome they asked for, not a 500.
+        client = AsyncQdrantClient(location=":memory:")
+        index = QdrantVectorIndex(client, COLLECTION)
+
+        async def delete(**_: object) -> None:
+            raise UnexpectedResponse(404, "Not Found", b"", httpx.Headers())
+
+        monkeypatch.setattr(client, "delete", delete)
+
+        await index.delete_document(DOC_A, ALICE)
+        await index.aclose()
+
+    async def test_a_timeout_raises_and_logs_what_it_was(
+        self, index: QdrantVectorIndex, log_records: list["Record"], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def delete(*_: object, **__: object) -> None:
+            raise TIMEOUT
+
+        monkeypatch.setattr(AsyncQdrantClient, "delete", delete)
+
+        with pytest.raises(RuntimeError, match="ReadTimeout"):
+            await index.delete_document(DOC_A, ALICE)
+        [(level, message, _)] = logged(log_records)
+        assert level == "ERROR"
+        assert "ReadTimeout" in message
+
     async def test_it_removes_that_documents_passages(self, index: QdrantVectorIndex) -> None:
         await index.upsert([chunk("gone")], [NORTH], ALICE, DOC_A, THREAD)
 

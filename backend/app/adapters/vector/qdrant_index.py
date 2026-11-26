@@ -72,11 +72,22 @@ class QdrantVectorIndex:
             response = await self._client.get_collections()
             exists = any(collection.name == self._collection for collection in response.collections)
             if not exists:
-                logger.debug(f"Creating a new collection {self._collection}")
-                await self._client.create_collection(
-                    collection_name=self._collection,
-                    vectors_config=VectorParams(size=dimensions, distance=Distance.COSINE),
-                )
+                logger.info(f"Creating a new collection {self._collection}")
+                try:
+                    await self._client.create_collection(
+                        collection_name=self._collection,
+                        vectors_config=VectorParams(size=dimensions, distance=Distance.COSINE),
+                    )
+                except (ApiException, ValueError):
+                    # Two callers can both see it missing: the boot step on a
+                    # new instance and an upload on the old one mid-deploy.
+                    # Losing that race is fine. Anything else is a real failure.
+                    # (`ValueError` is what local mode raises for a duplicate.)
+                    if not await self._client.collection_exists(self._collection):
+                        raise
+                    logger.info(f"Collection {self._collection} was created concurrently")
+            else:
+                await self._check_vector_size(dimensions)
 
             # Idempotent, and worth doing every time rather than only on
             # creation: without a payload index Qdrant still answers the filtered
@@ -106,8 +117,8 @@ class QdrantVectorIndex:
                 wait=True,
             )
         except (ApiException, ResponseHandlingException) as error:
-            logger.error(f"Failed to prepare collection {self._collection}: {error}")
-            raise RuntimeError(f"Vector index preparation failed: {error}") from error
+            logger.error(f"Failed to prepare collection {self._collection}: {error!r}")
+            raise RuntimeError(f"Vector index preparation failed: {error!r}") from error
 
     async def delete_document(self, document_id: int, owner_id: int) -> None:
         """Delete one document's points, leaving the owner's other documents in place."""
@@ -118,10 +129,20 @@ class QdrantVectorIndex:
                 wait=True,
             )
         except (ApiException, ResponseHandlingException) as error:
+            # A collection that is confirmed gone holds nothing to delete, which
+            # is the outcome the caller wanted. Qdrant Cloud deletes idle free
+            # clusters, so this happens on a running app, not only at boot.
+            if await self._collection_missing():
+                logger.info(
+                    f"Collection {self._collection} does not exist, "
+                    f"nothing to delete for document {document_id}"
+                )
+                return
+            # `repr`, not `str`: a timeout's message is empty.
             logger.error(
-                f"Failed to delete document {document_id} from {self._collection}: {error}"
+                f"Failed to delete document {document_id} from {self._collection}: {error!r}"
             )
-            raise RuntimeError(f"Vector index delete failed: {error}") from error
+            raise RuntimeError(f"Vector index delete failed: {error!r}") from error
         logger.debug(f"Deleted document {document_id} (owner {owner_id}) from {self._collection}")
 
     async def upsert(
@@ -162,8 +183,8 @@ class QdrantVectorIndex:
             # into 200 round trips.
             await self._client.upsert(collection_name=self._collection, points=points)
         except (ApiException, ResponseHandlingException) as error:
-            logger.error(f"Failed to upsert into {self._collection}: {error}")
-            raise RuntimeError(f"Vector index upsert failed: {error}") from error
+            logger.error(f"Failed to upsert into {self._collection}: {error!r}")
+            raise RuntimeError(f"Vector index upsert failed: {error!r}") from error
 
     async def search(
         self,
@@ -221,6 +242,22 @@ class QdrantVectorIndex:
             for point in response.points
             if point.payload
         ]
+
+    async def _check_vector_size(self, dimensions: int) -> None:
+        """Refuse a collection built for a different embedding size.
+
+        Without this a changed `EMBEDDING_DIMENSIONS` passes `ensure`, and every
+        upload and search then fails inside Qdrant with a less obvious error.
+        """
+        info = await self._client.get_collection(self._collection)
+        vectors = info.config.params.vectors
+        size = vectors.size if isinstance(vectors, VectorParams) else None
+        if size != dimensions:
+            raise RuntimeError(
+                f"Collection {self._collection} stores vectors of size {size}, "
+                f"but the embedder produces {dimensions}. Recreate the collection "
+                f"or set EMBEDDING_DIMENSIONS to match."
+            )
 
     async def _collection_missing(self) -> bool:
         """Whether the collection is confirmed absent.
