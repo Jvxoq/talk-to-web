@@ -72,7 +72,7 @@ class QdrantVectorIndex:
             response = await self._client.get_collections()
             exists = any(collection.name == self._collection for collection in response.collections)
             if not exists:
-                logger.debug(f"Creating a new collection {self._collection}")
+                logger.info(f"Creating a new collection {self._collection}")
                 await self._client.create_collection(
                     collection_name=self._collection,
                     vectors_config=VectorParams(size=dimensions, distance=Distance.COSINE),

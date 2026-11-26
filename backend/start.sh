@@ -10,6 +10,10 @@ set -e
 
 alembic upgrade head
 
+# The vector store's migration: creates the Qdrant collection if it is missing,
+# so a deleted or brand-new cluster works before the first upload.
+python -m app.prepare_vector_index
+
 # exec replaces this shell, so Render's stop signal reaches uvicorn itself.
 # --forwarded-allow-ips '*' trusts X-Forwarded-For, which is safe only because
 # Render's proxy is the one thing that can reach this port.
