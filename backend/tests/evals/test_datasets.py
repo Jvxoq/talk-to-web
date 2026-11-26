@@ -21,6 +21,7 @@ from app.adapters.llm.approximate_token_counter import ApproximateTokenCounter
 from app.application.chat.models import ChatMessage
 from app.settings import Settings
 from evals.cases import BEHAVIORS, EvalCase, Expectation, expanded_history, load_cases
+from evals.judge import JUDGES_BY_BEHAVIOR
 from evals.recorded_web import INDEX_NAME, RecordedWeb, normalize_url
 
 _EVALS_DIR = Path(__file__).parents[2] / "evals"
@@ -84,7 +85,13 @@ def test_expected_sources_name_real_fixtures(name: str) -> None:
 
 @pytest.mark.parametrize("name", _DATASETS)
 def test_every_case_checks_something(name: str) -> None:
-    """A case with an empty `expect` costs an API call and proves nothing."""
+    """A case with an empty `expect` costs an API call and proves nothing.
+
+    One exception: a task no code grader can decide, such as "says the files
+    do not cover it", may rely on its judges alone. Judges read it only in a
+    release run, so such a task may never carry `ci`, where a gate run would
+    pay for it and grade nothing.
+    """
     unchecked = [
         case.id
         for case in _load(name)
@@ -93,9 +100,15 @@ def test_every_case_checks_something(name: str) -> None:
             or case.expect.expected_sources
             or case.expect.must_contain
             or case.expect.must_not_contain
+            or _judge_only(case)
         )
     ]
     assert not unchecked
+
+
+def _judge_only(case: EvalCase) -> bool:
+    """Not in the gate, and a judge reads it in a release run."""
+    return "ci" not in case.tags and any(tag in JUDGES_BY_BEHAVIOR for tag in case.tags)
 
 
 @pytest.mark.parametrize("name", _DATASETS)
