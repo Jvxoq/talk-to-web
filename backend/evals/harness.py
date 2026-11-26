@@ -30,7 +30,7 @@ import asyncio
 import hashlib
 import json
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from itertools import count
@@ -139,6 +139,12 @@ different scopes here, and collapsing them would let case order change an
 answer."""
 
 
+def new_thread_id() -> int:
+    """A thread id no earlier trial used. One per attempt, so a retried trial is not
+    seeded into the thread of the attempt that failed."""
+    return next(_case_threads)
+
+
 def owner_id_for(owner: Owner) -> int:
     """The account id a case's declared owner runs as."""
     return _OWNER_IDS[owner]
@@ -179,6 +185,15 @@ class ToolResult:
     text: str
 
 
+def last_user_index(messages: Sequence[ChatMessage]) -> int:
+    """Where the final user message is, or 0 for a thread that has none."""
+    start = 0
+    for index, message in enumerate(messages):
+        if message.role == "user":
+            start = index
+    return start
+
+
 def tool_results_since_last_user(messages: Sequence[ChatMessage]) -> list[ToolResult]:
     """The tool results of the final turn, each paired with its tool's name.
 
@@ -186,10 +201,7 @@ def tool_results_since_last_user(messages: Sequence[ChatMessage]) -> list[ToolRe
     count as sources for this answer. The name comes from the assistant turn
     that asked for the call, matched by call id.
     """
-    start = 0
-    for index, message in enumerate(messages):
-        if message.role == "user":
-            start = index
+    start = last_user_index(messages)
     names: dict[str, str] = {}
     results: list[ToolResult] = []
     for message in messages[start:]:
@@ -201,21 +213,19 @@ def tool_results_since_last_user(messages: Sequence[ChatMessage]) -> list[ToolRe
     return results
 
 
-@dataclass(slots=True)
-class CaseRun:
-    """What one case produced, ready for `evals.metrics` to score."""
+@dataclass(slots=True, kw_only=True)
+class TurnRun:
+    """What one turn produced, with no task attached.
 
-    case: EvalCase
+    The main suite wraps it in a `CaseRun`. The security suite (`evals.security`)
+    uses it directly. Both are filled by `EvalHarness.run_turn`.
+    """
+
     events: list[ReplyEvent] = field(default_factory=list)
     usage: ReplyUsage | None = None
     failed: ReplyFailed | None = None
     latency_ms: float = 0.0
-    # Which sample of this case this is, under `--repeat`. 1 unless the driver
-    # says otherwise. A model at temperature 0 still varies between calls, so
-    # one sample cannot tell a regression from a coin flip - see
-    # `evals.__main__._verdicts`, which is what reads this.
-    sample: int = 1
-    # How many times the case was run before this result stood. 1 is the
+    # How many times the turn was run before this result stood. 1 is the
     # normal case; anything higher means a provider rate limit or a transient
     # error was retried, and is worth seeing in the report rather than being
     # smoothed away.
@@ -225,8 +235,8 @@ class CaseRun:
     # rate limit) comes back as `failed` instead, because `GenerateReply`
     # itself never raises those; see its own docstring.
     error: str | None = None
-    # How many history turns were seeded into this trial's thread before the
-    # final `input` ran. 0 for a one-turn task.
+    # How many messages were seeded into this trial's thread before the final
+    # input ran. 0 for a one-turn task.
     seeded_turns: int = 0
     # What each tool handed back to the model this trial, in call order. Read
     # from the thread after the reply, so a grader and a person labeling the
@@ -238,6 +248,11 @@ class CaseRun:
     # covers the attempt that stood, and the bill covers all of them.
     retried_tokens_in: int = 0
     retried_tokens_out: int = 0
+    # The thread as it stood after the turn, and the summary the summarize node
+    # wrote. Read only when `run_turn` is asked to keep them, because a padded
+    # thread is large and the main suite never reads either.
+    thread_messages: list[ChatMessage] = field(default_factory=list)
+    summary: str = ""
 
     @property
     def summarized(self) -> bool:
@@ -258,6 +273,18 @@ class CaseRun:
         something to re-run, a wrong tool choice is something to fix.
         """
         return self.error is not None or self.failed is not None
+
+
+@dataclass(slots=True, kw_only=True)
+class CaseRun(TurnRun):
+    """What one case produced, ready for `evals.metrics` to score."""
+
+    case: EvalCase
+    # Which sample of this case this is, under `--repeat`. 1 unless the driver
+    # says otherwise. A model at temperature 0 still varies between calls, so
+    # one sample cannot tell a regression from a coin flip - see
+    # `evals.__main__._verdicts`, which is what reads this.
+    sample: int = 1
 
 
 class _Shelf:
@@ -363,6 +390,19 @@ class _ShelfUnitOfWork:
         return None
 
 
+Shelf = _Shelf
+"""The public name of `_Shelf`, for a suite that builds its own harness."""
+
+
+def shelf_uow_factory(shelf: _Shelf) -> Callable[[], Any]:
+    """The `uow_factory` `GenerateReply` is given: it answers from `shelf` alone.
+
+    Typed `Callable[[], Any]` because the real port is a SQLAlchemy-backed unit
+    of work and this satisfies only the slice of it a reply touches.
+    """
+    return lambda: _ShelfUnitOfWork(shelf)
+
+
 WebMode = Literal["recorded", "live"]
 """Where `fetch_web_pages` and `search_web` get their pages.
 
@@ -443,6 +483,38 @@ class EvalHarness:
     # One LangSmith trace per trial when `LANGSMITH_API_KEY` is set, for hand
     # labeling. A no-op otherwise.
     trial_tracer: TrialTracer = field(default_factory=lambda: TrialTracer(None, ""))
+    # The tool registry the graph runs on, so a suite can ask it what a tool
+    # result looks like once the production fence has been applied.
+    registry: ToolRegistry | None = None
+
+    async def index_document(
+        self, owner_id: int, document_id: int, name: str, text: str
+    ) -> UploadedDocument | None:
+        """Chunk, embed and upsert one document for one owner.
+
+        The one indexing path: `index_fixtures` and the security suite both come
+        here. Returns the shelf entry that matches what was indexed, or `None`
+        when the text has no chunks. Chunk sizes come off `Settings`, so a score
+        here is measured over the windows a real upload produces.
+        """
+        document = Document(name=DocumentName(name), content=text)
+        chunks = list(document.chunks(self.chunk_size, self.chunk_overlap))
+        if not chunks:
+            return None
+        vectors = [await self.embedder.embed(chunk.text) for chunk in chunks]
+        await self.vector_index.upsert(chunks, vectors, owner_id, document_id, EVAL_CONVERSATION_ID)
+        return UploadedDocument(
+            name=name,
+            reference=name,
+            owner_id=owner_id,
+            id=document_id,
+            chunks_indexed=len(chunks),
+            summary=_opening_paragraph(document.content),
+        )
+
+    def shelve(self, owner_id: int, documents: list[UploadedDocument]) -> None:
+        """Tell the reply path what `owner_id` has uploaded. `[]` is an answer: no files."""
+        self._shelf.put(owner_id, documents)
 
     async def index_fixtures(self) -> int:
         """Chunk, embed and upsert every file in `evals/fixtures/`, then record
@@ -466,28 +538,16 @@ class EvalHarness:
         total_chunks = 0
         shelf: list[UploadedDocument] = []
         for document_id, fixture_path in enumerate(sorted(_fixture_files()), start=1):
-            document = Document(
-                name=DocumentName(fixture_path.name),
-                content=fixture_path.read_text(encoding="utf-8"),
+            entry = await self.index_document(
+                EVAL_OWNER_ID,
+                document_id,
+                fixture_path.name,
+                fixture_path.read_text(encoding="utf-8"),
             )
-            chunks = list(document.chunks(self.chunk_size, self.chunk_overlap))
-            if not chunks:
+            if entry is None:
                 continue
-            vectors = [await self.embedder.embed(chunk.text) for chunk in chunks]
-            await self.vector_index.upsert(
-                chunks, vectors, EVAL_OWNER_ID, document_id, EVAL_CONVERSATION_ID
-            )
-            total_chunks += len(chunks)
-            shelf.append(
-                UploadedDocument(
-                    name=fixture_path.name,
-                    reference=fixture_path.name,
-                    owner_id=EVAL_OWNER_ID,
-                    id=document_id,
-                    chunks_indexed=len(chunks),
-                    summary=_opening_paragraph(document.content),
-                )
-            )
+            total_chunks += entry.chunks_indexed
+            shelf.append(entry)
 
         self._shelf.put(EVAL_OWNER_ID, shelf)
         # Written explicitly rather than left absent. `GenerateReply` treats a
@@ -507,68 +567,67 @@ class EvalHarness:
         money to regenerate. Neither is a statement about the model, so
         neither should end the run.
         """
-        run = await self._run_once(case, temperature=temperature)
-        for attempt in range(2, _MAX_ATTEMPTS + 1):
-            if not _worth_retrying(run):
-                break
-            logger.warning(f"Case {case.id!r} failed transiently; attempt {attempt}")
-            await asyncio.sleep(_RETRY_BACKOFF_SECONDS * (attempt - 1))
-            retried_in = run.retried_tokens_in + (run.usage.prompt_tokens if run.usage else 0)
-            retried_out = run.retried_tokens_out + (run.usage.completion_tokens if run.usage else 0)
-            run = await self._run_once(case, temperature=temperature)
-            run.attempts = attempt
-            run.retried_tokens_in = retried_in
-            run.retried_tokens_out = retried_out
-        return run
+        return await retry_transient(
+            lambda: self._run_once(case, temperature=temperature), label=case.id
+        )
 
-    async def _seed_history(self, case: EvalCase, owner_id: int, conversation_id: int) -> None:
-        """Write a task's earlier turns into its thread, with no model call.
+    async def seed_thread(
+        self, owner_id: int, conversation_id: int, messages: Sequence[ChatMessage]
+    ) -> None:
+        """Write earlier turns into a thread, with no model call.
 
-        The turns go straight into the checkpointer as if they had already
-        happened, so only the final `input` reaches the model under test. The
-        system prompt goes first, because `GenerateReply` adds it only to an
-        empty thread. The thread key mirrors `generate_reply._thread_id`; a
-        wrong key leaves the history unread and the answer cannot recall it,
-        which `tests/evals/test_seeding.py` catches.
+        The one seeding path, for the main suite and the security suite. The turns
+        go straight into the checkpointer as if they had already happened, so only
+        the final input reaches the model under test. The system prompt goes first,
+        because `GenerateReply` adds it only to an empty thread. The thread key
+        mirrors `generate_reply._thread_id`; a wrong key leaves the history unread
+        and the answer cannot recall it, which `tests/evals/test_seeding.py`
+        catches. An empty `messages` seeds nothing.
         """
-        if not case.history:
+        if not messages:
             return
-        messages = [
-            ChatMessage(role="system", content=self.system_prompt),
-            *(
-                ChatMessage(role=role, content=text)
-                for role, text in expanded_history(case.history)
-            ),
-        ]
         await self.graph.aupdate_state(
             {"configurable": {"thread_id": f"{owner_id}:{conversation_id}"}},
-            {"messages": messages},
+            {"messages": [ChatMessage(role="system", content=self.system_prompt), *messages]},
             as_node="agent",
         )
 
-    async def _run_once(self, case: EvalCase, *, temperature: float) -> CaseRun:
+    async def run_turn[R: TurnRun](
+        self,
+        run: R,
+        *,
+        owner_id: int,
+        conversation_id: int,
+        user_input: str,
+        metadata: Mapping[str, Any],
+        prepare: Callable[[], Awaitable[Sequence[ChatMessage]]] | None = None,
+        temperature: float = 0.0,
+        keep_thread: bool = False,
+    ) -> R:
+        """Run one attempt of one trial into `run`, as `owner_id` in `conversation_id`.
+
+        The one turn runner, for the main suite and the security suite. `prepare`
+        runs inside the trial's trace and error guard, and returns the messages to
+        seed, so a failed setup (an embedding call, a seed write) ends the trial as
+        an error and not as a crash. One LangSmith trace per call, with `metadata`
+        and the model on it. `keep_thread` also keeps the thread and the summary
+        the summarize node wrote.
+        """
         started = time.perf_counter()
-        run = CaseRun(case=case)
-        owner_id = owner_id_for(case.owner)
-        # Every case is its own thread: cross-case state would make one case's
-        # answer depend on run order, which is exactly what an eval must not
-        # do. A number rather than `None`, because a turn with no thread owns no
-        # documents and the rag suite would then have nothing to retrieve. Drawn
-        # per attempt, so a retried trial is seeded into a thread of its own.
-        conversation_id = next(_case_threads)
         async with self.trial_tracer.trial(
             "eval.trial",
-            inputs={"question": case.input},
-            metadata={"task_id": case.id, "suite": case.suite, "model": self.model},
+            inputs={"question": user_input},
+            metadata={**metadata, "model": self.model},
         ) as trace:
             run.trace_id = trace.trace_id
             try:
-                await self._seed_history(case, owner_id, conversation_id)
-                run.seeded_turns = len(case.history)
+                seed = await prepare() if prepare is not None else ()
+                await self.seed_thread(owner_id, conversation_id, seed)
+                run.seeded_turns = len(seed)
                 events = await self.generate_reply(
                     GenerateReplyInput(
                         model=self.model,
-                        user_input=case.input,
+                        user_input=user_input,
                         owner_id=owner_id,
                         temperature=temperature,
                         conversation_id=conversation_id,
@@ -580,15 +639,45 @@ class EvalHarness:
                         run.usage = event
                     elif isinstance(event, ReplyFailed):
                         run.failed = event
-            except Exception as error:
+            except Exception as error:  # noqa: BLE001 - a broken trial is an `error`, not a crash
                 run.error = str(error)
-            run.tool_results = await self._tool_results(owner_id, conversation_id)
+            messages, summary = await self._read_thread(owner_id, conversation_id)
+            run.tool_results = tool_results_since_last_user(messages)
+            if keep_thread:
+                run.thread_messages = messages
+                run.summary = summary
             trace.outputs.update(answer=run.answer, error=run.error or "")
         run.latency_ms = (time.perf_counter() - started) * 1000
         return run
 
-    async def _tool_results(self, owner_id: int, conversation_id: int) -> list[ToolResult]:
-        """Read the final turn's tool results back from the thread. Never raises.
+    async def _run_once(self, case: EvalCase, *, temperature: float) -> CaseRun:
+        # Every case is its own thread: cross-case state would make one case's
+        # answer depend on run order, which is exactly what an eval must not
+        # do. A number rather than `None`, because a turn with no thread owns no
+        # documents and the rag suite would then have nothing to retrieve. Drawn
+        # per attempt, so a retried trial is seeded into a thread of its own.
+        conversation_id = new_thread_id()
+
+        async def history() -> list[ChatMessage]:
+            return [
+                ChatMessage(role=role, content=text)
+                for role, text in expanded_history(case.history)
+            ]
+
+        return await self.run_turn(
+            CaseRun(case=case),
+            owner_id=owner_id_for(case.owner),
+            conversation_id=conversation_id,
+            user_input=case.input,
+            metadata={"task_id": case.id, "suite": case.suite},
+            prepare=history,
+            temperature=temperature,
+        )
+
+    async def _read_thread(
+        self, owner_id: int, conversation_id: int
+    ) -> tuple[list[ChatMessage], str]:
+        """The thread's messages and its summary, read back. Never raises.
 
         A trial that broke before the graph ran has no thread, and reading one
         must not turn a modelled failure into an exception.
@@ -597,11 +686,33 @@ class EvalHarness:
             snapshot = await self.graph.aget_state(
                 {"configurable": {"thread_id": f"{owner_id}:{conversation_id}"}}
             )
-            messages = snapshot.values.get("messages", []) if snapshot.values else []
-            return tool_results_since_last_user(messages)
+            values = snapshot.values or {}
+            return list(values.get("messages", [])), str(values.get("summary", ""))
         except Exception as error:  # noqa: BLE001 - a missing thread costs sources, not the trial
-            logger.warning(f"Could not read tool results for thread {conversation_id}: {error}")
-            return []
+            logger.warning(f"Could not read thread {conversation_id}: {error}")
+            return [], ""
+
+
+async def retry_transient[R: TurnRun](attempt: Callable[[], Awaitable[R]], *, label: str) -> R:
+    """Run `attempt`, and run it again while the failure is transient.
+
+    `attempt` must draw a fresh thread each time it is called, so a retried
+    trial is seeded into a thread of its own. The tokens of earlier attempts are
+    carried on the result that stands, because the bill covers all of them.
+    """
+    run = await attempt()
+    for number in range(2, _MAX_ATTEMPTS + 1):
+        if not _worth_retrying(run):
+            break
+        logger.warning(f"Case {label!r} failed transiently; attempt {number}")
+        await asyncio.sleep(_RETRY_BACKOFF_SECONDS * (number - 1))
+        retried_in = run.retried_tokens_in + (run.usage.prompt_tokens if run.usage else 0)
+        retried_out = run.retried_tokens_out + (run.usage.completion_tokens if run.usage else 0)
+        run = await attempt()
+        run.attempts = number
+        run.retried_tokens_in = retried_in
+        run.retried_tokens_out = retried_out
+    return run
 
 
 def compute_prompt_version(
@@ -672,7 +783,7 @@ def _opening_paragraph(content: str) -> str:
     return ""
 
 
-def _worth_retrying(run: CaseRun) -> bool:
+def _worth_retrying(run: TurnRun) -> bool:
     if run.error is not None:
         return True
     return run.failed is not None and _RATE_LIMIT_MARKER in run.failed.detail
@@ -696,7 +807,11 @@ def _require_local_qdrant(url: str) -> None:
 
 @asynccontextmanager
 async def build_harness(
-    *, run_id: str | None = None, model: str | None = None, web_mode: WebMode = "recorded"
+    *,
+    run_id: str | None = None,
+    model: str | None = None,
+    web_mode: WebMode = "recorded",
+    wrap_fetcher: Callable[[WebContentFetcher], WebContentFetcher] | None = None,
 ) -> AsyncIterator[EvalHarness]:
     """Build one real container for a run, and tear every client down after -
     the scratch Qdrant collection included, even when the run is interrupted.
@@ -705,7 +820,13 @@ async def build_harness(
     `app.settings.get_settings` does, but without its `lru_cache`: a fresh
     `Settings()` is fine here, since a CLI process builds a container exactly
     once and exits.
+
+    `wrap_fetcher` lets a suite put its own page source in front of the recorded
+    fetcher. Recorded mode only: a wrapper around the live scraper would not
+    keep its promise of no network.
     """
+    if wrap_fetcher is not None and web_mode != "recorded":
+        raise ValueError("wrap_fetcher works with recorded web mode only")
     settings = Settings()
     _require_local_qdrant(settings.qdrant_url)
 
@@ -805,7 +926,7 @@ async def build_harness(
         registry = ToolRegistry(
             [
                 RetrieveDocuments(knowledge),
-                FetchWebPages(web.fetcher),
+                FetchWebPages(wrap_fetcher(web.fetcher) if wrap_fetcher else web.fetcher),
                 SearchWeb(web.searcher, max_results=settings.tavily_max_results),
             ],
             guard=tool_output_guard,
@@ -846,7 +967,7 @@ async def build_harness(
             # `cast` because the real port is a SQLAlchemy-backed unit of work and
             # this satisfies only the slice of it a reply touches - see
             # `_ShelfUnitOfWork`.
-            uow_factory=cast(Any, lambda: _ShelfUnitOfWork(shelf)),
+            uow_factory=cast(Any, shelf_uow_factory(shelf)),
             tool_output_guard=tool_output_guard,
             max_digest_documents=settings.chat_digest_max_documents,
             max_digest_summary_chars=settings.chat_digest_max_summary_chars,
@@ -878,6 +999,7 @@ async def build_harness(
             ),
             web_mode=web_mode,
             trial_tracer=trial_tracer,
+            registry=registry,
         )
     except BaseException:
         await http_session.close()
@@ -893,7 +1015,7 @@ async def build_harness(
         try:
             await qdrant_client.delete_collection(collection)
             logger.info(f"Dropped scratch collection {collection!r}")
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - cleanup must not hide the run's result
             logger.warning(f"Could not drop scratch collection {collection!r}: {error}")
         await tracer.flush()
         await trial_tracer.flush()
