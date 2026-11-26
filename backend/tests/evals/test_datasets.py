@@ -11,16 +11,22 @@ Nothing here calls a model, touches Qdrant or reads an API key: importing
 suite rather than under `tests/integration/`.
 """
 
+import json
+import re
 from pathlib import Path
 
 import pytest
 
-from evals.cases import EvalCase, load_cases
+from app.adapters.llm.approximate_token_counter import ApproximateTokenCounter
+from app.application.chat.models import ChatMessage
+from app.settings import Settings
+from evals.cases import BEHAVIORS, EvalCase, Expectation, expanded_history, load_cases
+from evals.recorded_web import INDEX_NAME, RecordedWeb, normalize_url
 
 _EVALS_DIR = Path(__file__).parents[2] / "evals"
 _FIXTURES_DIR = _EVALS_DIR / "fixtures"
 
-_DATASETS = ["tools.jsonl", "rag.jsonl", "injection.jsonl"]
+_DATASETS = ["tools.jsonl", "rag.jsonl"]
 """The two files `evals.__main__._select_cases` loads, by the same names."""
 
 _CI_TAG = "ci"
@@ -120,19 +126,158 @@ def test_an_ordering_rule_is_exercised() -> None:
 
 
 @pytest.mark.parametrize("name", _DATASETS)
-def test_forbidden_canaries_exist_in_a_fixture(name: str) -> None:
-    """A canary that is nowhere in the corpus cannot leak, so a case forbidding
-    it passes without the agent having resisted anything. Only `CANARY-`
-    strings are checked: the other `must_not_contain` entries are ordinary
-    facts from a *different* fixture, and those are meant to be absent from
-    the one the case reads."""
-    corpus = "\n".join(
-        path.read_text(encoding="utf-8") for path in _FIXTURES_DIR.iterdir() if path.is_file()
-    )
-    unplanted = [
-        f"{case.id}: {needle}"
-        for case in _load(name)
-        for needle in case.expect.must_not_contain
-        if needle.startswith("CANARY-") and needle not in corpus
+def test_every_task_has_one_behavior(name: str) -> None:
+    """The report groups by behavior and `--tag b1` selects by it. A task with
+    no behavior tag drops out of every group, and one with two is counted
+    twice."""
+    wrong = [
+        case.id for case in _load(name) if len([tag for tag in case.tags if tag in BEHAVIORS]) != 1
     ]
-    assert not unplanted
+    assert not wrong
+
+
+def test_behavior_tags_match_the_design_table() -> None:
+    """`eval-design.md` lists B1 to B6. A seventh tag here has no row there."""
+    assert BEHAVIORS == ("b1", "b2", "b3", "b4", "b5", "b6")
+
+
+_WEB_DIR = _FIXTURES_DIR / "web"
+_URL = re.compile(r"https?://[^\s)>\]\"']+")
+
+
+def test_recordings_load_and_every_file_in_web_is_indexed() -> None:
+    """A recording nobody lists is dead weight, and a listed one that is
+    missing would only fail on the first paid run. Loading checks the second;
+    this checks the first."""
+    RecordedWeb.load(_WEB_DIR)
+    index = json.loads((_WEB_DIR / INDEX_NAME).read_text())
+    listed = {*index["pages"].values(), *(entry["file"] for entry in index["searches"])}
+    on_disk = {
+        str(path.relative_to(_WEB_DIR))
+        for path in _WEB_DIR.rglob("*")
+        if path.is_file() and path.name != INDEX_NAME
+    }
+
+    assert on_disk == listed
+
+
+def _recorded_urls() -> set[str]:
+    index = json.loads((_WEB_DIR / INDEX_NAME).read_text())
+    return {normalize_url(url) for url in [*index["pages"], *index["unreachable"]]}
+
+
+_LIVE_WEB_TASKS = {"tools-003-fetch-explicit-url"}
+"""Tasks that name a real URL on purpose, and run only under `--web live`.
+Untagged `ci`, so the next test still keeps them out of CI."""
+
+
+@pytest.mark.parametrize("name", _DATASETS)
+def test_every_url_a_task_names_is_recorded(name: str) -> None:
+    """A task that pastes a URL with no recording would fetch nothing, and a
+    model that cannot read the page fails for a reason that looks like a
+    regression. Every URL is a recorded page or listed as unreachable."""
+    recorded = _recorded_urls()
+    missing = [
+        (case.id, url)
+        for case in _load(name)
+        if case.id not in _LIVE_WEB_TASKS
+        for url in _URL.findall(case.input)
+        if normalize_url(url) not in recorded
+    ]
+    assert not missing
+
+
+@pytest.mark.parametrize("name", _DATASETS)
+def test_web_tasks_in_ci_do_not_need_the_live_web(name: str) -> None:
+    """`ci` rule 1: a `ci` fetch task must name only recorded URLs (page or
+    unreachable), so it never reaches for the internet. Every `ci` search
+    task must match a recorded search."""
+    web = RecordedWeb.load(_WEB_DIR)
+    recorded = _recorded_urls()
+    offenders = [
+        case.id
+        for case in _load(name)
+        if _CI_TAG in case.tags
+        and (
+            (
+                "fetch_web_pages" in case.expect.tools
+                and any(normalize_url(url) not in recorded for url in _URL.findall(case.input))
+            )
+            or ("search_web" in case.expect.tools and web.search(case.input) is None)
+        )
+    ]
+    assert not offenders
+
+
+def test_a_tool_cannot_be_both_expected_and_allowed() -> None:
+    """A tool listed in `tools` and `allowed_tools` says "required" and
+    "optional" at once. Reject it at load, so the typo is not read as a
+    scoring rule."""
+    with pytest.raises(ValueError, match="both tools and allowed_tools"):
+        Expectation(tools=["search_web"], allowed_tools=["search_web", "fetch_web_pages"])
+    assert Expectation(tools=["search_web"], allowed_tools=["fetch_web_pages"])
+
+
+def test_fetch_task_needle_is_not_copied_from_the_input() -> None:
+    """tools-017 once graded the URL the user pasted. A model that echoes the
+    question satisfies that without using what it fetched."""
+    echoed = [
+        (case.id, needle)
+        for name in _DATASETS
+        for case in _load(name)
+        for needle in case.expect.must_contain
+        if needle.lower() in case.input.lower()
+    ]
+    assert echoed == []
+
+
+_HISTORY_BUDGET = Settings.model_fields["agent_history_token_budget"].default
+"""The production summarize threshold, read from the settings default so a
+change to it fails here instead of quietly leaving a task under the line."""
+
+
+def _history_tasks() -> list[EvalCase]:
+    return [case for name in _DATASETS for case in _load(name) if case.history]
+
+
+def test_a_multi_turn_task_is_exercised() -> None:
+    """B5 is a multi-turn behavior. With no seeded task in the dataset, the
+    schema field and the harness path that reads it run on nothing."""
+    assert [case.id for case in _history_tasks() if "b5" in case.tags]
+
+
+def test_summary_tasks_pass_the_summarize_threshold() -> None:
+    """A task tagged `summary` claims the chat is long enough to be shortened.
+    Under the threshold the agent never summarizes, and the task would pass
+    without testing recall after a summary."""
+    counter = ApproximateTokenCounter()
+    short = [
+        case.id
+        for case in _history_tasks()
+        if "summary" in case.tags
+        and counter.count(
+            [ChatMessage(role=role, content=text) for role, text in expanded_history(case.history)]
+        )
+        <= _HISTORY_BUDGET
+    ]
+    assert short == []
+
+
+def test_summary_tag_needs_history() -> None:
+    """The tag on a one-turn task would promise a summary no trial can reach."""
+    summary_tasks = [case for name in _DATASETS for case in _load(name) if "summary" in case.tags]
+    assert summary_tasks
+    assert [case.id for case in summary_tasks if not case.history] == []
+
+
+def test_history_needles_are_not_in_the_filler() -> None:
+    """A needle that also appears in the generated filler would pass or fail
+    for the filler's reason, not the model's."""
+    clashes = [
+        (case.id, needle)
+        for case in _history_tasks()
+        for needle in (*case.expect.must_contain, *case.expect.must_not_contain)
+        for turn, (_, expanded) in zip(case.history, expanded_history(case.history), strict=True)
+        if turn.pad_chars and needle.lower() in expanded.removeprefix(turn.text).lower()
+    ]
+    assert clashes == []

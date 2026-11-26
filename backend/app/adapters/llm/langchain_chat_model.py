@@ -97,12 +97,17 @@ class LangChainChatModel:
         api_key: str,
         max_tokens: int,
         request_timeout_seconds: float,
+        base_url: str | None = None,
         retry_attempts: int = 3,
         retry_wait: wait_base = _DEFAULT_RETRY_WAIT,
     ) -> None:
         if not models:
             raise ValueError("At least one model name must be configured")
 
+        # A gateway such as OpenCode Console sends token usage in a stream only
+        # when asked, and without it every reply reports zero tokens and costs
+        # nothing on paper.
+        gateway: dict[str, Any] = {"base_url": base_url, "stream_usage": True} if base_url else {}
         self._models: dict[str, BaseChatModel] = {}
         for name in models:
             built = init_chat_model(
@@ -116,6 +121,7 @@ class LangChainChatModel:
                 # `stream` below owns retries. The client's own two would run
                 # inside each of ours, so one call could wait nine timeouts.
                 max_retries=0,
+                **gateway,
             )
             if not isinstance(built, BaseChatModel):
                 # `init_chat_model` returns a late-bound configurable wrapper when

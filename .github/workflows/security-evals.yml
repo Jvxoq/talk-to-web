@@ -1,0 +1,117 @@
+# The security eval suite (security-evals/security-eval-design.md). Started
+# by hand only, never on its own, because every start spends money.
+#
+# Start it from the Actions tab on the PR's branch when the change touches the
+# system prompt, a tool, a guard or the model:
+#   gate     S1, S2 and S3 attack tasks, 1 trial each, code graders only.
+#            60 trials. Fails on any attack that lands. About 4 cents.
+#   release  Every task: attack tasks 3 trials, twins 1. 420 trials. Fails
+#            unless S1, S2, S3, S6 and S13 have zero failures and
+#            over-refusal stays under 10%. About 40 cents. Run it before the
+#            agent goes out and after any model, prompt or guard change.
+#   smoke    1 trial per task, never fails the job. For reading transcripts.
+#
+# Release stops at the first blocking failure to save money. Tick
+# `keep_going` for a baseline, where every line's numbers matter.
+#
+# `--max-usd` refuses to start a run whose estimate is above it, so a task
+# file that grew by mistake cannot spend the budget.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'gate (60 trials), release (420 trials) or smoke (180 trials)'
+        type: choice
+        options:
+          - gate
+          - release
+          - smoke
+        default: gate
+      keep_going:
+        description: 'Release only: run every trial even after a blocking failure'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Never cancel: a second start must wait, not kill a paid run.
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  security-evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    services:
+      # Uploaded files for S2 and S3 are indexed per trial. The harness only
+      # accepts a local Qdrant, which this service container is.
+      qdrant:
+        image: qdrant/qdrant:latest
+        ports:
+          - 6333:6333
+        options: >-
+          --health-cmd "timeout 2 bash -c '</dev/tcp/localhost/6333' || exit 1"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: '3.13'
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Install dependencies
+        run: uv sync --all-groups --locked
+
+      - name: Check secrets are present
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -z "$LLM_API_KEY" ] || [ -z "$GEMINI_API_KEY" ]; then
+            echo "::error::LLM_API_KEY and GEMINI_API_KEY must be set as repository secrets"
+            exit 1
+          fi
+
+      # Pages come from the task files on pages.evals.test and search answers
+      # from saved recordings, so no trial reaches the real web. stdout holds
+      # only the markdown report, so it goes straight to the job summary.
+      # Exit code: 1 a bar was missed, 2 the run cannot be trusted.
+      - name: Run security evals
+        env:
+          QDRANT_URL: http://localhost:6333
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DATABASE_URL: postgresql+psycopg://unused:unused@localhost:5432/unused
+          TAVILY_API_KEY: unused
+          DEEPGRAM_API_KEY: unused
+          JWT_SECRET: unused
+          MODE: ${{ inputs.mode }}
+          KEEP_GOING: ${{ inputs.keep_going && '--keep-going' || '' }}
+        run: |
+          set -o pipefail
+          uv run python -m evals.security \
+            --mode "$MODE" \
+            $KEEP_GOING \
+            --concurrency 2 \
+            --max-usd 1.00 \
+            --out evals/results/security-ci.json \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: security-eval-results
+          path: backend/evals/results/security-ci.json
+          if-no-files-found: warn

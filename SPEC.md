@@ -85,7 +85,7 @@ Limits the user can hit:
    │
    ├── Postgres  users, chats, messages, documents, agent checkpoints
    ├── Qdrant    file chunks as vectors
-   ├── Together  the chat model
+   ├── OpenCode  the chat model (Console gateway)
    ├── Gemini    embeddings
    ├── Tavily    web search
    └── Deepgram  speech to text
@@ -157,7 +157,8 @@ Each choice names the problem it solves.
 - **The last loop gets no tools.** When the agent hits its loop limit, it must
   answer in text. So the limit never leaves the user with an empty reply.
 - **Provider is a setting.** `llm_provider` is a string. Moving from Groq to
-  Together changed two environment variables and no code.
+  Together changed two environment variables and no code. Moving to the
+  OpenCode Console gateway added one setting, `llm_base_url`.
 
 ### Documents
 
@@ -214,8 +215,9 @@ Each choice names the problem it solves.
   dependency. `/ready` checks Postgres and Qdrant and answers 503 when one is
   down. Tracing is never part of `/ready`.
 - **Observability costs nothing when off.** Every request gets an id that shows
-  in logs, error bodies and Sentry. Sentry and Langfuse run only when their
-  keys are set.
+  in logs, error bodies and Sentry. Sentry runs only when its key is set.
+  Production tracing is a no-op for now (`NullTracer`). LangSmith is used for
+  local eval tracing.
 
 ---
 

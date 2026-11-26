@@ -137,6 +137,8 @@ services:
         value: none
 
       # --- Provider keys ---------------------------------------------------
+      # An OpenCode Console key: the chat model runs through that gateway by
+      # default (see `llm_base_url` in app/settings.py).
       - key: LLM_API_KEY
         sync: false
       - key: TAVILY_API_KEY
@@ -161,11 +163,8 @@ services:
         value: "5"
 
       # --- Tracing and error reporting --------------------------------------
-      # Langfuse is optional and off unless both keys are set - the tracer
-      # falls back to NullTracer and nothing leaves the process. Add
-      # LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY on Render's environment
-      # page to turn it on. They are not listed here because a `sync: false`
-      # entry prompts for a value this deployment does not need.
+      # Tracing is a no-op for now (NullTracer), so nothing leaves the process.
+      # LangSmith is used for local eval tracing only.
       #
       # Unset means Sentry is never initialized and nothing is sent. Fill it in
       # from the dashboard to turn reporting on.

@@ -126,6 +126,39 @@ def test_unparseable_url_error_never_prints_password() -> None:
     assert "migration-secret" not in str(caught.value)
 
 
+def build_llm(**llm: Any) -> Settings:
+    """`build`, with only the LLM variables under test given."""
+    return Settings(
+        _env_file=None,
+        environment="test",
+        database_url=DIRECT,
+        llm_api_key=SecretStr("test"),
+        tavily_api_key=SecretStr("test"),
+        gemini_api_key=SecretStr("test"),
+        deepgram_api_key=SecretStr("test"),
+        jwt_secret=SecretStr("test"),
+        **llm,
+    )
+
+
+def test_default_provider_uses_the_gateway() -> None:
+    assert build_llm().llm_base_url == "https://opencode.ai/inference/openai/v1"
+
+
+def test_switched_provider_without_url_uses_its_own_endpoint() -> None:
+    assert build_llm(llm_provider="anthropic").llm_base_url is None
+
+
+def test_switched_provider_keeps_an_explicit_url() -> None:
+    settings = build_llm(llm_provider="ollama", llm_base_url="http://localhost:11434")
+
+    assert settings.llm_base_url == "http://localhost:11434"
+
+
+def test_empty_base_url_means_the_providers_own_endpoint() -> None:
+    assert build_llm(llm_base_url="").llm_base_url is None
+
+
 @pytest.mark.parametrize("field", ["llm_request_timeout_seconds", "chat_reply_timeout_seconds"])
 def test_zero_timeout_is_refused(field: str) -> None:
     """Zero reads as "no timeout" to some clients and fires at once in asyncio."""

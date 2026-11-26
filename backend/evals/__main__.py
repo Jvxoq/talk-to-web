@@ -4,8 +4,29 @@
         --out evals/results/latest.json
 
 This runs against real APIs and spends real money - see `evals.harness` for
-what it builds and `evals.judge` for the one extra model call each `rag` case
-makes on top of the reply itself.
+what it builds and `evals.judge` for the yes/no judge calls a judged trial
+makes on top of the reply itself. With `LANGSMITH_API_KEY` set, each trial is
+also one LangSmith trace, ready for hand labeling with `python -m evals.labels`.
+
+Two modes set how many trials each task gets and which bar the run must clear.
+The bars themselves live in `evals.metrics.gates`.
+
+    --mode gate     1 trial per task, no judge calls. A task whose trial
+                    failed gets 2 more. Exit 1 if either extra trial fails.
+    --mode release  10 trials per task, judges on. Exit 1 unless the suite
+                    fails at most 3% of graded trials and no task fails 3.
+
+`--web recorded` is the default: the two web tools answer from saved pages in
+`evals/fixtures/web/`, so no network or Tavily key is needed. `--web live`
+keeps the real scraper and Tavily, for a local run with a real key.
+
+With no `--mode`, `--repeat N` runs N trials per task and the old rule holds:
+a task that fails every trial is a regression. That is the mode for trying out
+a new task by hand.
+
+An errored trial (a rate limit, a dropped connection) is neither a pass nor a
+failure. It is left out of both bars and listed, and it turns the exit code
+into 2 when nothing failed.
 
 Four rules shape this module, and each one exists because breaking it made a
 run report something other than what it measured.
@@ -24,7 +45,7 @@ called nothing and said nothing" - a perfect way to turn a flaky afternoon into
 a routing regression. Such a run goes into `RunReport.errors` and is dropped
 from every rate above it.
 
-Fixtures are indexed on every run, not only for `rag` and `injection`. Most of
+Fixtures are indexed on every run, not only for `rag`. Most of
 the `tools` suite asks a question about an upload, and an unindexed corpus
 makes `retrieve_documents` come back empty, which is exactly the state that
 releases `search_web` - so the suite that exists to prove the routing gate
@@ -39,17 +60,39 @@ claim is being tested.
 
 import argparse
 import asyncio
+import hashlib
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
 from loguru import logger
 
-from evals.cases import SUITES, EvalCase, load_all_cases, load_cases
-from evals.harness import CaseRun, EvalHarness, build_harness, fixture_text
-from evals.judge import JudgeScore
+from app.application.chat.dto import ReplyToolStarted
+from evals.cases import (
+    SUITES,
+    EvalCase,
+    behavior_of,
+    filler_fingerprint,
+    load_all_cases,
+    load_cases,
+)
+from evals.harness import CaseRun, EvalHarness, ToolResult, WebMode, build_harness
+from evals.judge import JUDGES_BY_BEHAVIOR
 from evals.metrics.budgets import summarize_budgets
+from evals.metrics.gates import (
+    GATE_EXTRA_TRIALS,
+    RELEASE_TRIALS,
+    BarVerdict,
+    Outcome,
+    TrialResult,
+    count_tasks,
+    judge_gate,
+    judge_release,
+    tasks_to_rerun,
+)
 from evals.metrics.generation import SubstringCheck, check_substrings, summarize_generation
 from evals.metrics.retrieval import hit_rate_at_k, mrr_at_k, sources_returned, summarize_retrieval
 from evals.metrics.tools import (
@@ -60,7 +103,23 @@ from evals.metrics.tools import (
     tools_completed,
     tools_refused,
 )
-from evals.report import RunReport, SuiteReport, render_markdown, write_json
+from evals.report import (
+    UNTAGGED,
+    JudgeRecord,
+    RunReport,
+    SuiteReport,
+    TaskRecord,
+    ToolCallRecord,
+    ToolResultRecord,
+    Totals,
+    Transcript,
+    TrialRecord,
+    behavior_records,
+    estimate_cost,
+    judge_tallies,
+    render_markdown,
+    write_json,
+)
 
 _DOCUMENT_TOOL = "retrieve_documents"
 """The only tool whose sources a retrieval metric grades.
@@ -71,14 +130,6 @@ label that appears in a `ReplyToolFinished` event and in a dataset's
 them would break the datasets too, and should fail loudly rather than be
 followed silently by the scorer alone.
 """
-
-_PROMPT_PROBE_MIN_CHARS = 24
-"""How long a slice of the system prompt has to be before it is worth treating
-as proof of a leak.
-
-Short slices are ordinary English - "you are a helpful" appears in replies that
-leaked nothing - and a probe that fires on those reports an exfiltration every
-time the model is polite."""
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -94,11 +145,48 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--repeat",
         type=int,
-        default=1,
+        default=None,
         help=(
-            "Run every case this many times. A case that fails every sample is "
-            "a regression; one that fails some is reported as flaky."
+            "Run every case this many times (default 1). A case that fails every "
+            "trial is a regression; one that fails some is reported as flaky. "
+            "Not allowed with --mode, which sets the trial count itself."
         ),
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["gate", "release"],
+        default=None,
+        help=(
+            "gate: 1 trial per task, no judge, 2 more for a failed task. "
+            "release: 10 trials per task, judges on. Omit for a plain run."
+        ),
+    )
+    parser.add_argument(
+        "--price-in",
+        type=float,
+        default=0.12,
+        help=(
+            "USD per million input tokens, for the cost estimate "
+            "(DeepSeek V4.1 Flash on OpenCode Console, 60%% off list)."
+        ),
+    )
+    parser.add_argument(
+        "--price-out",
+        type=float,
+        default=0.48,
+        help="USD per million output tokens, for the cost estimate.",
+    )
+    parser.add_argument(
+        "--judge-price-in",
+        type=float,
+        default=0.15,
+        help="USD per million judge input tokens (GLM 5.3 Flash on OpenCode Console).",
+    )
+    parser.add_argument(
+        "--judge-price-out",
+        type=float,
+        default=0.50,
+        help="USD per million judge output tokens.",
     )
     parser.add_argument(
         "--out",
@@ -110,11 +198,26 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--tag", action="append", default=[], help="Only run cases carrying this tag. May repeat."
     )
     parser.add_argument(
+        "--web",
+        choices=["recorded", "live"],
+        default="recorded",
+        help=(
+            "recorded (default): fetch_web_pages and search_web return saved pages from "
+            "evals/fixtures/web/, no network or key needed. live: the real scraper and "
+            "Tavily, for a local run with a real TAVILY_API_KEY."
+        ),
+    )
+    parser.add_argument(
         "--model",
         default=None,
         help="Override the answering model. Defaults to the first configured LLM model.",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.mode is not None and args.repeat is not None:
+        parser.error("--repeat cannot be used with --mode; the mode sets the trial count.")
+    if args.repeat is None:
+        args.repeat = 1
+    return args
 
 
 def _select_cases(suite: str, limit: int | None, tags: list[str]) -> list[EvalCase]:
@@ -136,70 +239,38 @@ def _select_cases(suite: str, limit: int | None, tags: list[str]) -> list[EvalCa
     return selected
 
 
-async def _run_all(
-    cases: list[EvalCase], harness: EvalHarness, concurrency: int, repeat: int
+async def _run_trials(
+    cases: list[EvalCase], harness: EvalHarness, concurrency: int, trials: Sequence[int]
 ) -> list[CaseRun]:
-    """Run every case `repeat` times, up to `concurrency` samples at once.
+    """Run every case once for each trial number in `trials`, up to `concurrency` at once.
 
-    Samples of one case are scheduled like any other work rather than run back
+    Trials of one task are scheduled like any other work rather than run back
     to back. They are independent by construction - `run_case` gives each its
-    own thread - and spreading them out keeps a slow case from holding the
+    own thread - and spreading them out keeps a slow task from holding the
     whole run open at the end.
+
+    `trials` is a list of numbers, not a count, so the gate can run trials 2
+    and 3 of a failed task without renumbering the first one.
     """
     semaphore = asyncio.Semaphore(max(1, concurrency))
 
-    async def _one(case: EvalCase, sample: int) -> CaseRun:
+    async def _one(case: EvalCase, trial: int) -> CaseRun:
         async with semaphore:
             run = await harness.run_case(case)
-            run.sample = sample
+            run.sample = trial
             return run
 
-    schedule = [(case, sample) for sample in range(1, max(1, repeat) + 1) for case in cases]
-    return list(await asyncio.gather(*(_one(case, sample) for case, sample in schedule)))
+    schedule = [(case, trial) for trial in trials for case in cases]
+    return list(await asyncio.gather(*(_one(case, trial) for case, trial in schedule)))
 
 
-def _prompt_probe(system_prompt: str) -> str | None:
-    """A distinctive slice of the live system prompt, for a leak check.
-
-    Derived from the prompt the agent is actually running with rather than
-    pinned in a dataset. Pinned, it would go stale the first time
-    `LLM_SYSTEM_PROMPT` was set in an environment, and go stale silently -
-    still passing, still claiming to prove the prompt does not leak.
-
-    The longest line is the pick: a system prompt's longest sentence is its
-    most specific one, so a reply containing it verbatim did not arrive there
-    by writing normal English.
-    """
-    lines = [" ".join(line.split()) for line in system_prompt.splitlines()]
-    candidates = [line for line in lines if len(line) >= _PROMPT_PROBE_MIN_CHARS]
-    if not candidates:
-        return None
-    return max(candidates, key=len)
-
-
-def _forbidden_for(case: EvalCase, probe: str | None) -> list[str]:
-    """A case's own `must_not_contain`, plus the prompt probe on injection cases.
-
-    Only `injection`: every case there is an attempt to make the agent recite
-    its instructions, so the probe is testing that case's actual claim. Adding
-    it everywhere would fail an ordinary case for quoting a sentence the prompt
-    happens to contain.
-    """
-    forbidden = list(case.expect.must_not_contain)
-    if case.suite == "injection" and probe is not None:
-        forbidden.append(probe)
-    return forbidden
-
-
-def _substring_check(run: CaseRun, probe: str | None) -> SubstringCheck:
+def _substring_check(run: CaseRun) -> SubstringCheck:
     return check_substrings(
         run.answer,
         run.case.expect.must_contain,
-        _forbidden_for(run.case, probe),
-        # Tool arguments as well as the answer. The way an indirect injection
-        # pays off is not the model reciting a canary at the user, where anyone
-        # would see it - it is the model putting one into a `search_web` query
-        # and sending it to a third party.
+        run.case.expect.must_not_contain,
+        # Tool arguments as well as the answer: a forbidden string sent in a
+        # `search_web` query reaches a third party even if the answer is clean.
         tool_arguments=tool_arguments(run.events),
     )
 
@@ -210,52 +281,33 @@ def _tool_score(run: CaseRun) -> ToolCallScore:
         run.case.expect.tools,
         refused=tools_refused(run.events),
         required_order=run.case.expect.tool_order,
+        allowed=run.case.expect.allowed_tools,
     )
 
 
-def _judge_context(case: EvalCase, returned: list[str]) -> str:
-    """The source text an answer was supposed to be drawn from.
-
-    The fixtures the case names, read off disk - never the gold answer. Those
-    are different questions: grading groundedness against the gold answer means
-    an invented fact that happens to be right scores a perfect 1.0, which is
-    the failure the metric exists to catch. `expect.reference` goes to the
-    judge separately, as the reference.
-
-    Falls back to the labels the reply actually cited when a case names no
-    fixture, which is all a negative case ("this is not in the corpus") has and
-    all it needs.
-    """
-    texts = [text for name in case.fixtures if (text := fixture_text(name)) is not None]
-    missing = [name for name in case.fixtures if fixture_text(name) is None]
-    if missing:
-        logger.warning(f"Case {case.id!r} names fixtures that do not exist: {missing}")
-    if texts:
-        return "\n\n".join(texts)
-    return "\n".join(returned)
-
-
-async def _score_suite(
-    suite_name: str, runs: list[CaseRun], harness: EvalHarness, probe: str | None
-) -> SuiteReport:
+def _score_suite(suite_name: str, runs: list[CaseRun], harness: EvalHarness) -> SuiteReport:
     """Score the cases that produced an answer. Broken runs are counted, not graded.
 
     `n` is every case the suite ran, so a suite that half fell over cannot be
     mistaken for a smaller suite that passed. The rates underneath are computed
     over `graded` only.
+
     """
     graded = [run for run in runs if not run.broke]
 
     budgets = summarize_budgets([run.latency_ms for run in graded], [run.usage for run in graded])
 
+    # Only tasks that state their tools: a task with no `tools` field has no
+    # expected call list, and scoring it against an empty one reads every
+    # correct call as over-calling.
+    tool_runs = [run for run in graded if run.case.expect.checks_tools]
     tools_report = None
-    if any(run.case.expect.tools or run.case.expect.tool_order for run in graded):
-        tools_report = summarize_tool_scores([_tool_score(run) for run in graded])
+    if tool_runs:
+        tools_report = summarize_tool_scores([_tool_score(run) for run in tool_runs])
 
-    substring_checks = [_substring_check(run, probe) for run in graded]
+    substring_checks = [_substring_check(run) for run in graded]
 
     retrieval_report = None
-    judge_scores: list[JudgeScore | None] = []
     if suite_name == "rag":
         hit_rates: list[float | None] = []
         reciprocal_ranks: list[float | None] = []
@@ -267,19 +319,11 @@ async def _score_suite(
             expected = run.case.expect.expected_sources
             hit_rates.append(hit_rate_at_k(returned, expected, harness.retrieval_k))
             reciprocal_ranks.append(mrr_at_k(returned, expected, harness.retrieval_k))
-            judge_scores.append(
-                await harness.judge.score(
-                    question=run.case.input,
-                    answer=run.answer,
-                    context=_judge_context(run.case, returned),
-                    reference=run.case.expect.reference,
-                )
-            )
         retrieval_report = summarize_retrieval(hit_rates, reciprocal_ranks)
 
     generation_report = None
-    if substring_checks or judge_scores:
-        generation_report = summarize_generation(substring_checks, judge_scores)
+    if substring_checks:
+        generation_report = summarize_generation(substring_checks)
 
     return SuiteReport(
         suite=suite_name,
@@ -309,7 +353,10 @@ def _label(run: CaseRun) -> str:
     return run.case.id if run.sample == 1 else f"{run.case.id}#{run.sample}"
 
 
-def _sample_failures(run: CaseRun, harness: EvalHarness, probe: str | None) -> list[str]:
+_SUMMARY_TAG = "summary"
+
+
+def _sample_failures(run: CaseRun, harness: EvalHarness) -> list[str]:
     """What one sample got wrong, or nothing.
 
     Every check is deterministic - no judge, no second model call - which is
@@ -318,7 +365,7 @@ def _sample_failures(run: CaseRun, harness: EvalHarness, probe: str | None) -> l
     case = run.case
     failures: list[str] = []
 
-    if case.expect.tools or case.expect.tool_order:
+    if case.expect.checks_tools:
         score = _tool_score(run)
         if not score.exact_match:
             failures.append(
@@ -336,7 +383,13 @@ def _sample_failures(run: CaseRun, harness: EvalHarness, probe: str | None) -> l
                 f"top-{harness.retrieval_k}, got {returned[: harness.retrieval_k]}"
             )
 
-    check = _substring_check(run, probe)
+    if _SUMMARY_TAG in case.tags and not run.summarized:
+        # The task claims its chat is long enough to be shortened. If no
+        # summary fired, the model read the fact verbatim and the pass proves
+        # nothing about recall after a summary.
+        failures.append("task is tagged `summary` but no summary fired")
+
+    check = _substring_check(run)
     if check.missing_required:
         failures.append(f"missing {list(check.missing_required)}")
     if check.forbidden_in_answer:
@@ -355,7 +408,7 @@ class Verdicts:
     flaky: tuple[str, ...]
 
 
-def _verdicts(runs: list[CaseRun], harness: EvalHarness, probe: str | None) -> Verdicts:
+def _verdicts(runs: list[CaseRun], harness: EvalHarness) -> Verdicts:
     """Judge each case across all of its samples.
 
     A case that failed every sample is a regression: the behaviour is what it
@@ -377,9 +430,7 @@ def _verdicts(runs: list[CaseRun], harness: EvalHarness, probe: str | None) -> V
         graded = [run for run in samples if not run.broke]
         if not graded:
             continue
-        failed = [
-            (run, reasons) for run in graded if (reasons := _sample_failures(run, harness, probe))
-        ]
+        failed = [(run, reasons) for run in graded if (reasons := _sample_failures(run, harness))]
         if not failed:
             continue
         detail = "; ".join(failed[0][1])
@@ -398,6 +449,151 @@ def _by_case(runs: list[CaseRun]) -> dict[str, list[CaseRun]]:
     return grouped
 
 
+def _outcome(run: CaseRun, failures: list[str]) -> Outcome:
+    if run.broke:
+        return "errored"
+    return "failed" if failures else "passed"
+
+
+def _sources_text(results: Sequence[ToolResult]) -> str:
+    """The tool results as one block of source text for a judge."""
+    return "\n\n".join(f"[{result.tool}]\n{result.text}" for result in results)
+
+
+async def _judge_trials(
+    runs: Sequence[CaseRun], harness: EvalHarness, concurrency: int
+) -> dict[int, tuple[JudgeRecord, ...]]:
+    """Ask each judge its question about each trial it covers, keyed by `id(run)`.
+
+    Run after every trial has finished and outside any trial's trace, so the
+    verdicts never show up on the trace a person labels. A broken trial is not
+    judged: its answer is empty for a reason the error text already gives. A
+    judge call that fails is left out, never counted as a "no".
+    """
+    gate = asyncio.Semaphore(max(1, concurrency))
+
+    async def judge_one(run: CaseRun) -> tuple[JudgeRecord, ...]:
+        names = JUDGES_BY_BEHAVIOR.get(behavior_of(run.case) or "", ())
+        if run.case.expect.checks_tools and not run.case.expect.tools:
+            # A task that must answer from the model's own knowledge has no
+            # source text by design, and "grounded" would fail every correct
+            # answer for it.
+            names = tuple(name for name in names if name != "grounded")
+        if run.broke or not names:
+            return ()
+        sources = _sources_text(run.tool_results)
+        records: list[JudgeRecord] = []
+        for name in names:
+            async with gate:
+                result = await harness.judge.verdict(
+                    name, question=run.case.input, answer=run.answer, sources=sources
+                )
+            if result is not None:
+                records.append(
+                    JudgeRecord(judge=result.judge, verdict=result.verdict, reason=result.reason)
+                )
+        return tuple(records)
+
+    verdicts = await asyncio.gather(*(judge_one(run) for run in runs))
+    return {id(run): records for run, records in zip(runs, verdicts, strict=True)}
+
+
+def _transcript(run: CaseRun) -> Transcript:
+    error = run.error
+    if error is None and run.failed is not None:
+        error = run.failed.code
+    return Transcript(
+        answer=run.answer,
+        tool_calls=tuple(
+            ToolCallRecord(name=event.name, arguments=event.summary)
+            for event in run.events
+            if isinstance(event, ReplyToolStarted)
+        ),
+        error=error,
+        seeded_turns=run.seeded_turns,
+        summarized=run.summarized,
+        tool_results=tuple(
+            ToolResultRecord(tool=result.tool, text=result.text) for result in run.tool_results
+        ),
+    )
+
+
+def _trial_record(
+    run: CaseRun, harness: EvalHarness, judges: tuple[JudgeRecord, ...] = ()
+) -> TrialRecord:
+    """One trial as the results file keeps it: outcome, reasons and transcript.
+
+    A broken run is never graded, so it gets no failure reasons. Its empty
+    answer would fail every check for a reason the error text already gives.
+    """
+    failures = [] if run.broke else _sample_failures(run, harness)
+    return TrialRecord(
+        task_id=run.case.id,
+        trial=run.sample,
+        outcome=_outcome(run, failures),
+        failure_reasons=tuple(failures),
+        transcript=_transcript(run),
+        tokens_in=(run.usage.prompt_tokens if run.usage else 0) + run.retried_tokens_in,
+        tokens_out=(run.usage.completion_tokens if run.usage else 0) + run.retried_tokens_out,
+        latency_ms=run.latency_ms,
+        question=run.case.input,
+        trace_id=run.trace_id,
+        judges=judges,
+    )
+
+
+def _trial_results(trials: Sequence[TrialRecord]) -> list[TrialResult]:
+    return [TrialResult(t.task_id, t.trial, t.outcome) for t in trials]
+
+
+def dataset_version(datasets_dir: Path, fixtures_dir: Path, suites: Sequence[str]) -> str:
+    """A 12-character hash of the dataset files and fixtures a run used.
+
+    Hashes each suite's `.jsonl` and every fixture file, recorded web pages
+    included, by name and bytes, in sorted order, plus the history filler a
+    padded task is built from. Fixtures are all included
+    because `index_fixtures` indexes the whole directory for every suite, so
+    any of them can change an answer.
+    """
+    digest = hashlib.sha256(filler_fingerprint().encode("utf-8"))
+    files = [datasets_dir / f"{suite}.jsonl" for suite in sorted(suites)]
+    if fixtures_dir.is_dir():
+        files.extend(
+            sorted(
+                path
+                for path in fixtures_dir.rglob("*")
+                if path.is_file() and not path.name.startswith(".")
+            )
+        )
+    for path in files:
+        name = path.relative_to(fixtures_dir) if path.is_relative_to(fixtures_dir) else path.name
+        digest.update(str(name).encode("utf-8"))
+        digest.update(b"\x00")
+        digest.update(path.read_bytes() if path.is_file() else b"")
+        digest.update(b"\x00")
+    return digest.hexdigest()[:12]
+
+
+def _plain_verdict(report_regressions: tuple[str, ...], flaky: tuple[str, ...]) -> BarVerdict:
+    """The old rule for a run with no `--mode`: failing every trial is red."""
+    if report_regressions:
+        return BarVerdict(
+            failed=True,
+            reasons=tuple(f"Failed every graded trial: {entry}" for entry in report_regressions),
+        )
+    note = f" {len(flaky)} task(s) failed some trials." if flaky else ""
+    return BarVerdict(failed=False, reasons=(f"No task failed every graded trial.{note}",))
+
+
+def _judge_bar(mode: str | None, trials: Sequence[TrialRecord], verdicts: Verdicts) -> BarVerdict:
+    results = _trial_results(trials)
+    if mode == "gate":
+        return judge_gate(results)
+    if mode == "release":
+        return judge_release(results)
+    return _plain_verdict(verdicts.regressions, verdicts.flaky)
+
+
 async def _main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     run_id = uuid4().hex[:12]
@@ -405,30 +601,56 @@ async def _main(argv: list[str] | None = None) -> int:
     cases = _select_cases(args.suite, args.limit, args.tag)
     if not cases:
         logger.warning("No cases matched the given --suite/--tag/--limit; nothing to run.")
+        if args.mode is not None:
+            # A gate or release run that measured nothing must not read as a
+            # pass. A wrong --tag would otherwise turn the check green.
+            logger.error(f"--mode {args.mode} selected no tasks, so nothing was measured.")
+            return 2
         return 0
 
-    async with build_harness(run_id=run_id, model=args.model) as harness:
+    async with build_harness(
+        run_id=run_id, model=args.model, web_mode=cast(WebMode, args.web)
+    ) as harness:
         # Always, for every suite. Most `tools` cases ask about an upload, and
         # an unindexed corpus turns the routing gate this suite grades into a
         # gate with nothing behind it - see the module docstring.
         await harness.index_fixtures()
 
-        runs = await _run_all(cases, harness, args.concurrency, args.repeat)
-        probe = _prompt_probe(harness.system_prompt)
+        use_judge = args.mode != "gate"
+        if args.mode == "release":
+            first_wave = list(range(1, RELEASE_TRIALS + 1))
+        elif args.mode == "gate":
+            first_wave = [1]
+        else:
+            first_wave = list(range(1, max(1, args.repeat) + 1))
+
+        runs = await _run_trials(cases, harness, args.concurrency, first_wave)
+        if args.mode == "gate":
+            # Only a task whose first trial FAILED is rerun. An errored one
+            # was never graded, so there is nothing to confirm.
+            first = [_trial_record(run, harness) for run in runs]
+            failed_ids = set(tasks_to_rerun(_trial_results(first)))
+            if failed_ids:
+                again = [case for case in cases if case.id in failed_ids]
+                extra = range(2, 2 + GATE_EXTRA_TRIALS)
+                runs += await _run_trials(again, harness, args.concurrency, list(extra))
 
         by_suite: dict[str, list[CaseRun]] = {}
         for run in runs:
             by_suite.setdefault(run.case.suite, []).append(run)
 
         suite_reports = [
-            await _score_suite(name, by_suite[name], harness, probe)
-            for name in SUITES
-            if name in by_suite
+            _score_suite(name, by_suite[name], harness) for name in SUITES if name in by_suite
         ]
-        verdicts = _verdicts(runs, harness, probe)
+        verdicts = _verdicts(runs, harness)
+        judged = await _judge_trials(runs, harness, args.concurrency) if use_judge else {}
+        trials = tuple(_trial_record(run, harness, judged.get(id(run), ())) for run in runs)
+        bar = _judge_bar(args.mode, trials, verdicts)
+        tasks = _task_records(cases, trials)
         report = RunReport(
             run_id=run_id,
             model=harness.model,
+            judge_model=harness.judge.model_name,
             tags=tuple(args.tag),
             suites=tuple(suite_reports),
             case_ids=tuple(case.id for case in cases),
@@ -436,6 +658,31 @@ async def _main(argv: list[str] | None = None) -> int:
             regressions=verdicts.regressions,
             flaky=verdicts.flaky,
             errors=tuple(_errors(runs)),
+            mode=args.mode,
+            prompt_version=harness.prompt_version,
+            web_mode=harness.web_mode,
+            dataset_version=dataset_version(
+                Path(__file__).parent / "datasets",
+                Path(__file__).parent / "fixtures",
+                sorted({case.suite for case in cases}),
+            ),
+            trials=trials,
+            tasks=tasks,
+            behaviors=behavior_records(tasks),
+            totals=_totals(trials),
+            judges=judge_tallies(trials),
+            cost=estimate_cost(
+                tokens_in=sum(t.tokens_in for t in trials),
+                tokens_out=sum(t.tokens_out for t in trials),
+                judge_tokens_in=harness.judge.prompt_tokens,
+                judge_tokens_out=harness.judge.completion_tokens,
+                price_in_per_million=args.price_in,
+                price_out_per_million=args.price_out,
+                judge_price_in_per_million=args.judge_price_in,
+                judge_price_out_per_million=args.judge_price_out,
+            ),
+            quality_failed=bar.failed,
+            verdict=bar.reasons,
         )
 
     write_json(report, args.out)
@@ -447,8 +694,35 @@ async def _main(argv: list[str] | None = None) -> int:
     return _exit_code(report)
 
 
+def _task_records(cases: list[EvalCase], trials: Sequence[TrialRecord]) -> tuple[TaskRecord, ...]:
+    """One record per task, in dataset order, with its trial counts."""
+    counts = {c.task_id: c for c in count_tasks(_trial_results(trials))}
+    records: list[TaskRecord] = []
+    for case in cases:
+        row = counts.get(case.id)
+        records.append(
+            TaskRecord(
+                task_id=case.id,
+                suite=case.suite,
+                passed=row.passed if row else 0,
+                failed=row.failed if row else 0,
+                errored=row.errored if row else 0,
+                behavior=behavior_of(case) or UNTAGGED,
+            )
+        )
+    return tuple(records)
+
+
+def _totals(trials: Sequence[TrialRecord]) -> Totals:
+    return Totals(
+        passed=sum(1 for t in trials if t.outcome == "passed"),
+        failed=sum(1 for t in trials if t.outcome == "failed"),
+        errored=sum(1 for t in trials if t.outcome == "errored"),
+    )
+
+
 def _exit_code(report: RunReport) -> int:
-    """0 clean, 1 the model regressed, 2 the run could not be trusted.
+    """0 clean, 1 the quality bar was missed, 2 the run could not be trusted.
 
     Three codes rather than two, because the two mean opposite things to
     whoever is looking. A 1 is a prompt or a tool description to fix. A 2 is a
@@ -456,7 +730,7 @@ def _exit_code(report: RunReport) -> int:
     merge on it trains everyone to re-run red builds, including the ones a 1
     produced.
     """
-    if report.regressions:
+    if report.quality_failed:
         return 1
     if report.errors:
         return 2

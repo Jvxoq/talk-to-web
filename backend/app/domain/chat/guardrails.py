@@ -107,7 +107,7 @@ _SECRET_PATTERNS: tuple[tuple[GuardCategory, re.Pattern[str]], ...] = (
     (GuardCategory.PII_SECRET, re.compile(r"\bsk-[A-Za-z0-9]{20,}\b")),
     # Groq API keys - a former provider, still pasted from old configs.
     (GuardCategory.PII_SECRET, re.compile(r"\bgsk_[A-Za-z0-9]{20,}\b")),
-    # Together AI API keys - the provider this app calls directly.
+    # Together AI API keys - a former provider, still pasted from old configs.
     (GuardCategory.PII_SECRET, re.compile(r"\btgp_v1_[A-Za-z0-9_\-]{20,}\b")),
     # GitHub personal access tokens, classic and fine-grained.
     (GuardCategory.PII_SECRET, re.compile(r"\bghp_[A-Za-z0-9]{20,}\b")),

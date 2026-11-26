@@ -1,0 +1,19 @@
+{
+  "pages": {
+    "https://quillfeather-observatory.org/visitor-guide": "fetch/quillfeather-visitor-guide.txt",
+    "https://tessaly-courier.com/news/brindlewick-tram-extension": "fetch/tessaly-courier-tram-extension.txt"
+  },
+  "unreachable": [
+    "https://harbourlight-festival.com/tickets"
+  ],
+  "searches": [
+    {
+      "terms": ["brindlewick", "tram"],
+      "file": "search/brindlewick-tram.json"
+    },
+    {
+      "terms": ["weather"],
+      "file": "search/mistral-vale-weather.json"
+    }
+  ]
+}

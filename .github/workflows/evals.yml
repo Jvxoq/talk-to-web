@@ -1,44 +1,110 @@
-name: evals
-
 # The only workflow that spends money and talks to a model provider, which is
 # why it is its own file rather than a fourth job in `backend.yml`: it needs
-# secrets none of those jobs need, it fails for reasons none of them fail for,
-# and its path filter is much narrower than theirs.
+# secrets none of those jobs need, and it fails for reasons none of them fail
+# for.
 #
-# Narrower on purpose. A regression this catches comes from a prompt, a model
-# name, a tool definition or a guardrail — not from a repository change, a
-# migration or a README fix — so those are the only paths that pay for a run.
-# Same caveat as `backend.yml`: a filtered workflow reports no status at all
-# when it is skipped, so this must not be marked required in branch protection.
+# Two ways in:
+#   pull_request  Runs `gate` mode, but only when the PR touches the agent (see
+#                 `changes` below). A frontend or docs PR skips the paid job.
+#   by hand       Pick a mode. Use `release` before the agent goes out, and
+#                 after a model or prompt change.
+# Either way, the paid job waits for a person to approve it. See `environment`
+# on the `evals` job.
+# Modes:
+#   gate     1 trial per task, no judge. A failed task gets 2 more trials, and
+#            the run fails if one of those fails too. About 2 cents.
+#   release  10 trials per task, judges on. Fails if the suite misses more than
+#            3% of trials or any task fails 3 times. About 35 cents.
+#
+# Mark the `evals` job required in branch protection, not this workflow. The
+# workflow always starts on a PR, so it never sits "Pending". When the agent is
+# untouched, `evals` is skipped by its `if`, and GitHub counts a job skipped by
+# a conditional as a success. A `paths:` filter on the trigger would instead
+# leave the required check pending forever and block the merge:
+# https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/collaborating-on-repositories-with-code-quality-features/troubleshooting-required-status-checks
 on:
   pull_request:
     branches: [main]
-    paths:
-      - 'backend/app/application/chat/**'
-      - 'backend/app/settings.py'
-      - 'backend/evals/**'
-      - '.github/workflows/evals.yml'
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'gate (1 trial per task) or release (10 trials per task)'
+        type: choice
+        options:
+          - gate
+          - release
+        default: gate
 
 permissions:
   contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # On a PR, a new push cancels the older run, even one waiting for approval.
+  # Only the newest commit's result can satisfy the required check, so an older
+  # run is money spent on an answer nobody reads. A manual start is never
+  # cancelled: a second one waits rather than killing a paid release run.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:
     working-directory: backend
 
 jobs:
-  evals:
-    # A pull request from a fork gets no secrets, so this job could only fail
-    # there, and confusingly — the run would look like a model regression and
-    # actually be an empty API key.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+  # Does this PR touch the agent? Plain `git diff`, no third-party action.
+  changes:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    outputs:
+      agent: ${{ steps.diff.outputs.agent }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # The agent is the chat code, the adapters it calls (model, web tools,
+      # vector store, embeddings), the wiring and settings that pick the model,
+      # the eval harness and tasks, the locked library versions (a LangChain
+      # bump can change answers), and this file. Markdown never counts.
+      - id: diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          AGENT_PATHS: >-
+            ^backend/app/(application/chat|domain/chat|adapters/(llm|web|vector|embedding))/|^backend/app/(composition|settings)\.py$|^backend/evals/|^backend/(pyproject\.toml|uv\.lock)$|^\.github/workflows/evals\.yml$
+        run: |
+          set -o pipefail
+          agent_files=$(git diff --name-only "$BASE_SHA"...HEAD | { grep -v '\.md$' || true; } | { grep -E "$AGENT_PATHS" || true; })
+          if [ -n "$agent_files" ]; then
+            echo "agent=true" >> "$GITHUB_OUTPUT"
+            printf 'Agent files changed:\n%s\n' "$agent_files"
+          else
+            echo "agent=false" >> "$GITHUB_OUTPUT"
+            echo "No agent files changed. The eval job will be skipped."
+          fi
+
+  evals:
+    needs: changes
+    # Runs on a manual start (`changes` skipped), on a PR that touches the
+    # agent, and when the diff step itself broke: a broken diff spends 2 cents
+    # rather than waving the PR through. `!cancelled()` is needed because a
+    # skipped `needs` job would otherwise skip this one too. A PR from a fork
+    # gets no secrets, so it is skipped rather than failed on a missing key.
+    # Run `release` by hand on that branch before merging it.
+    if: >-
+      ${{ !cancelled()
+      && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+      && (needs.changes.result != 'success' || needs.changes.outputs.agent == 'true') }}
+    # Approval before any money is spent. Coding agents open most PRs here, and
+    # each push that touches the agent would otherwise start a paid run. The
+    # `evals` environment has the repo owner as a required reviewer, so the job
+    # waits until they click "Approve and deploy". While it waits, the required
+    # check stays pending and the PR cannot merge. A manual start waits too, so
+    # an agent with `gh` access cannot spend by starting the workflow itself.
+    # Set up once in the repo settings, under Environments.
+    environment: evals
+    runs-on: ubuntu-latest
+    # Room for a release run: 280 trials at concurrency 2.
+    timeout-minutes: 60
 
     services:
       # `evals.harness._require_local_qdrant` refuses any non-local Qdrant, so
@@ -83,15 +149,20 @@ jobs:
             exit 1
           fi
 
-      # `--tag ci` selects only the cases that are deterministic and offline:
-      # the two that reach the live internet (`fetch_web_pages` against
-      # example.com, `search_web` for today's headline) are deliberately left
-      # untagged, because they fail for the internet's reasons rather than this
-      # repository's. `tests/evals/test_datasets.py` is what stops the tag from
+      # `--tag ci` selects only the cases that are deterministic and offline.
+      # The web tools run on saved pages (`--web recorded`, the default), so a
+      # B2 task needs no internet and no Tavily key. Tasks that need live web
+      # content are left untagged and run locally with `--web live`.
+      # `tests/evals/test_datasets.py` is what stops the tag from
       # quietly disappearing and leaving a green job that ran nothing.
       #
-      # Concurrency 2, not 4: Groq's free tier throttles, and the harness only
-      # retries a 429 once per case.
+      # `--mode` sets the trial count and the pass bar, so `--repeat` is not
+      # passed. The exit code is 1 for a missed bar and 2 for a broken run.
+      #
+      # Concurrency 2, not 4: it keeps the run under the provider's rate limit,
+      # and the harness only retries a 429 once per task.
+      #
+      # A PR has no `inputs`, so it falls back to `gate`.
       #
       # loguru writes to stderr, so stdout carries nothing but the markdown
       # report — which makes it safe to tee straight into the job summary.
@@ -107,11 +178,13 @@ jobs:
           TAVILY_API_KEY: unused
           DEEPGRAM_API_KEY: unused
           JWT_SECRET: unused
+          MODE: ${{ inputs.mode || 'gate' }}
         run: |
           set -o pipefail
           uv run python -m evals \
             --suite all \
             --tag ci \
+            --mode "$MODE" \
             --concurrency 2 \
             --out evals/results/ci.json \
             | tee -a "$GITHUB_STEP_SUMMARY"
