@@ -9,11 +9,17 @@ failed until someone happened to upload a file.
 `QdrantVectorIndex.ensure` never deletes and is safe to repeat, so a boot with
 the collection already in place costs one listing call and three index calls.
 
+Unlike Alembic, a failure here does not stop the boot. Postgres backs login and
+every chat. Qdrant backs only documents. A suspended free cluster must not take
+the whole app down. The upload path calls `ensure` again, and `/ready` reports
+Qdrant as down, so the problem stays visible.
+
     uv run python -m app.prepare_vector_index
 """
 
 import asyncio
 
+from loguru import logger
 from qdrant_client import AsyncQdrantClient
 
 from app.adapters.vector.qdrant_index import QdrantVectorIndex
@@ -37,6 +43,13 @@ async def main() -> None:
     try:
         await QdrantVectorIndex(client=client, collection=settings.qdrant_collection).ensure(
             settings.embedding_dimensions
+        )
+    except RuntimeError as error:
+        # `ensure` wraps every Qdrant failure in RuntimeError, so anything else
+        # is a bug in this code and should still stop the boot.
+        logger.opt(exception=error).error(
+            f"Could not prepare collection {settings.qdrant_collection}; "
+            f"starting without it: {error.__cause__!r}"
         )
     finally:
         await client.close()

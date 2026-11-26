@@ -5,15 +5,21 @@ is empty, and the first request after the deploy is a delete or a search, not
 an upload.
 """
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+import httpx
 import pytest
 from pydantic import SecretStr
 from qdrant_client import AsyncQdrantClient
+from qdrant_client.http.exceptions import ResponseHandlingException
 from qdrant_client.models import PointStruct
 
 from app import prepare_vector_index
 from app.settings import Settings
+from tests.conftest import logged
+
+if TYPE_CHECKING:
+    from loguru import Record
 
 COLLECTION = "documents"
 DIMENSIONS = 4
@@ -36,6 +42,8 @@ def client(monkeypatch: pytest.MonkeyPatch) -> AsyncQdrantClient:
         jwt_secret=SecretStr("test"),
     )
     monkeypatch.setattr(prepare_vector_index, "get_settings", lambda: settings)
+    # It removes every loguru sink, including the one `log_records` adds.
+    monkeypatch.setattr(prepare_vector_index, "configure_logging", lambda **_: None)
 
     def build(**_: Any) -> AsyncQdrantClient:
         return shared
@@ -70,3 +78,35 @@ async def test_second_boot_keeps_existing_points(client: AsyncQdrantClient) -> N
     await prepare_vector_index.main()
 
     assert (await client.count(COLLECTION)).count == 1
+
+
+async def test_unreachable_qdrant_is_logged_and_does_not_stop_the_boot(
+    client: AsyncQdrantClient, monkeypatch: pytest.MonkeyPatch, log_records: list["Record"]
+) -> None:
+    # A suspended free cluster: no reply at all. Login and chat do not need
+    # Qdrant, so the server must still start.
+    async def get_collections() -> None:
+        raise ResponseHandlingException(httpx.ConnectError(""))
+
+    monkeypatch.setattr(client, "get_collections", get_collections)
+
+    await prepare_vector_index.main()
+
+    # The adapter logs its own failure first; the boot step's line is last.
+    level, message, has_traceback = logged(log_records)[-1]
+    assert level == "ERROR"
+    assert "starting without it" in message
+    assert "ConnectError" in message
+    assert has_traceback
+
+
+async def test_a_bug_in_the_step_still_stops_the_boot(
+    client: AsyncQdrantClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def get_collections() -> None:
+        raise TypeError("not a Qdrant failure")
+
+    monkeypatch.setattr(client, "get_collections", get_collections)
+
+    with pytest.raises(TypeError):
+        await prepare_vector_index.main()

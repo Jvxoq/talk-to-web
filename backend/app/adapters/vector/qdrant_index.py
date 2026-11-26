@@ -73,10 +73,19 @@ class QdrantVectorIndex:
             exists = any(collection.name == self._collection for collection in response.collections)
             if not exists:
                 logger.info(f"Creating a new collection {self._collection}")
-                await self._client.create_collection(
-                    collection_name=self._collection,
-                    vectors_config=VectorParams(size=dimensions, distance=Distance.COSINE),
-                )
+                try:
+                    await self._client.create_collection(
+                        collection_name=self._collection,
+                        vectors_config=VectorParams(size=dimensions, distance=Distance.COSINE),
+                    )
+                except (ApiException, ValueError):
+                    # Two callers can both see it missing: the boot step on a
+                    # new instance and an upload on the old one mid-deploy.
+                    # Losing that race is fine. Anything else is a real failure.
+                    # (`ValueError` is what local mode raises for a duplicate.)
+                    if not await self._client.collection_exists(self._collection):
+                        raise
+                    logger.info(f"Collection {self._collection} was created concurrently")
 
             # Idempotent, and worth doing every time rather than only on
             # creation: without a payload index Qdrant still answers the filtered

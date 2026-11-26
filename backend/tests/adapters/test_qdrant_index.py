@@ -21,6 +21,7 @@ import httpx
 import pytest
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.http.exceptions import ResponseHandlingException
+from qdrant_client.models import CollectionsResponse
 
 from app.adapters.vector.qdrant_index import QdrantVectorIndex
 from app.domain.ingestion.value_objects import Chunk
@@ -128,6 +129,26 @@ class TestEnsure:
         await index.ensure(DIMENSIONS)
 
         assert await texts(index, NORTH, ALICE) == ["survives"]
+        await index.aclose()
+
+    async def test_losing_the_create_race_to_another_caller_is_fine(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Two processes both list the collections, both see it missing, and
+        # both create it. The second create fails; `ensure` must still succeed.
+        client = AsyncQdrantClient(location=":memory:")
+        index = QdrantVectorIndex(client, COLLECTION)
+        await index.ensure(DIMENSIONS)
+        listed_before_the_other_caller = CollectionsResponse(collections=[])
+
+        async def get_collections() -> CollectionsResponse:
+            return listed_before_the_other_caller
+
+        monkeypatch.setattr(client, "get_collections", get_collections)
+
+        await index.ensure(DIMENSIONS)
+
+        assert await client.collection_exists(COLLECTION)
         await index.aclose()
 
 

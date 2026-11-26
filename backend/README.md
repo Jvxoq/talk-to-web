@@ -36,6 +36,7 @@ The Qdrant collection gets the same treatment. `start.sh` and the compose
 `migrate` service run `python -m app.prepare_vector_index` after Alembic. It
 creates the collection and its payload indexes if they are missing and never
 deletes anything, so a brand-new or wiped cluster works before the first upload.
+If Qdrant is unreachable it logs the error and the server still starts.
 
 `env.py` connects with `DATABASE_MIGRATION_URL` when set and `DATABASE_URL`
 otherwise — managed Postgres publishes a pooled endpoint for the app and a
