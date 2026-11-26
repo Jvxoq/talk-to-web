@@ -20,6 +20,7 @@ from app.application.chat.agent.usage import emit_usage
 from app.application.chat.models import ChatMessage, ToolCall
 from app.application.chat.ports import ChatModel, TokenCounter, Tracer
 from app.application.chat.tools.base import ToolContext, ToolRegistry
+from app.application.chat.tools.links import openable_links
 
 # The vocabulary of the custom stream: an internal protocol between this
 # module and `use_cases.generate_reply`, the only reader. Plain dicts, so
@@ -170,6 +171,10 @@ def make_tool_node(
             # rather than a leak.
             has_documents=bool(configurable.get("has_documents", True)),
             prior_tools=tools_run_this_turn(messages),
+            # Rebuilt every lap, like `prior_tools`: a search in the previous lap
+            # adds the links it found. Read from `user` turns and tool sources
+            # only, never from page text or the model's own writing.
+            openable_links=openable_links(messages, state.source_urls),
         )
         calls = messages[-1].tool_calls if messages else ()
         if not calls:
@@ -177,6 +182,8 @@ def make_tool_node(
             # cheaper than raising into an open stream if it ever happens.
             logger.debug("Tool node reached with no pending calls")
             return {"messages": []}
+
+        found: list[str] = []
 
         async def run(call: ToolCall) -> ChatMessage:
             # Announced before the call, so the spinner has a reason on it for
@@ -214,6 +221,7 @@ def make_tool_node(
                     "sources": [source.model_dump() for source in outcome.sources],
                 }
             )
+            found.extend(source.url for source in outcome.sources if source.url)
             # The id is what pairs this result back to its request; providers
             # reject a tool turn that has none.
             return ChatMessage(role="tool", content=content, tool_call_id=call.id)
@@ -222,7 +230,7 @@ def make_tool_node(
         # slower one rather than their sum. `ToolRegistry.invoke` never raises,
         # so a bare gather cannot leave a sibling orphaned here.
         messages = await asyncio.gather(*(run(call) for call in calls))
-        return {"messages": list(messages)}
+        return {"messages": list(messages), "source_urls": found}
 
     return tool_node
 

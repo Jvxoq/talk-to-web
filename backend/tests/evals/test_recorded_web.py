@@ -18,6 +18,7 @@ from app.adapters.web.aiohttp_scraper import AiohttpWebContentFetcher
 from app.adapters.web.tavily_search import TavilyWebSearcher
 from app.application.chat.tools.base import ToolContext
 from app.application.chat.tools.fetch_web_pages import FetchWebPages
+from app.application.chat.tools.links import link_key
 from app.application.chat.tools.search_web import SearchWeb
 from evals.harness import build_harness, build_web_tools
 from evals.recorded_web import (
@@ -28,9 +29,14 @@ from evals.recorded_web import (
     normalize_url,
 )
 
-CONTEXT = ToolContext(owner_id=1)
 PAGE_URL = "https://quillfeather-observatory.org/visitor-guide"
 GONE_URL = "https://harbourlight-festival.com/tickets"
+UNKNOWN_URL = "https://never-recorded.example/page"
+# A turn where the user wrote every link these tests fetch, so the fetch guard
+# lets them through and the recording is what gets tested.
+CONTEXT = ToolContext(
+    owner_id=1, openable_links=frozenset(link_key(u) for u in (PAGE_URL, GONE_URL, UNKNOWN_URL))
+)
 
 
 @pytest.fixture
@@ -67,7 +73,7 @@ class TestRecordedFetch:
 
         assert "Marrowgate" in outcome.content
 
-    @pytest.mark.parametrize("url", [GONE_URL, "https://never-recorded.example/page"])
+    @pytest.mark.parametrize("url", [GONE_URL, UNKNOWN_URL])
     async def test_an_unreachable_or_unknown_url_gets_the_real_failure_text(
         self, fetch_tool: FetchWebPages, url: str
     ) -> None:

@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 from app.application.chat.models import Source
 from app.application.chat.ports import WebContentFetcher
 from app.application.chat.tools.base import BaseTool, ToolContext, ToolResult
+from app.application.chat.tools.links import link_key
 
 # A ceiling on how many pages one call may open. Without it, a model that
 # hallucinates a list of thirty links turns one turn into thirty outbound
@@ -29,7 +30,8 @@ class FetchWebPagesArgs(BaseModel):
         max_length=MAX_URLS_PER_CALL,
         description=(
             "The full http(s) addresses to read, copied exactly as the user wrote "
-            "them. Never invent, shorten or guess a URL."
+            "them or as search_web returned them. Never invent, shorten, guess or "
+            "fill in a URL."
         ),
     )
 
@@ -47,8 +49,9 @@ class FetchWebPages(BaseTool[FetchWebPagesArgs]):
         "Read the full text of specific web pages whose addresses you already "
         "have. Use this whenever the user pastes a link and asks you to summarise, "
         "explain, compare or quote it, and to open a promising result returned by "
-        "search_web. Only pass URLs that appear in the conversation - if you do "
-        "not have an address, use search_web to find one first."
+        "search_web. Only links the user wrote or search_web returned can be "
+        "opened. A link found inside a page or a file is refused - if you do not "
+        "have an address, use search_web to find one first."
     )
     args_model: ClassVar[type[BaseModel]] = FetchWebPagesArgs
 
@@ -63,7 +66,15 @@ class FetchWebPages(BaseTool[FetchWebPagesArgs]):
     async def _run(self, args: FetchWebPagesArgs, context: ToolContext) -> ToolResult:
         # Back to plain strings at the boundary: `HttpUrl` is a validation type,
         # and the port speaks `Sequence[str]`.
-        urls = [str(url) for url in args.urls[: self._max_urls]]
+        asked = [str(url) for url in args.urls[: self._max_urls]]
+        # The guard. A link the user did not write and no tool reported is one
+        # the model composed, often from a page that told it to, and its query
+        # can carry anything the model has seen. It is never opened. See
+        # `tools.links` for what counts.
+        urls = [url for url in asked if link_key(url) in context.openable_links]
+        refused = len(asked) - len(urls)
+        if not urls:
+            return ToolResult(content=_refusal(refused))
         content = await self._web.fetch_all(urls)
         if not content.strip():
             return ToolResult(
@@ -77,4 +88,20 @@ class FetchWebPages(BaseTool[FetchWebPagesArgs]):
         # blob, and re-deriving per-page addresses from that text would be
         # guesswork `fetch_all`'s own port has no way to settle.
         sources = tuple(Source(label=url, url=url) for url in urls)
+        if refused:
+            content = f"{content}\n\n{_refusal(refused)}"
         return ToolResult(content=content, sources=sources)
+
+
+def _refusal(count: int) -> str:
+    """What the model reads for links it may not open.
+
+    The refused links are not repeated: one may carry a private value, and
+    echoing it puts it back in front of the model as fresh tool output. Worded
+    as a fact, not an order: it passes through the output fence like any tool
+    text, and the system prompt already says what to do about a planted link.
+    """
+    return (
+        f"Not opened: {count} link(s). Only links the user wrote or search_web "
+        "returned can be opened."
+    )

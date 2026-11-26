@@ -33,6 +33,11 @@ def merge_messages(left: list[ChatMessage], right: list[ChatMessage]) -> list[Ch
     return left + right
 
 
+def merge_urls(left: list[str], right: list[str]) -> list[str]:
+    """The reducer for `source_urls`: append the new ones, keep each URL once."""
+    return list(dict.fromkeys([*left, *right]))
+
+
 class AgentState(BaseModel):
     """The conversation so far, plus how many laps of the loop it has cost."""
 
@@ -50,6 +55,12 @@ class AgentState(BaseModel):
     # thread that kept counting would hit the ceiling and refuse to use tools
     # ever again.
     iterations: int = 0
+
+    # Every URL a tool reported as a source on this thread, for the fetch guard
+    # in `tools.links`. Kept here, not read back out of the tool turns, because
+    # a tool turn's text can be condensed or summarized away, and its sources
+    # never reach the history at all. Appended by the tool node.
+    source_urls: Annotated[list[str], merge_urls] = []
 
 
 def tools_run_this_turn(messages: Sequence[ChatMessage]) -> frozenset[str]:

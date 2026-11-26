@@ -51,6 +51,10 @@ class ToolContext(BaseModel):
     # Every tool that has already run and answered since the last user
     # message. Requested is not enough - see `tools_run_this_turn`.
     prior_tools: frozenset[str] = frozenset()
+    # The links `fetch_web_pages` may open, as `links.link_key` keys: the ones
+    # the user wrote, and the ones a tool reported as a source. Empty by
+    # default, so a caller that forgets it opens nothing rather than anything.
+    openable_links: frozenset[str] = frozenset()
 
 
 class ToolSpec(BaseModel):

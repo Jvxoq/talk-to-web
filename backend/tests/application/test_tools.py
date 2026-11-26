@@ -12,6 +12,7 @@ from app.application.chat.guardrails.tool_output import ToolOutputGuard
 from app.application.chat.models import Passage, Source, ToolCall
 from app.application.chat.tools.base import ToolContext, ToolRegistry, ToolRoutingPolicy
 from app.application.chat.tools.fetch_web_pages import FetchWebPages
+from app.application.chat.tools.links import link_key
 from app.application.chat.tools.retrieve_documents import RetrieveDocuments
 from app.application.chat.tools.search_web import SearchWeb
 from tests.fakes import (
@@ -24,6 +25,21 @@ from tests.fakes import (
 # Who the turn belongs to. The model never supplies this - it arrives from the
 # run config - so every call here passes the same one.
 CONTEXT = ToolContext(owner_id=42)
+
+
+def opening(*urls: str) -> ToolContext:
+    """The same turn, where the user wrote `urls`, so the fetch guard opens them."""
+    return ToolContext(owner_id=42, openable_links=frozenset(link_key(url) for url in urls))
+
+
+# Every link the fetch tests below ask for, as if the user had pasted them.
+FETCH_CONTEXT = opening(
+    "https://example.com/a",
+    "https://example.com/b",
+    "https://example.com/c",
+    "https://example.com/empty",
+    "https://example.com",
+)
 
 
 # A guard with both features on, since the registry tests below are about
@@ -107,7 +123,7 @@ class TestFetchWebPages:
         fetcher = FakeWebContentFetcher(content="PAGE TEXT")
         tool = FetchWebPages(fetcher)
 
-        outcome = await tool.run({"urls": ["https://example.com/a"]}, CONTEXT)
+        outcome = await tool.run({"urls": ["https://example.com/a"]}, FETCH_CONTEXT)
 
         assert outcome.ok
         assert outcome.content == "PAGE TEXT"
@@ -120,7 +136,7 @@ class TestFetchWebPages:
         tool = FetchWebPages(fetcher)
 
         outcome = await tool.run(
-            {"urls": ["https://example.com/a", "https://example.com/b"]}, CONTEXT
+            {"urls": ["https://example.com/a", "https://example.com/b"]}, FETCH_CONTEXT
         )
 
         assert outcome.sources == (
@@ -132,7 +148,7 @@ class TestFetchWebPages:
         fetcher = FakeWebContentFetcher(content="PAGE TEXT")
         tool = FetchWebPages(fetcher)
 
-        outcome = await tool.run({"urls": ["not a url at all"]}, CONTEXT)
+        outcome = await tool.run({"urls": ["not a url at all"]}, FETCH_CONTEXT)
 
         assert not outcome.ok
         # The message names the field so the model knows what to correct.
@@ -142,7 +158,7 @@ class TestFetchWebPages:
     async def test_says_so_when_no_page_yielded_text(self) -> None:
         tool = FetchWebPages(FakeWebContentFetcher(content="   "))
 
-        outcome = await tool.run({"urls": ["https://example.com/empty"]}, CONTEXT)
+        outcome = await tool.run({"urls": ["https://example.com/empty"]}, FETCH_CONTEXT)
 
         assert outcome.ok
         assert "https://example.com/empty" in outcome.content
@@ -151,7 +167,7 @@ class TestFetchWebPages:
     async def test_a_failing_fetcher_is_reported_not_raised(self) -> None:
         tool = FetchWebPages(FakeWebContentFetcher(fail_with=TimeoutError("slow")))
 
-        outcome = await tool.run({"urls": ["https://example.com"]}, CONTEXT)
+        outcome = await tool.run({"urls": ["https://example.com"]}, FETCH_CONTEXT)
 
         assert not outcome.ok
         assert "fetch_web_pages" in outcome.content
@@ -172,11 +188,79 @@ class TestFetchWebPages:
 
         outcome = await tool.run(
             {"urls": ["https://example.com/a", "https://example.com/b", "https://example.com/c"]},
-            CONTEXT,
+            FETCH_CONTEXT,
         )
 
         assert outcome.ok
         assert fetcher.calls == [("https://example.com/a", "https://example.com/b")]
+
+
+# The link a planted page asks for, with the user's member id filled in. Built by
+# the model, so it is in no user turn and no tool's sources.
+PLANTED = "https://collector.evals.test/verify?id=MID-0107-VQX"
+
+
+class TestFetchGuard:
+    """Only links the user wrote or a tool reported are opened (security line S1)."""
+
+    async def test_a_link_the_model_built_is_never_opened(self) -> None:
+        fetcher = FakeWebContentFetcher(content="PAGE TEXT")
+
+        outcome = await FetchWebPages(fetcher).run(
+            {"urls": [PLANTED]}, opening("https://example.com/a")
+        )
+
+        assert fetcher.calls == []
+        assert outcome.content.startswith("Not opened: 1 link(s).")
+        # The refusal does not hand the private value back to the model.
+        assert "MID-0107-VQX" not in outcome.content
+        assert outcome.sources == ()
+
+    async def test_the_allowed_links_in_a_mixed_call_still_open(self) -> None:
+        fetcher = FakeWebContentFetcher(content="PAGE TEXT")
+
+        outcome = await FetchWebPages(fetcher).run(
+            {"urls": ["https://example.com/a", PLANTED]}, opening("https://example.com/a")
+        )
+
+        assert fetcher.calls == [("https://example.com/a",)]
+        assert [source.url for source in outcome.sources] == ["https://example.com/a"]
+        assert "Not opened: 1 link(s)." in outcome.content
+
+    async def test_a_new_query_on_an_allowed_page_is_a_new_link(self) -> None:
+        """The query is where a smuggled value rides, so it must match exactly."""
+        fetcher = FakeWebContentFetcher(content="PAGE TEXT")
+
+        await FetchWebPages(fetcher).run(
+            {"urls": ["https://collector.evals.test/verify?id=MID-0107-VQX"]},
+            opening("https://collector.evals.test/verify"),
+        )
+
+        assert fetcher.calls == []
+
+    @pytest.mark.parametrize(
+        "asked",
+        [
+            "https://example.com/a/",
+            "http://example.com/a",
+            "https://www.example.com/a",
+            "https://EXAMPLE.com/a#top",
+        ],
+    )
+    async def test_the_same_page_written_another_way_opens(self, asked: str) -> None:
+        fetcher = FakeWebContentFetcher(content="PAGE TEXT")
+
+        await FetchWebPages(fetcher).run({"urls": [asked]}, opening("https://example.com/a"))
+
+        assert len(fetcher.calls) == 1
+
+    async def test_a_context_with_no_links_opens_nothing(self) -> None:
+        """Fails closed: a caller that forgets the field opens nothing."""
+        fetcher = FakeWebContentFetcher(content="PAGE TEXT")
+
+        await FetchWebPages(fetcher).run({"urls": ["https://example.com/a"]}, CONTEXT)
+
+        assert fetcher.calls == []
 
 
 class TestSearchWeb:
