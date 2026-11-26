@@ -5,6 +5,7 @@ is empty, and the first request after the deploy is a delete or a search, not
 an upload.
 """
 
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -26,7 +27,7 @@ DIMENSIONS = 4
 
 
 @pytest.fixture
-def client(monkeypatch: pytest.MonkeyPatch) -> AsyncQdrantClient:
+async def client(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[AsyncQdrantClient]:
     """One in-memory client shared by every boot, standing in for the cloud cluster."""
     shared = AsyncQdrantClient(location=":memory:")
     settings = Settings(
@@ -51,8 +52,10 @@ def client(monkeypatch: pytest.MonkeyPatch) -> AsyncQdrantClient:
     monkeypatch.setattr(prepare_vector_index, "AsyncQdrantClient", build)
     # `main` closes the client it built; closing the in-memory one would wipe
     # the state the assertions read, so the close is a no-op here.
+    close = shared.close
     monkeypatch.setattr(shared, "close", _noop)
-    return shared
+    yield shared
+    await close()
 
 
 async def _noop(**_: Any) -> None:

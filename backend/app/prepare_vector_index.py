@@ -49,7 +49,7 @@ async def main() -> None:
         # is a bug in this code and should still stop the boot.
         logger.opt(exception=error).error(
             f"Could not prepare collection {settings.qdrant_collection}; "
-            f"starting without it: {error.__cause__!r}"
+            f"starting without it: {error}"
         )
     finally:
         await client.close()
